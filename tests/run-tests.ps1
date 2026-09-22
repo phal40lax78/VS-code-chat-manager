@@ -44,6 +44,10 @@ Copy-Item -LiteralPath (Join-Path $root 'VS-code-chat-manager.ps1') -Destination
 
 $env:CLAUDE_CONFIG_DIR = $claudeHome
 $env:CODEX_HOME = $codexHome
+# Copilot's store too: an index sync without -Provider would otherwise read
+# this machine's real Copilot chats into the sandbox
+$codeUser = Join-Path $sb 'code-user'
+$env:CHAT_CODE_USER = $codeUser
 $env:CHATQ_CLAUDE = Join-Path $here 'fake-claude.cmd'
 $env:CHATQ_CODEX = Join-Path $here 'fake-claude.cmd'
 $env:CHATQ_WATCHER = '1'      # no auto-start from the load below
@@ -155,8 +159,60 @@ $cxLines = @(
     ([ordered]@{ timestamp = $now.AddHours(-1).ToString('o'); type = 'event_msg'; payload = [ordered]@{ type = 'token_count'; rate_limits = [ordered]@{ limit_id = 'codex'; primary = [ordered]@{ used_percent = 100.0; window_minutes = 300; resets_at = $future }; secondary = [ordered]@{ used_percent = 12.0; window_minutes = 10080; resets_at = $now.AddDays(3).ToUnixTimeSeconds() } } } } | ConvertTo-Json -Compress -Depth 6)
 )
 [System.IO.File]::WriteAllText($cxPath, ($cxLines -join "`n") + "`n", $utf8)
+# a second thread, named in Hangul: the index is BOM-less UTF-8, which 5.1
+# reads in the ANSI code page unless told otherwise
+$cx2Id = '01900000-0000-7000-8000-000000000002'
+$tHan = -join [char[]](0xD55C, 0xAE00, 0x20, 0xC2A4, 0xB808, 0xB4DC)   # "Hangul thread"
+$cx2Lines = @(
+    ([ordered]@{ timestamp = $now.AddHours(-2).ToString('o'); type = 'session_meta'; payload = [ordered]@{ session_id = $cx2Id; id = $cx2Id; cwd = $projA; originator = 'codex_vscode' } } | ConvertTo-Json -Compress -Depth 6)
+    ([ordered]@{ timestamp = $now.AddHours(-2).ToString('o'); type = 'response_item'; payload = [ordered]@{ type = 'message'; role = 'user'; content = @([ordered]@{ type = 'input_text'; text = 'name me' }) } } | ConvertTo-Json -Compress -Depth 6)
+)
+[System.IO.File]::WriteAllText((Join-Path $cxDir "rollout-2026-09-20T09-00-00-$cx2Id.jsonl"), ($cx2Lines -join "`n") + "`n", $utf8)
 [System.IO.File]::WriteAllText((Join-Path $codexHome 'session_index.jsonl'),
-    (([ordered]@{ id = $cxId; thread_name = 'Codex gitignore thread'; updated_at = $now.ToString('o') } | ConvertTo-Json -Compress) + "`n"), $utf8)
+    ((([ordered]@{ id = $cxId; thread_name = 'Codex gitignore thread'; updated_at = $now.ToString('o') } | ConvertTo-Json -Compress),
+            ([ordered]@{ id = $cx2Id; thread_name = $tHan; updated_at = $now.ToString('o') } | ConvertTo-Json -Compress)) -join "`n") + "`n", $utf8)
+
+# Copilot: one chat in this project's folder, so a title can name it
+$wsDir = Join-Path (Join-Path $codeUser 'workspaceStorage') 'ws1'
+$null = New-Item -ItemType Directory -Path (Join-Path $wsDir 'chatSessions') -Force
+[System.IO.File]::WriteAllText((Join-Path $wsDir 'workspace.json'), (@{ folder = ([Uri]$projA).AbsoluteUri } | ConvertTo-Json -Compress), $utf8)
+$cpId = '15151515-1515-4151-8151-151515151515'
+$cpJson = [ordered]@{ version = 3; requests = @([ordered]@{ message = [ordered]@{ text = 'explain the copilot tests' } })
+    customTitle = 'Copilot chat about tests'; lastMessageDate = $now.AddHours(-1).ToUnixTimeMilliseconds() } | ConvertTo-Json -Compress -Depth 6
+[System.IO.File]::WriteAllText((Join-Path (Join-Path $wsDir 'chatSessions') "$cpId.json"), $cpJson, $utf8)
+
+# find-and-delete: chats that get deleted, one with every leftover a Claude
+# chat keeps beside its transcript
+$idDoom1 = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+$idDoom2 = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
+$pDoom1 = New-FakeChat $projA $idDoom1 'Doomed chat one' 2 @('delete me later', 'unique prompt phrase zebra')
+$pDoom2 = New-FakeChat $projA $idDoom2 'Doomed chat two' 2 @('delete me too')
+$side = Join-Path (Split-Path $pDoom1 -Parent) $idDoom1
+$null = New-Item -ItemType Directory -Path (Join-Path $side 'subagents') -Force
+[System.IO.File]::WriteAllText((Join-Path $side 'subagents\agent-1.jsonl'), '{}', $utf8)
+foreach ($d in 'file-history', 'session-env') {
+    $dd = Join-Path (Join-Path $claudeHome $d) $idDoom1
+    $null = New-Item -ItemType Directory -Path $dd -Force
+    [System.IO.File]::WriteAllText((Join-Path $dd 'x'), 'x', $utf8)
+}
+# more prompts than the index previews, one of them only -Deep can see
+$idDeep = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'
+$null = New-FakeChat $projA $idDeep 'Many prompts chat' 3 @('p1', 'p2', 'p3', 'p4', 'needle-deep-xyz', 'p6', 'p7', 'p8')
+$idQuote = 'ffffffff-ffff-4fff-8fff-ffffffffffff'
+$null = New-FakeChat $projA $idQuote 'Say "hi" to it' 4 @('greet')
+$idDead = '12121212-1212-4121-8121-121212121212'
+$null = New-FakeChat $projA $idDead 'Deadline notes' 5 @('dates')
+$idSmart = '13131313-1313-4131-8131-131313131313'
+$tSmart = "Don$([char]0x2019)t break it"
+$null = New-FakeChat $projA $idSmart $tSmart 6 @('careful')
+# a subagent transcript: flagged on its first line, hidden from search and Tab
+$idHid = '14141414-1414-4141-8141-141414141414'
+$hidLines = @(
+    ([ordered]@{ type = 'user'; isSidechain = $true; message = [ordered]@{ role = 'user'; content = 'sub task' }; uuid = [guid]::NewGuid().ToString()
+            timestamp = $now.AddHours(-1).ToString('o'); cwd = $projA; sessionId = $idHid } | ConvertTo-Json -Compress -Depth 5)
+    ([ordered]@{ type = 'ai-title'; aiTitle = 'Hidden subagent work'; sessionId = $idHid } | ConvertTo-Json -Compress)
+)
+[System.IO.File]::WriteAllText((Join-Path (Join-Path (Join-Path $claudeHome 'projects') (Get-Slug $projA)) "$idHid.jsonl"), ($hidLines -join "`n") + "`n", $utf8)
 
 # --- load --------------------------------------------------------------------
 . (Join-Path $sb 'tool\VS-code-chat-manager.ps1')
@@ -188,7 +244,7 @@ $r = Resolve-ChatqTarget 'card UI' "$tTong $tTong UI merge"
 Check 'the prompt decides between look-alikes' ($r.Row.Id -eq $idTong) "$($r.Row.Title) $($r.Score) vs $($r.RunnerUpScore)"
 Check 'runner-up is reported' ($null -ne $r.RunnerUp -and $r.RunnerUp.Id -eq $idCard) "$($r.RunnerUp.Title)"
 $r = Resolve-ChatqTarget 'zzqx nothing like it'
-Check 'no match: a guess from this project only' ($r.Tier -eq 'nomatch' -and (Test-ChatqInProject $r.Row (Get-ChatqProjectScope $projA))) "$($r.Rule) $($r.Row.Group)"
+Check 'no match: a guess from this project only' ($r.Tier -eq 'nomatch' -and (Test-ChatInProject $r.Row (Get-ChatProjectScope $projA))) "$($r.Rule) $($r.Row.Group)"
 Check 'no match never reaches the nested sibling slug' ($r.Row.Id -ne $idMob)
 $r = Resolve-ChatqTarget 'Mobile only chat'
 Check 'a title only in another project is found there' ($r.Row.Id -eq $idMob -and $r.Wide) "$($r.Rule) wide=$($r.Wide)"
@@ -328,7 +384,7 @@ $esc = [System.Management.Automation.Language.CodeGeneration]::EscapeSingleQuote
 Check 'completion quotes a typographic apostrophe' ($null -ne [scriptblock]::Create("'$esc'"))
 # a profile with StrictMode on: dot-source there, then only what a user types
 $exe = (Get-Process -Id $PID).Path
-$probe = "Set-StrictMode -Version Latest; `$ErrorActionPreference = 'Stop'; try { . '$(Join-Path $sb 'tool\VS-code-chat-manager.ps1')'; Set-Location -LiteralPath '$projA'; chatq plugin -WhatIf *> `$null; chatqlist *> `$null; chatqlog 1 *> `$null; `$r = & `$script:ChatqTitleCompleter 'chatq' 'Target' 'Pars'; 'ok' } catch { 'threw: ' + `$_.Exception.Message }"
+$probe = "Set-StrictMode -Version Latest; `$ErrorActionPreference = 'Stop'; try { . '$(Join-Path $sb 'tool\VS-code-chat-manager.ps1')'; Set-Location -LiteralPath '$projA'; chatq plugin -WhatIf *> `$null; chatqlist *> `$null; chatqlog 1 *> `$null; `$r = & `$script:ChatTitleCompleter 'chatq' 'Target' 'Pars' `$null @{}; 'ok' } catch { 'threw: ' + `$_.Exception.Message }"
 $strict = (& $exe -NoProfile -NonInteractive -Command $probe | Select-Object -Last 1)
 Check 'works from a StrictMode Latest session' ($strict -eq 'ok') $strict
 
@@ -444,6 +500,8 @@ Set-ChatqProp $j 'deferUntil' $null; Save-ChatqJob $j
 Invoke-ChatqJob $W (Find-ChatqJob $j.id)
 $j = Find-ChatqJob $j.id
 Check 'an idle live chat runs, with a reload warning' ($j.state -eq 'done' -and $j.result.stale) "$($j.state) stale=$($j.result.stale)"
+$rq = [System.IO.File]::ReadAllText($script:ChatReloadPath, $utf8) | ConvertFrom-Json
+Check 'and a reload offer for the window that holds it' ($rq.kind -eq 'ran' -and $rq.cwd -eq $projA) "$($rq.kind) $($rq.cwd)"
 Remove-Item env:FAKE_AGENTS
 
 # a 529 mid-run, after the prompt reached the chat: queued again as an
@@ -512,12 +570,85 @@ Check 'a second watcher will not start' (((Get-Date) - $t0).TotalSeconds -lt 5)
 $lk.Dispose()
 Remove-Item env:FAKE_RECORD
 
+Section 'find and delete'
+$rows = @(Sync-ChatIndex)
+$provs = (@($rows | ForEach-Object Provider | Sort-Object -Unique)) -join ','
+Check 'the index holds all three providers' ($provs -eq 'claude,codex,copilot') $provs
+$hr = @($rows | Where-Object { $_.Id -eq $cx2Id })
+Check 'a Hangul Codex thread name is read as UTF-8' ($hr.Count -eq 1 -and $hr[0].Title -eq $tHan) "$($hr.Title)"
+$qr = @($rows | Where-Object { $_.Id -eq $idQuote })
+Check 'an escaped Claude title comes back unescaped' ($qr.Count -eq 1 -and $qr[0].Title -eq 'Say "hi" to it') "$($qr.Title)"
+$f = @(chatfind 'Doomed chat one')
+Check 'chatfind by title' ($f.Count -eq 1 -and $f[0].Id -eq $idDoom1) $f.Count
+$f = @(chatfind 'unique prompt phrase zebra')
+Check 'chatfind by prompt text' ($f.Count -eq 1 -and $f[0].Id -eq $idDoom1) $f.Count
+Check 'text past the previews is left to -Deep' (@(chatfind 'needle-deep-xyz').Count -eq 0 -and @(chatfind 'needle-deep-xyz' -Deep).Count -eq 1)
+
+chatrm 'Doomed chat one' -Force *> $null
+Check 'chatrm -Force removes the transcript and its leftovers' (-not (Test-Path -LiteralPath $pDoom1) -and -not (Test-Path -LiteralPath $side) -and
+    -not (Test-Path -LiteralPath (Join-Path $claudeHome "file-history\$idDoom1")) -and -not (Test-Path -LiteralPath (Join-Path $claudeHome "session-env\$idDoom1")))
+$tomb = if (Test-Path -LiteralPath $script:ChatTombPath) { [System.IO.File]::ReadAllText($script:ChatTombPath, $utf8) } else { '' }
+Check 'a tombstone is written and the row leaves the index' ($tomb -like "*$idDoom1*" -and -not @(Get-ChatIndex | Where-Object { $_.Id -eq $idDoom1 }))
+
+$j = New-TestJob 'Doomed chat two' 'keep me'
+chatrm 'Doomed chat two' -Force *> $null
+Check 'a chat with a prompt queued for it is kept' ((Test-Path -LiteralPath $pDoom2) -and (Find-ChatqJob $j.id))
+chatrm 'Doomed chat two' -Force -DropJobs *> $null
+Check '-DropJobs drops the prompt, then deletes' (-not (Test-Path -LiteralPath $pDoom2) -and -not (Find-ChatqJob $j.id))
+
+$r = Resolve-ChatqTarget 'Copilot chat about tests'
+Check 'a Copilot chat is named, then refused' ($r.Error -like '*Copilot*') $r.Error
+$r = Resolve-ChatqTarget 'zzqx nothing like it'
+Check 'a guess is never a Copilot chat' ($r.Row -and $r.Row.Provider -ne 'copilot') "$($r.Row.Provider)"
+
+function Complete([string]$Cmd, [string]$Param, [string]$Word, [hashtable]$Bound = @{}) {
+    @(& $script:ChatTitleCompleter $Cmd $Param $Word $null $Bound)
+}
+Check 'chatq <digits> completes nothing' ((Complete 'chatq' 'Target' '3').Count -eq 0)
+Check 'chatq never offers a Copilot chat' (-not @(Complete 'chatq' 'Target' 'Copilot' | Where-Object { $_.CompletionText -like '*Copilot*' }))
+Check 'chatrm does' (@(Complete 'chatrm' 'Target' 'Copilot' | Where-Object { $_.CompletionText -like '*Copilot chat*' }).Count -eq 1)
+Check 'a subagent chat is not offered' ((Complete 'chatrm' 'Target' 'Hidden sub').Count -eq 0)
+Check '... unless -All is given' ((Complete 'chatfind' 'Text' 'Hidden sub' @{ All = $true }).Count -eq 1)
+Check 'hex completes an id' (@(Complete 'chatrm' 'Target' '2222')[0].CompletionText -eq $idCard)
+Check 'a title that looks like hex still completes' (@(Complete 'chatrm' 'Target' 'dead')[0].CompletionText -eq "'Deadline notes'")
+$sq = @(Complete 'chatq' 'Target' 'Don')[0].CompletionText
+$sqOk = try { (& ([scriptblock]::Create($sq))) -eq $tSmart } catch { $false }
+Check 'a typographic apostrophe is quoted so it survives' $sqOk $sq
+$byId = $false
+Check 'Tab cycling skips a subagent chat' (@(Get-ChatCycleRows 'Hidden sub' ([ref]$byId)).Count -eq 0)
+Check 'chatq cycling skips Copilot, chatrm cycling does not' (@(Get-ChatCycleRows 'Copilot' ([ref]$byId) -Queue).Count -eq 0 -and @(Get-ChatCycleRows 'Copilot' ([ref]$byId)).Count -eq 1)
+Check 'a tail left mid-line comes off a chatq line' (("chatq 'Parser rewrite' (1h) #1/2 -Prompt 'x'" -replace $script:ChatMidTailPattern, '') -eq "chatq 'Parser rewrite' -Prompt 'x'")
+Check 'a zero-width cell is empty, not an error' ((Format-ChatCell 'abc' 0) -eq '' -and (Format-ChatCell 'abcdef' 2) -eq '..')
+Start-ChatGhostWatch
+Check 'no ghost watch inside the background watcher' (-not (Test-ChatGhostWatch))
+
+# one profile line for both halves, and uninstall takes only that
+$PROFILE = Join-Path $sb 'profile.ps1'
+[System.IO.File]::WriteAllLines($PROFILE, [string[]]@('. "C:\x\chatrm\chatrm.ps1"', 'Set-Alias foo bar', '. "C:\x\chatq\chatq.ps1"'))
+chatinstall *> $null
+$pl = @(Get-Content -LiteralPath $PROFILE)
+$me = Join-Path $sb 'tool\VS-code-chat-manager.ps1'
+Check 'one install line replaces chatrm''s and chatq''s' (@($pl | Where-Object { $_ -match $script:ChatProfilePattern }).Count -eq 1 -and
+    ($pl -join "`n").Contains($me) -and $pl -contains 'Set-Alias foo bar') ($pl -join ' | ')
+chatuninstall *> $null
+$pl = @(Get-Content -LiteralPath $PROFILE)
+Check 'uninstall leaves the rest of the profile alone' ($pl.Count -eq 1 -and $pl[0] -eq 'Set-Alias foo bar') ($pl -join ' | ')
+
+# StrictMode again, the way a real shell loads it: not as the watcher, with no
+# queue at all yet, and a stop on the first error
+$sb2 = Join-Path $sb 'strict2'
+$null = New-Item -ItemType Directory -Path $sb2 -Force
+Copy-Item -LiteralPath (Join-Path $root 'VS-code-chat-manager.ps1') -Destination $sb2
+$probe2 = "Remove-Item env:CHATQ_WATCHER -EA SilentlyContinue; Set-StrictMode -Version Latest; `$ErrorActionPreference = 'Stop'; try { . '$(Join-Path $sb2 'VS-code-chat-manager.ps1')'; Set-Location -LiteralPath '$projA'; chatfind Doomed *> `$null; chatindex *> `$null; `$r = & `$script:ChatTitleCompleter 'chatrm' 'Target' 'Pars' `$null @{}; chatqlist *> `$null; chat *> `$null; 'ok' } catch { 'threw: ' + `$_.Exception.Message + ' ' + `$_.InvocationInfo.PositionMessage }"
+$strict2 = (& $exe -NoProfile -NonInteractive -Command $probe2 | Select-Object -Last 1)
+Check 'loads and runs under StrictMode as a normal shell does' ($strict2 -eq 'ok') $strict2
+
 Section 'status and alerts'
 Write-ChatqBoard
 $board = [System.IO.File]::ReadAllText($script:ChatqBoardPath, $utf8)
 Check 'board folds each prompt away' ($board -match '<details><summary>' -and $board -match 'second half please')
-Check 'Hangul counts two cells' ((Get-ChatqCells $tSel) -eq 4)
-Check 'cells clip on a wide character' ((Get-ChatqCells (Format-ChatqCell "$tSel$tSel$tSel" 5)) -eq 5)
+Check 'Hangul counts two cells' ((Get-ChatCells $tSel) -eq 4)
+Check 'cells clip on a wide character' ((Get-ChatCells (Format-ChatCell "$tSel$tSel$tSel" 5)) -eq 5)
 $url = Get-ChatqJoinUrl 'k' 'group.phone' 'chatq x' ($tSel * 400) 1
 Check 'Join URL fits and targets the group' ($url.Length -le 1900 -and $url -match 'deviceId=group\.phone') $url.Length
 $url = Get-ChatqJoinUrl 'k' 'Pixel 8' 't' 'hi' 0

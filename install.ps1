@@ -32,6 +32,6 @@ Write-Host "  downloading VS-code-chat-manager.ps1 -> $chatManagerFile" -Foregro
 Invoke-WebRequest $chatManagerUrl -OutFile $chatManagerFile -UseBasicParsing -ErrorAction Stop
 
 . $chatManagerFile
-chatqinstall
+chatinstall
 
 Remove-Variable chatManagerUrl, chatManagerDir, chatManagerFile -ErrorAction SilentlyContinue

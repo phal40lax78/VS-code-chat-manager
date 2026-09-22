@@ -1,35 +1,189 @@
 <#
-chatq - hold prompts while the usage limit is hit, deliver them when it resets.
+VS-code-chat-manager - find, delete and queue prompts for local AI chats.
 
-The VS Code panel already queues a message sent while Claude is working. What
-it will not do is hold one sent while the subscription limit is exhausted:
-that is refused with "You've hit your session limit" and simply dropped. chatq
-is the queue for that moment. Aim a prompt at any existing chat by title; when
-the limit resets, chatq resumes each chat in turn, sends its prompt, runs it to
-the end, and tells your phone how it went.
+Two tools in one file, sharing one index and one way of picking a chat:
+  chatrm  - find and delete chat transcripts. Claude Code, Copilot Chat and
+            Codex keep every chat on disk and none offers a per-chat delete
+            (claude project purge is per-project; archiving only hides).
+  chatq   - hold prompts while the usage limit is hit and deliver them when it
+            resets. The VS Code panel queues a message sent while Claude is
+            working, but one sent while the subscription limit is exhausted is
+            refused and dropped. Aim a prompt at any existing chat by title;
+            at the reset each chat is resumed in turn, sent its prompt, run to
+            the end, and your phone is told how it went.
 
-INSTALL
+INSTALL   one line
     iex (irm https://raw.githubusercontent.com/phal40lax78/VS-code-chat-manager/main/install.ps1)
-  or, with the file already on disk:
+  or two, with the file already on disk - and the path need not be typed
     . "$HOME\Tools\VS-code-chat-manager\VS-code-chat-manager.ps1"
-    chatqinstall
-  The leading dot matters: `. file.ps1` loads the commands into this shell,
-  `& file.ps1` runs them into a scope that is thrown away. Same as chatrm.
+    chatinstall
+
+  To get that first line right without typing a path at all: type a dot and a
+  space, then drag the .ps1 out of Explorer and drop it on the window - or
+  shift+right-click it there, "Copy as path", and paste. Enter, then chatinstall.
+
+  Point it at the .ps1 itself, never the folder holding it. A folder gives "The
+  term '...' is not recognized", because a folder is not a command - the filename
+  is the part that gets left off. Quotes only start to matter once the path has a
+  space in it, and "Copy as path" supplies them either way.
+
+  The leading dot matters as much as the path does. `. file.ps1` loads the
+  commands into the shell you are standing in; `& file.ps1`, or double-clicking
+  the file, runs it and throws every command away again as it exits. It notices
+  that itself and prints the line you meant to type, so a shell is never left
+  silently empty - though a double-clicked window closes too fast to read it.
+
+  Open a new terminal and type chat.
+
+  chatinstall writes the profile line itself - the script knows where it is, so
+  the path is only ever typed once. It calls Unblock-File for you on Windows,
+  makes the profile if there is none, and backs it up to $PROFILE.bak first.
+  Run it again after moving the file: it replaces the old line instead of leaving
+  one that loads nothing and says nothing about it. -Force rewrites regardless.
+  If even that first line will not run, the execution policy is Restricted -
+  Set-ExecutionPolicy -Scope CurrentUser RemoteSigned, once, Windows only.
+
+  One file, no modules, no dependencies. It runs from anywhere - only data/ sits
+  beside it - but a folder of its own that no other tool owns is the one to pick,
+  hence ~/Tools/VS-code-chat-manager above. Not .claude, .codex or .vscode: those
+  belong to the tools named after them, which rewrite them on update and clear
+  them on reinstall, and would take the index with them. Not a folder shared with
+  other scripts either, where a second data/ would land on top of this one.
+  Moving it later is fine - move data/ with it and re-run chatinstall, which
+  repoints the profile line rather than leaving a dead one. $PROFILE is per host:
+  Documents\WindowsPowerShell for 5.1, Documents\PowerShell for pwsh, and a
+  redirected Documents folder moves both - so install once in each shell you use.
+  Do not copy data/chat-index.csv - it holds absolute paths from the old machine
+  and rebuilds itself on the first search (~30s).
 
 COMMANDS
-    chatq <title|id> [-Prompt s]     queue a prompt for that chat; no -Prompt
-                                     opens an editor tab to write it in
-    chatq <title> -Continue          queue "continue" for a chat the limit cut off
-    chatq <n>                        open queued prompt n in the editor
-    chatqlist [-Board] [-All]        what is queued, when it sends, what ran
-    chatqrm <n|id> [-Force]          drop a job (-Force cancels a running one)
-    chatqrun [<n>] [-Now] [-Stop]    requeue n / skip the wait / stop the watcher
-    chatqlog <n> [-Raw]              what a run did
+    chatfind "text" [-Deep] [-All] [-AllProjects] [-Provider codex,copilot]
+    chatrm <id|prefix> [...]       unambiguous - deletes outright
+    chatrm "<title>" [-Force]      walk the matches, confirm; -Force takes all
+    chatrm ... -DropJobs           also drop prompts queued for that chat
+    chatclean                      ghost chats (no messages, < 64 KB)
+    chatproviders / chatindex      what was found / rebuild the index
+    chatq <title|id> [-Prompt s]   queue a prompt for that chat; no -Prompt
+                                   opens an editor tab to write it in
+    chatq <title> -Continue        queue "continue" for a chat the limit cut off
+    chatq <n>                      open queued prompt n in the editor
+    chatqlist [-Board] [-All]      what is queued, when it sends, what ran
+    chatqrm <n|id> [-Force]        drop a job (-Force cancels a running one)
+    chatqrun [<n>] [-Now] [-Stop]  requeue n / skip the wait / stop the watcher
+    chatqlog <n> [-Raw]            what a run did
     chatqnotify -ApiKey k -Device d  phone alerts through Join; -Test sends one
-    chatqinstall / chatquninstall    add to, or drop from, your profile
-    chatq                            cheat sheet and the queue
+    chatinstall / chatuninstall    add to, or drop from, your profile
+    chat                           cheat sheet
 
-PICKING THE CHAT   decided when you queue, so you see it while you are here
+  chatfind emits objects:  chatfind commit | Select Provider,Title,Id,Age
+
+SCOPE
+  Titles match chats belonging to the directory you are standing in - Claude by
+  its project slug, Copilot and Codex by the folder name - so a sibling repo
+  never answers for this one. Those slugs nest (...-src-app is a prefix of
+  ...-src-app-Mobile), so the test is exact rather than a prefix, and
+  case-insensitive because the drive letter's case varies. Tab is scoped the
+  same way, or it would offer chats chatrm then refused to match.
+  -AllProjects widens it. Ids skip it - one id is one chat, wherever it lives.
+  Standing somewhere that is no project at all narrows nothing.
+
+TAB
+    chatrm gitign<Tab>     chatrm 'Gitignore file' (21d) #1/2
+    (down)                 chatrm 'Gitignore rules' (5d) #2/2
+    chatrm "gitign<Tab>    chatrm 'Gitignore file' (21d) #1/2
+
+  Tab fills in the argument - the whole of it, not the word under the cursor.
+  Everything typed after the command is replaced by one quoted title, so
+  quoting it yourself changes nothing: a leading " or ' is dropped before
+  matching and the title always comes back in single quotes. No quote is left
+  to close, and no half-typed word to finish by hand.
+  Tab/down next, Shift+Tab/up previous, Enter runs it, Ctrl+Space the full
+  list. Prefix match on the whole argument, spaces and all; widens to contains
+  when nothing starts with it; hex matches ids. Arrows stay history unless a
+  run is live, and editing the line ends the run.
+  Opt out: $ChatNoKeyBindings = $true before the dot-source.
+
+  Enter strips "(21d) #1/2" before running - and strips it on any chatrm or
+  chatfind line, not only a live run, because it survives an edit. "#1/2" alone
+  was a comment and safe to leave; "(21d)" is not, PowerShell would run it.
+
+  The buffer is rewritten because nothing else can be drawn from a key handler:
+  PSReadLine's reader already owns the keyboard, so a pane of our own never
+  gets a keystroke.
+
+PICKING
+  One line everywhere - Tab, one match, several matches all look the same, in
+  the same colours (read from PSReadLine, so it follows your theme):
+    chatrm 'UI zoom in/out function' (9d) #1/2
+    chatrm 'Zoom in/out functions' (3d) #2/2
+  Enter deletes what is on screen, at once: no detail dump, no confirmation.
+  Esc backs out. Two chats can share a title AND an age - only then does the
+  line add the project and size, since nothing else would separate them.
+
+  That is for a title you typed in full. Titles match on substring, so one hit
+  is not the same as the right hit - chatrm Haiku matched 'Haiku ChatGPT Opus
+  Astra'. Typing part of a title is a search, and a search must not delete, so:
+  Enter fills the match in the way Tab would rather than running, and pressing
+  it again deletes the title now on screen. Where no key handler can reach -
+  a script, -NoProfile, no VT - the same case asks
+    delete permanently?  y / Enter = yes,  n / Esc = no
+  -Force skips all of it, and an id never goes near this: an id is exact.
+  chatclean uses a checkbox list (space toggle, a all) so ghosts go in one pass.
+  Redraws use escape sequences: under VS Code's pseudo-console CursorPosition
+  is accepted and ignored. No VT -> numbered list and a typed y/N.
+
+GHOSTS
+  A chat still listed in the panel is one the window is tracking, and it
+  flushes session state to disk when it reloads or closes. That recreates a
+  chat deleted minutes earlier as a stub - ai-title, mode, atis-latch, no
+  messages, and a brand new creation time, so it is a fresh write and not a
+  failed delete. Archived chats are filtered out of that list, never tracked,
+  and stay deleted first time.
+  That write happens once. After the reload the window rebuilds its list from
+  disk and is no longer holding the session, which is why deleting a second
+  time always worked. So it is watched for rather than waited out: a
+  FileSystemWatcher on newly created .jsonl files takes the rewrite back the
+  moment it lands, with no second command to run. The deletion is written down
+  too - data/rewritten.txt - as the backstop for shells that were not open at
+  the time, swept by the next chat command.
+  Either path only removes a file that is still a stub, so resuming that
+  session for real ends it. Tombstones expire after 7 days.
+  Deleting can also simply fail - Windows will not remove a file another
+  process holds open. That prints LOCKED and is not counted as deleted.
+
+SPEED
+  Search and completion run off data/chat-index.csv next to this script; a file
+  is re-read only on size/mtime change. ~30s first build, ~1.5s after.
+  chatindex -Force rebuilds.
+
+PROVIDERS   one entry each in $script:ChatProviders - Discover/Describe/Extras
+    claude   <config>/projects/<slug>/<uuid>.jsonl. Title: custom-title /
+             ai-title line, else sidecar custom-title.json, else first prompt.
+             Extras: sidecar dir, file-history/<id>, session-env/<id>.
+    copilot  <Code user>/workspaceStorage/<hash>/chatSessions/<uuid>.json, where
+             <Code user> is %APPDATA%/Code/User on Windows, ~/Library/Application
+             Support/Code/User on macOS and ~/.config/Code/User on Linux.
+             customTitle, requests[].message.text. Extras: chatEditingSessions/<id>.
+    codex    ~/.codex/sessions/YYYY/MM/DD/rollout-<iso>-<uuid>.jsonl. Title:
+             thread_name in ~/.codex/session_index.jsonl, which is the name the
+             panel lists; else first real prompt, IDE and AGENTS.md preambles
+             filtered.
+  CLAUDE_CONFIG_DIR and CODEX_HOME are honoured.
+
+NOTES
+  Transcripts are opened FileShare.ReadWrite+Delete. Codex holds every rollout
+  open for the life of the window, so a plain read throws on all of them and no
+  Codex chat is seen at all. Deleting one a live window still holds fails, and
+  is reported LOCKED - close the window.
+  Permanent, no recycle bin. Age = last real message; Touched = mtime, which is
+  what the GUIs show (titles and resumes bump it). Lists are cached until
+  Developer: Reload Window. hiddenSessionIds (the archive) is never touched.
+  Windows PowerShell 5.1 or pwsh 7; macOS and Linux need pwsh 7. Only Windows
+  holds a file against deletion, so LOCKED is a Windows-only guard - elsewhere
+  unlinking a transcript a live window still has open simply succeeds, and that
+  window goes on writing to a file no longer on disk.
+
+QUEUE: PICKING THE CHAT   decided when you queue, so you see it while here
   An id is that chat. Otherwise the title is matched in this project first -
   exact, then contains, then every word you typed - and in every project only
   when this one has no match. Nothing matched at all: the candidates are every
@@ -37,9 +191,10 @@ PICKING THE CHAT   decided when you queue, so you see it while you are here
   were active within 5 hours of it (one limit window), and then the most
   relevant one does: character-bigram cosine of what you typed and the prompt
   against each chat's title and prompts. Pure PowerShell, no model call, the
-  same answer every time, Hangul and English alike.
+  same answer every time, Hangul and English alike. A Copilot chat is found
+  but refused: no CLI can resume one headless.
 
-WHEN IT RUNS
+QUEUE: WHEN IT RUNS
   A background watcher (one per machine, a hidden PowerShell) reads when the
   limit resets from the record Claude writes into the transcript it cut off
   ("quotaLimits": status rejected, resetsAt), wakes a minute after, and first
@@ -54,31 +209,2418 @@ WHEN IT RUNS
   anyway every 15 minutes in case the page lags.
 
 FILES   everything in data/ beside this script, nothing anywhere else
+    chat-index.csv                         what search and Tab run off
+    rewritten.txt                          tombstones for the ghost watch
+    reload-request                         read by the extension in extension/
     queue/<id>.json + "#<n> <title>.md"   one job, its prompt (edit it freely)
     logs/<id>.jsonl                        the raw run
     queue.md                               live board - open it, Ctrl+Shift+V
     config.json                            Join key, DPAPI-protected on Windows
-    chat-index.csv                         what Tab completes from
 #>
 
-# Bump this in the same commit that changes behaviour - chatqinstall compares it
-# against data/version.txt to say whether a reinstall actually landed anything.
-$script:ChatqVersion = '0.1.0'
+# Bump this in the same commit that changes behaviour - chatinstall compares it
+# against data/version.txt to say whether a reinstall actually landed anything,
+# and raw.githubusercontent.com serves a stale copy for minutes after a push, so
+# "updated" vs "unchanged" is the only way to tell a real upgrade from the CDN
+# handing back what you already had.
+$script:ChatVersion = '0.2.0'
 
-$script:ChatqPreview = 3
-$script:ChatqClaudeHome = if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { Join-Path $HOME '.claude' }
-$script:ChatqCodexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $HOME '.codex' }
-# $IsMacOS/$IsWindows exist only on pwsh 6+; reading an undefined variable
-# throws under StrictMode, and this file is dot-sourced into whatever session
-# the user already has. Get-Variable answers without touching it.
-$script:ChatqIsMac = [bool](Get-Variable -Name IsMacOS -ValueOnly -EA SilentlyContinue)
+$script:ChatPreview = 3
+$script:ChatClaudeHome = if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { Join-Path $HOME '.claude' }
+$script:ChatCodexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $HOME '.codex' }
+# $IsMacOS exists only on pwsh 6+. On 5.1 it is undefined, and under StrictMode
+# reading an undefined variable throws outright rather than yielding $false -
+# this file is dot-sourced into whatever session the user already has, so it
+# cannot assume strict mode is off. Get-Variable answers without touching it.
+$script:ChatIsMac = [bool](Get-Variable -Name IsMacOS -ValueOnly -EA SilentlyContinue)
+
+# VS Code's user dir moves per platform: APPDATA on Windows, Application Support
+# on macOS, XDG on Linux. Without the middle branch a Mac falls to the Linux path
+# and the copilot provider quietly finds nothing at all. CHAT_CODE_USER points
+# it somewhere else - the tests and the demo use it so no real chat is read.
+$script:ChatCodeUser =
+if ($env:CHAT_CODE_USER) { $env:CHAT_CODE_USER }
+elseif ($env:APPDATA) { Join-Path $env:APPDATA 'Code\User' }
+elseif ($script:ChatIsMac) { Join-Path $HOME 'Library/Application Support/Code/User' }
+else { Join-Path $HOME '.config/Code/User' }
+$script:ChatWorkspaceNames = @{}
+$script:ChatIndexPath = Join-Path (Join-Path $PSScriptRoot 'data') 'chat-index.csv'
+$script:ChatTombPath = Join-Path (Join-Path $PSScriptRoot 'data') 'rewritten.txt'
+# what the last chatinstall put in the profile. The file gets overwritten by an
+# update, so its own version says what just landed and this says what it replaced.
+$script:ChatVersionPath = Join-Path (Join-Path $PSScriptRoot 'data') 'version.txt'
+# read by the optional VS Code extension in extension/, which is the only thing
+# able to run reloadWindow - no CLI flag, URL or toast button can reach it
+$script:ChatReloadPath = Join-Path (Join-Path $PSScriptRoot 'data') 'reload-request'
+
+# Caches and flags read before anything sets them. This file is dot-sourced
+# into whatever session the user already has, and under Set-StrictMode
+# -Version Latest reading an unset variable throws - at load, or inside a key
+# handler, which then leaves the key dead. Every command also turns StrictMode
+# off for itself; these cover everything that runs outside one.
+$script:ChatIndexStamp = $null
+$script:ChatIndexCache = @()
+$script:ChatCodexNames = $null
+$script:ChatCodexNamesAt = 0
+$script:ChatColors = $null
+$script:ChatGhostWatcher = $null
+$script:ChatNoIndex = $false
+$script:ChatArrowWas = @{}
+# set by the tests: a FileSystemWatcher event firing between their statements
+# would delete fixtures out from under them
+$script:ChatNoGhostWatch = $false
+
+#region index -----------------------------------------------------------------
+# Reading 2000+ transcripts takes ~30s, so nothing does it twice. The index
+# holds everything a search needs - title, group, previews, last activity - and
+# a file is only re-read when its size or mtime changed. Searches and tab
+# completion both run off it.
+
+$script:ChatIndexSep = [char]0x1F   # unit separator: never appears in prompt text
+
+function Get-ChatIndex {
+    # CSV, not JSON: ConvertTo-Json on a few thousand rows costs tens of seconds.
+    # Kept in memory too, so repeated Tab presses re-parse nothing.
+    if (-not (Test-Path -LiteralPath $script:ChatIndexPath)) { return @() }
+    $stamp = try {
+        $fi = [System.IO.FileInfo]::new($script:ChatIndexPath)
+        "$($fi.LastWriteTimeUtc.Ticks):$($fi.Length)"
+    }
+    catch { $null }
+    if ($stamp -and $stamp -eq $script:ChatIndexStamp) { return $script:ChatIndexCache }
+    try {
+        $rows = @(Import-Csv -LiteralPath $script:ChatIndexPath | ForEach-Object {
+                [pscustomobject]@{
+                    Provider = $_.Provider
+                    Path     = $_.Path
+                    Size     = [int64]$_.Size
+                    Mtime    = [int64]$_.Mtime
+                    Id       = $_.Id
+                    Title    = $_.Title
+                    Titled   = $_.Titled
+                    Group    = $_.Group
+                    Hidden   = $_.Hidden -eq 'True'
+                    When     = $_.When
+                    First    = @($_.First -split $script:ChatIndexSep | Where-Object { $_ })
+                    Last     = @($_.Last -split $script:ChatIndexSep | Where-Object { $_ })
+                }
+            })
+        $script:ChatIndexCache = $rows
+        $script:ChatIndexStamp = $stamp
+        return $rows
+    }
+    catch { return @() }
+}
+
+function Save-ChatIndex {
+    param([object[]]$Rows)
+    try {
+        $dir = Split-Path $script:ChatIndexPath -Parent
+        if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+        $Rows | ForEach-Object {
+            [pscustomobject]@{
+                Provider = $_.Provider; Path = $_.Path; Size = $_.Size; Mtime = $_.Mtime
+                Id = $_.Id; Title = $_.Title; Titled = $_.Titled; Group = $_.Group
+                Hidden = $_.Hidden; When = $_.When
+                First = (@($_.First) -join $script:ChatIndexSep)
+                Last = (@($_.Last) -join $script:ChatIndexSep)
+            }
+        } | Export-Csv -LiteralPath $script:ChatIndexPath -NoTypeInformation -Encoding UTF8
+    }
+    catch {}
+}
+
+function Remove-ChatIndexRow {
+    # A deleted chat has to leave the index too. Without this Tab went on
+    # completing a title whose transcript was gone, and the search behind it
+    # then found nothing - so the completion led straight to "no chat titled
+    # like that". The index is what Tab reads; deleting the file is only half.
+    #
+    # Rewriting the CSV is also what drops the in-memory copy: Get-ChatIndex
+    # caches against the file's mtime and length, and Save-ChatIndex leaves the
+    # stamp alone, so the next read sees a new stamp and re-parses.
+    param([string]$Path)
+    try {
+        if (-not $Path -or -not (Test-Path -LiteralPath $script:ChatIndexPath)) { return }
+        $rows = @(Get-ChatIndex)
+        if (-not $rows) { return }
+        # -ne on paths is case-insensitive, which is what Windows needs
+        $keep = @($rows | Where-Object { $_.Path -ne $Path })
+        if ($keep.Count -eq $rows.Count) { return }
+        Save-ChatIndex $keep
+    }
+    catch {}
+}
+
+function Sync-ChatIndex {
+    # returns the index rows for $Provider, re-reading only what changed
+    param([string[]]$Provider, [switch]$Force)
+    # before indexing, so a chat the window wrote back never gets indexed
+    Clear-ChatTombstones
+    $names = if ($Provider) { $Provider } else { @($script:ChatProviders.Keys) }
+    $cached = @(Get-ChatIndex)
+    $old = @{}
+    foreach ($r in $cached) {
+        if (-not $r.Path) { continue }
+        if ($Force -and $names -contains $r.Provider) { continue }
+        $old[$r.Path] = $r
+    }
+
+    $rows = [System.Collections.Generic.List[object]]::new()
+    $fresh = 0
+    $reused = 0
+    foreach ($name in $names) {
+        $p = $script:ChatProviders[$name]
+        if (-not $p) { Write-Warning "unknown provider '$name'"; continue }
+        foreach ($file in @(& $p.Discover)) {
+            $hit = $old[$file.FullName]
+            if ($hit -and $hit.Size -eq $file.Length -and $hit.Mtime -eq $file.LastWriteTimeUtc.Ticks) {
+                $rows.Add($hit)     # unchanged since last time
+                $reused++
+                continue
+            }
+            $rec = & $p.Describe $file
+            if (-not $rec) { continue }
+            $fresh++
+            $rows.Add([pscustomobject]@{
+                    Provider = $name
+                    Path     = $file.FullName
+                    Size     = $file.Length
+                    Mtime    = $file.LastWriteTimeUtc.Ticks
+                    Id       = $rec.Id
+                    Title    = $rec.Title
+                    Titled   = $rec.TitleSource
+                    Group    = $rec.Group
+                    Hidden   = [bool]$rec.Hidden
+                    When     = $rec.When.ToString('o')
+                    First    = @($rec.First)
+                    Last     = @($rec.Last)
+                })
+        }
+    }
+    # only rewrite when something actually moved - the write is the expensive part
+    $others = @($cached | Where-Object { $names -notcontains $_.Provider })
+    $stale = ($reused + $others.Count) -ne $cached.Count
+    if ($fresh -or $stale) {
+        # silently: "new or changed" counts any transcript whose mtime moved,
+        # which includes every session merely being typed in right now, so the
+        # number read as "you made 4 chats" when nobody made any
+        Save-ChatIndex @($others + $rows.ToArray())
+    }
+    return $rows.ToArray()
+}
+
+function chatindex {
+    <#
+    .SYNOPSIS
+    Rebuild the chat index that searches and tab completion run off.
+    .DESCRIPTION
+    Normally unnecessary: every chatfind refreshes the index incrementally,
+    re-reading only transcripts whose size or mtime changed. Use -Force to
+    discard what is cached and read every transcript again.
+    #>
+    param([string[]]$Provider, [switch]$Force)
+    Set-StrictMode -Off
+    $rows = Sync-ChatIndex -Provider $Provider -Force:$Force
+    $names = if ($Provider) { $Provider } else { @($script:ChatProviders.Keys) }
+    Write-Host "indexed $($rows.Count) chats from: $($names -join ', ')"
+}
+
+#endregion
+
+#region generic helpers -------------------------------------------------------
+
+function Get-ChatAge {
+    param([datetime]$When)
+    $s = ([datetime]::Now - $When).TotalSeconds
+    if ($s -lt 60) { return 'now' }
+    if ($s -lt 3600) { return "$([math]::Floor($s / 60))m" }
+    if ($s -lt 86400) { return "$([math]::Floor($s / 3600))h" }
+    if ($s -lt 2592000) { return "$([math]::Floor($s / 86400))d" }
+    if ($s -lt 31536000) { return "$([math]::Floor($s / 2592000))mo" }
+    return "$([math]::Floor($s / 31536000))y"
+}
+
+function Format-ChatMessages {
+    param([string[]]$Messages, [int]$Width = 100, [string]$Indent = '          ')
+    if (-not $Messages) { return '' }
+    ($Messages | ForEach-Object {
+        $t = $_.Substring(0, [Math]::Min($Width, $_.Length))
+        if ($_.Length -gt $Width) { $t += '...' }
+        $t
+    }) -join "`n$Indent"
+}
+
+function Format-ChatTitle {
+    param([string]$Text, [int]$Width = 60)
+    if (-not $Text) { return '(empty)' }
+    $t = ($Text -replace '\s+', ' ').Trim()
+    if ($t.Length -gt $Width) { $t = $t.Substring(0, $Width).TrimEnd() + '...' }
+    return $t
+}
+
+function Test-ChatNoise {
+    # prompts that are machinery, not something the user typed
+    param([string]$Text)
+    $Text.StartsWith('<') -or $Text.StartsWith('Caveat') -or $Text -like '*system-reminder*' -or
+    $Text -like '`[Request interrupted*'
+}
+
+function Select-ChatDistinctRun {
+    # drop consecutive repeats - Codex re-injects the same prompt every turn
+    param([string[]]$Texts)
+    $out = [System.Collections.Generic.List[string]]::new()
+    $prev = $null
+    foreach ($t in $Texts) {
+        # compare on a normalized prefix: re-injections differ in punctuation
+        $key = ($t -replace '[^\w]', '').ToLowerInvariant()
+        $key = $key.Substring(0, [Math]::Min(80, $key.Length))
+        if ($key -ne $prev) { $out.Add($t) }
+        $prev = $key
+    }
+    # plain array, not comma-wrapped: callers pipe this straight into Select-Object
+    return $out.ToArray()
+}
+
+function Open-ChatRead {
+    # Codex holds every rollout open for the life of the window. OpenRead asks
+    # for FileShare.Read, which collides with that writer and throws, so no
+    # Codex chat ever reached the index - discovery found the files and Describe
+    # then returned null on all of them. Share what the writer holds.
+    param([string]$Path)
+    [System.IO.FileStream]::new($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read,
+        ([System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete))
+}
+
+function Read-ChatAllText {
+    # File::ReadAllText shares no better than OpenRead does
+    param([string]$Path)
+    $fs = Open-ChatRead $Path
+    try {
+        $sr = [System.IO.StreamReader]::new($fs, [System.Text.Encoding]::UTF8)
+        try { return $sr.ReadToEnd() } finally { $sr.Dispose() }
+    }
+    finally { $fs.Dispose() }
+}
+
+function Read-ChatChunk {
+    # head+tail only - transcripts run to megabytes and there are thousands
+    param([string]$Path, [int]$Size = 524288)
+    $fi = [System.IO.FileInfo]::new($Path)
+    try { $fs = Open-ChatRead $Path } catch { return $null }  # can vanish mid-scan
+    try {
+        if ($fi.Length -le 2 * $Size) {
+            $buf = [byte[]]::new($fi.Length)
+            $fs.Read($buf, 0, $buf.Length) | Out-Null
+            return [pscustomobject]@{ Head = [System.Text.Encoding]::UTF8.GetString($buf); Tail = ''; Split = $false }
+        }
+        $hb = [byte[]]::new($Size)
+        $fs.Read($hb, 0, $Size) | Out-Null
+        $tb = [byte[]]::new($Size)
+        $fs.Seek(-$Size, [System.IO.SeekOrigin]::End) | Out-Null
+        $fs.Read($tb, 0, $Size) | Out-Null
+        return [pscustomobject]@{
+            Head  = [System.Text.Encoding]::UTF8.GetString($hb)
+            Tail  = [System.Text.Encoding]::UTF8.GetString($tb)
+            Split = $true
+        }
+    }
+    finally { $fs.Dispose() }
+}
+
+function Get-ChatJsonLines {
+    # index scan for a marker, not a line split + pipeline - that was 10x slower.
+    # several markers may be given: the first one present in the text wins, which
+    # covers writers that emit compact JSON and ones that pad after the colon
+    param([string]$Text, [string[]]$Marker, [int]$Count, [switch]$FromEnd,
+        [string[]]$Skip = @('"tool_result"', '"isMeta":true', 'system-reminder'))
+    $out = [System.Collections.Generic.List[string]]::new()
+    if (-not $Text) { return , @() }
+    $needle = $Marker | Where-Object { $Text.IndexOf($_, [StringComparison]::Ordinal) -ge 0 } | Select-Object -First 1
+    if (-not $needle) { return , @() }
+    $Marker = $needle
+    $pos = if ($FromEnd) { $Text.Length - 1 } else { 0 }
+    while ($out.Count -lt $Count) {
+        $j = if ($FromEnd) { $Text.LastIndexOf($Marker, [Math]::Min($pos, $Text.Length - 1), [StringComparison]::Ordinal) }
+        else { $Text.IndexOf($Marker, $pos, [StringComparison]::Ordinal) }
+        if ($j -lt 0) { break }
+        $s = $Text.LastIndexOf("`n", $j) + 1
+        $e = $Text.IndexOf("`n", $j)
+        if ($e -lt 0) { $e = $Text.Length }
+        $line = $Text.Substring($s, $e - $s)
+        # skip before counting, not after parsing: a chat can have hundreds of
+        # tool-result lines carrying the same marker, which would fill the quota
+        $keep = $line.Length -lt 200000
+        if ($keep) { foreach ($s2 in $Skip) { if ($line -like "*$s2*") { $keep = $false; break } } }
+        if ($keep) {
+            if ($FromEnd) { $out.Insert(0, $line) } else { $out.Add($line) }
+        }
+        $pos = if ($FromEnd) { $s - 1 } else { $e + 1 }
+        if ($FromEnd -and $pos -lt 0) { break }
+        if (-not $FromEnd -and $pos -ge $Text.Length) { break }
+    }
+    return , $out.ToArray()
+}
+
+function Get-ChatTimestampFromText {
+    # the head/tail chunks are already in hand - no second read of the file
+    param($Prompts, [System.IO.FileInfo]$File)
+    foreach ($t in @($Prompts.Tail, $Prompts.Head)) {
+        if (-not $t) { continue }
+        $m = [regex]::Matches($t, '"timestamp":\s*"([^"]+)"')
+        if ($m.Count) {
+            try {
+                return [datetime]::Parse($m[$m.Count - 1].Groups[1].Value,
+                    [System.Globalization.CultureInfo]::InvariantCulture,
+                    [System.Globalization.DateTimeStyles]::RoundtripKind).ToLocalTime()
+            }
+            catch {}
+        }
+    }
+    return $File.LastWriteTime
+}
+
+function Get-ChatLastTimestamp {
+    # the last timestamp sits in the final few KB; ISO-8601, culture-invariant
+    param([string]$Path)
+    $fi = [System.IO.FileInfo]::new($Path)
+    $tailLen = [Math]::Min(65536, $fi.Length)
+    $buf = [byte[]]::new($tailLen)
+    try { $fs = Open-ChatRead $Path } catch { return $fi.LastWriteTime }
+    try {
+        $fs.Seek(-$tailLen, [System.IO.SeekOrigin]::End) | Out-Null
+        $fs.Read($buf, 0, $tailLen) | Out-Null
+    }
+    finally { $fs.Dispose() }
+    $m = [regex]::Matches([System.Text.Encoding]::UTF8.GetString($buf), '"timestamp":\s*"([^"]+)"')
+    if ($m.Count) {
+        return [datetime]::Parse($m[$m.Count - 1].Groups[1].Value,
+            [System.Globalization.CultureInfo]::InvariantCulture,
+            [System.Globalization.DateTimeStyles]::RoundtripKind).ToLocalTime()
+    }
+    return $fi.LastWriteTime
+}
+
+function Get-ChatHeadTailPrompts {
+    # walk head and tail for prompt lines, parse only those, and fall back to the
+    # whole file when one turn is bigger than the chunk and hides every prompt
+    param([string]$Path, [string[]]$Marker, [scriptblock]$Parse, [int]$Count = $script:ChatPreview)
+    $chunk = Read-ChatChunk $Path
+    if (-not $chunk) { return $null }
+    $scan = $Count * 4   # over-fetch: some candidates parse out as noise
+    $head = $chunk.Head
+    $tail = if ($chunk.Split) { $chunk.Tail } else { $chunk.Head }
+    $first = @(); $last = @()
+    foreach ($pass in 1, 2) {
+        # assign before piping - these return comma-wrapped arrays
+        $headLines = Get-ChatJsonLines $head $Marker $scan
+        $tailLines = Get-ChatJsonLines $tail $Marker $scan -FromEnd
+        $headTexts = Select-ChatDistinctRun @($headLines | ForEach-Object { & $Parse $_ } | Where-Object { $_ })
+        $tailTexts = Select-ChatDistinctRun @($tailLines | ForEach-Object { & $Parse $_ } | Where-Object { $_ })
+        $first = @($headTexts | Select-Object -First $Count)
+        $last = @($tailTexts | Select-Object -Last $Count)
+        if (-not $chunk.Split -or ($first.Count -gt 0 -and $last.Count -gt 0)) { break }
+        if ($pass -eq 1) {
+            $head = Read-ChatAllText $Path
+            $tail = $head
+            $chunk = [pscustomobject]@{ Head = $head; Tail = ''; Split = $false }
+        }
+    }
+    return [pscustomobject]@{ First = $first; Last = $last; Head = $chunk.Head; Tail = $chunk.Tail }
+}
+
+function Convert-ChatJsonEscaped {
+    # \n, \" and friends, without parsing the document they came from
+    param([string]$Text)
+    if ($Text -notlike '*\*') { return $Text }
+    try { return ('"' + $Text + '"') | ConvertFrom-Json } catch { return $Text }
+}
+
+function Get-ChatJsonString {
+    # index lookup rather than regex: this runs over megabyte-sized text.
+    # both spacings are tried, since writers differ on the space after the colon
+    param([string]$Text, [string]$Key)
+    if (-not $Text) { return $null }
+    $best = -1
+    $len = 0
+    foreach ($anchor in @("`"$Key`":`"", "`"$Key`": `"")) {
+        $i = $Text.LastIndexOf($anchor, [StringComparison]::Ordinal)
+        if ($i -gt $best) { $best = $i; $len = $anchor.Length }
+    }
+    if ($best -lt 0) { return $null }
+    $rest = $Text.Substring($best + $len)
+    if ($rest -match '^((?:[^"\\]|\\.)*)"') { return $Matches[1] }
+    return $null
+}
+
+#endregion
+
+#region provider: claude ------------------------------------------------------
+
+function Read-ClaudePrompt {
+    param([string]$Line)
+    if ($Line -like '*"tool_result"*' -or $Line -like '*"isMeta":true*' -or $Line -like '*system-reminder*') { return $null }
+    try { $o = $Line | ConvertFrom-Json } catch { return $null }
+    if ($o.type -ne 'user') { return $null }
+    $c = $o.message.content
+    if ($c -isnot [string]) { $c = ($c | Where-Object { $_.type -eq 'text' } | ForEach-Object { $_.text }) -join ' ' }
+    if (-not $c) { return $null }
+    $c = $c.Trim()
+    if (Test-ChatNoise $c) { return $null }
+    return ($c -replace '\s+', ' ')
+}
+
+#endregion
+
+#region provider: copilot -----------------------------------------------------
+
+function Get-CopilotWorkspaceName {
+    # workspaceStorage/<hash>/workspace.json points at the folder the chats belong to
+    param([string]$StorageDir)
+    if ($script:ChatWorkspaceNames.ContainsKey($StorageDir)) { return $script:ChatWorkspaceNames[$StorageDir] }
+    $name = Split-Path $StorageDir -Leaf
+    $meta = Join-Path $StorageDir 'workspace.json'
+    if (Test-Path -LiteralPath $meta) {
+        try {
+            $uri = (Get-Content -LiteralPath $meta -Raw | ConvertFrom-Json).folder
+            if ($uri) { $name = Split-Path ([Uri]::UnescapeDataString($uri)) -Leaf }
+        }
+        catch {}
+    }
+    $script:ChatWorkspaceNames[$StorageDir] = $name
+    return $name
+}
+
+#endregion
+
+#region provider: codex -------------------------------------------------------
+
+function Get-CodexThreadNames {
+    # Codex names a thread itself and keeps that name in session_index.jsonl,
+    # never in the rollout. The panel lists the name, so the title has to come
+    # from here - the first prompt was 'test' where the panel said 'Test task'.
+    # Cached against the index mtime: a chat named after dot-source still lands.
+    $path = Join-Path $script:ChatCodexHome 'session_index.jsonl'
+    $f = Get-Item -LiteralPath $path -EA SilentlyContinue
+    $stamp = if ($f) { $f.LastWriteTimeUtc.Ticks } else { 0 }
+    if ($script:ChatCodexNames -and $script:ChatCodexNamesAt -eq $stamp) { return $script:ChatCodexNames }
+    $map = @{}
+    if ($f) {
+        # UTF8 said outright: 5.1 reads a BOM-less file in the ANSI code page,
+        # which turns a Hangul thread name into mojibake
+        foreach ($line in (Get-Content -LiteralPath $path -Encoding UTF8 -EA SilentlyContinue)) {
+            $o = try { $line | ConvertFrom-Json } catch { $null }
+            if ($o.id -and $o.thread_name) { $map[[string]$o.id] = [string]$o.thread_name }
+        }
+    }
+    $script:ChatCodexNames = $map
+    $script:ChatCodexNamesAt = $stamp
+    return $map
+}
+
+function Read-CodexPrompt {
+    param([string]$Line)
+    try { $o = $Line | ConvertFrom-Json } catch { return $null }
+    if ($o.payload.role -ne 'user') { return $null }
+    $t = ($o.payload.content | Where-Object { $_.type -eq 'input_text' } | ForEach-Object { $_.text }) -join ' '
+    if (-not $t) { return $null }
+    $t = $t.Trim()
+    # the IDE wraps the real prompt in a context block
+    $i = $t.IndexOf('## My request for Codex:')
+    if ($i -ge 0) { $t = $t.Substring($i + 24).Trim() }
+    # AGENTS.md preambles and environment blocks are not prompts
+    if ($t.StartsWith('# AGENTS.md') -or $t.StartsWith('<') -or $t.StartsWith('# Context from my IDE')) { return $null }
+    if (Test-ChatNoise $t) { return $null }
+    return ($t -replace '\s+', ' ')
+}
+
+#endregion
+
+#region provider registry -----------------------------------------------------
+
+$script:ChatProviders = [ordered]@{
+
+    claude  = [pscustomobject]@{
+        Root     = (Join-Path $script:ChatClaudeHome 'projects')
+        Discover = {
+            # only projects/<slug>/<uuid>.jsonl - a recursive sweep also drags in
+            # workflow journals and agent transcripts, which are not chats
+            $root = Join-Path $script:ChatClaudeHome 'projects'
+            if (Test-Path -LiteralPath $root) {
+                Get-ChildItem -LiteralPath $root -Directory | ForEach-Object {
+                    Get-ChildItem -LiteralPath $_.FullName -Filter *.jsonl -File |
+                        Where-Object { $_.BaseName -match '^[0-9a-fA-F-]{36}$' }
+                }
+            }
+        }
+        Describe = {
+            param($File)
+            $p = Get-ChatHeadTailPrompts $File.FullName '"type":"user"' ${function:Read-ClaudePrompt}
+            if (-not $p) { return $null }
+            # subagent transcripts are flagged on line 1; the GUI hides them too
+            $nl = $p.Head.IndexOf("`n")
+            $firstLine = if ($nl -ge 0) { $p.Head.Substring(0, $nl) } else { $p.Head }
+            $hidden = $firstLine -like '*"isSidechain":true*'
+            $title = $null; $source = 'first message'
+            foreach ($t in @($p.Tail, $p.Head)) {
+                if (-not $title) { $title = Get-ChatJsonString $t 'customTitle'; if ($title) { $source = 'renamed' } }
+            }
+            if (-not $title) {
+                foreach ($t in @($p.Tail, $p.Head)) {
+                    if (-not $title) { $title = Get-ChatJsonString $t 'aiTitle'; if ($title) { $source = 'auto' } }
+                }
+            }
+            # the raw JSON text: a title holding a quote came through as \"
+            if ($title) { $title = Convert-ChatJsonEscaped $title }
+            if (-not $title) {
+                $sidecar = Join-Path (Join-Path $File.DirectoryName $File.BaseName) 'custom-title.json'
+                if (Test-Path -LiteralPath $sidecar) {
+                    try { $title = (Get-Content -LiteralPath $sidecar -Raw | ConvertFrom-Json).customTitle; if ($title) { $source = 'renamed' } } catch {}
+                }
+            }
+            if (-not $title) { $title = @($p.First)[0] }
+            [pscustomobject]@{
+                Id          = $File.BaseName
+                Title       = Format-ChatTitle $title
+                TitleSource = $source
+                Group       = $File.Directory.Name
+                Hidden      = $hidden
+                When        = Get-ChatTimestampFromText $p $File
+                First       = $p.First
+                Last        = $p.Last
+            }
+        }
+        IsEmpty  = {
+            # a ghost holds only state lines - ai-title / mode / atis-latch - and
+            # is written when the GUI opens a chat whose transcript is gone
+            param($File)
+            if ($File.Length -gt 65536) { return $false }
+            $t = Read-ChatAllText $File.FullName
+            (-not ($t -like '*"type":"user"*')) -and (-not ($t -like '*"type":"assistant"*'))
+        }
+        Extras   = {
+            param($File, $Record)
+            @(
+                (Join-Path $File.DirectoryName $File.BaseName)
+                (Join-Path (Join-Path $script:ChatClaudeHome 'file-history') $File.BaseName)
+                (Join-Path (Join-Path $script:ChatClaudeHome 'session-env') $File.BaseName)
+            )
+        }
+    }
+
+    copilot = [pscustomobject]@{
+        Root     = (Join-Path $script:ChatCodeUser 'workspaceStorage')
+        Discover = {
+            $root = Join-Path $script:ChatCodeUser 'workspaceStorage'
+            if (Test-Path -LiteralPath $root) {
+                Get-ChildItem -LiteralPath $root -Directory | ForEach-Object {
+                    $dir = Join-Path $_.FullName 'chatSessions'
+                    if (Test-Path -LiteralPath $dir) { Get-ChildItem -LiteralPath $dir -Filter *.json -File }
+                }
+            }
+        }
+        Describe = {
+            param($File)
+            # regex over head+tail, not ConvertFrom-Json: these files reach 700 KB
+            # each and the metadata sits after requests[], so the tail carries it
+            $chunk = Read-ChatChunk $File.FullName
+            if (-not $chunk) { return $null }
+            $meta = if ($chunk.Split) { $chunk.Tail } else { $chunk.Head }
+            $rx = [regex]'"message":\s*\{\s*"text":\s*"((?:[^"\\]|\\.)*)"'
+            $grab = {
+                param($text)
+                Select-ChatDistinctRun @($rx.Matches($text) | ForEach-Object {
+                        $t = (Convert-ChatJsonEscaped $_.Groups[1].Value) -replace '\s+', ' '
+                        $t = $t.Trim()
+                        if ($t -and -not (Test-ChatNoise $t)) { $t }
+                    })
+            }
+            $first = @(& $grab $chunk.Head | Select-Object -First $script:ChatPreview)
+            $last = @(& $grab $meta | Select-Object -Last $script:ChatPreview)
+            if (-not $first -and $chunk.Split) {
+                $whole = Read-ChatAllText $File.FullName
+                $first = @(& $grab $whole | Select-Object -First $script:ChatPreview)
+                $last = @(& $grab $whole | Select-Object -Last $script:ChatPreview)
+            }
+            $texts = $first
+            $title = Get-ChatJsonString $meta 'customTitle'
+            if ($title) { $title = Convert-ChatJsonEscaped $title }
+            $source = if ($title) { 'renamed' } else { 'first message' }
+            if (-not $title) { $title = @($texts)[0] }
+            $ms = if ($meta -match '"lastMessageDate":\s*(\d+)') { $Matches[1] }
+            elseif ($meta -match '"creationDate":\s*(\d+)') { $Matches[1] }
+            $when = if ($ms) { [System.DateTimeOffset]::FromUnixTimeMilliseconds([int64]$ms).LocalDateTime } else { $File.LastWriteTime }
+            [pscustomobject]@{
+                Id          = $File.BaseName
+                Title       = Format-ChatTitle $title
+                TitleSource = $source
+                Group       = Get-CopilotWorkspaceName (Split-Path $File.DirectoryName -Parent)
+                Hidden      = $false
+                When        = $when
+                First       = $first
+                Last        = $last
+            }
+        }
+        IsEmpty  = {
+            param($File)
+            if ($File.Length -gt 65536) { return $false }
+            $t = Read-ChatAllText $File.FullName
+            [bool]($t -match '"requests":\s*\[\s*\]')   # panel opened, never used
+        }
+        Extras   = {
+            param($File, $Record)
+            @(Join-Path (Join-Path (Split-Path $File.DirectoryName -Parent) 'chatEditingSessions') $File.BaseName)
+        }
+    }
+
+    codex   = [pscustomobject]@{
+        Root     = (Join-Path $script:ChatCodexHome 'sessions')
+        Discover = {
+            $root = Join-Path $script:ChatCodexHome 'sessions'
+            if (Test-Path -LiteralPath $root) { Get-ChildItem -LiteralPath $root -Filter *.jsonl -Recurse -File }
+        }
+        Describe = {
+            param($File)
+            $p = Get-ChatHeadTailPrompts $File.FullName @('"role":"user"', '"role": "user"') ${function:Read-CodexPrompt}
+            if (-not $p) { return $null }
+            # rollout-<iso>-<uuid>.jsonl - the id is everything after the timestamp
+            $id = if ($File.BaseName -match '([0-9a-fA-F-]{36})$') { $Matches[1] } else { $File.BaseName }
+            $cwd = Get-ChatJsonString $p.Head 'cwd'
+            $group = if ($cwd) { Split-Path ($cwd -replace '\\\\', '\') -Leaf } else { 'codex' }
+            $named = (Get-CodexThreadNames)[$id]
+            $title = if ($named) { $named } else { @($p.First)[0] }
+            [pscustomobject]@{
+                Id          = $id
+                Title       = Format-ChatTitle $title
+                TitleSource = if ($named) { 'thread name' } else { 'first message' }
+                Group       = $group
+                Hidden      = $false
+                When        = Get-ChatTimestampFromText $p $File
+                First       = $p.First
+                Last        = $p.Last
+            }
+        }
+        IsEmpty  = {
+            param($File)
+            if ($File.Length -gt 65536) { return $false }
+            $t = Read-ChatAllText $File.FullName
+            -not ($t -match '"role":\s*"user"')
+        }
+        Extras   = { param($File, $Record) @() }
+    }
+}
+
+function chatclean {
+    <#
+    .SYNOPSIS
+    Delete ghost chats - transcripts that hold no messages at all.
+    .DESCRIPTION
+    Clicking a chat in the VS Code list after its transcript was deleted makes
+    the extension write the session back as a stub: a title line, a mode line,
+    nothing else. Those stubs then show up as ghost rows, and clicking them
+    again makes more. This finds and removes them.
+
+    A file counts as empty only if it is under 64 KB AND contains no user or
+    assistant message at all, so a real chat can never match.
+    .PARAMETER Force
+    Delete every ghost found without asking.
+    .EXAMPLE
+    chatclean
+    #>
+    param([string[]]$Provider, [switch]$Force)
+    Set-StrictMode -Off
+
+    $candidates =@(Sync-ChatIndex -Provider $Provider | Where-Object { -not $_.First })
+    $ghosts = foreach ($row in $candidates) {
+        $p = $script:ChatProviders[$row.Provider]
+        if (-not $p.IsEmpty) { continue }
+        $file = try { Get-Item -LiteralPath $row.Path -EA Stop } catch { continue }
+        if (-not (& $p.IsEmpty $file)) { continue }
+        [pscustomobject]@{
+            Provider = $row.Provider
+            File     = $file
+            Record   = [pscustomobject]@{
+                Id = $row.Id; Title = $row.Title; TitleSource = $row.Titled
+                Group = $row.Group; Hidden = $row.Hidden
+                When = [datetime]::Parse($row.When, [System.Globalization.CultureInfo]::InvariantCulture,
+                    [System.Globalization.DateTimeStyles]::RoundtripKind)
+                First = @(); Last = @()
+            }
+        }
+    }
+    $ghosts = @($ghosts)
+    if (-not $ghosts) { Write-Host 'no ghost chats found'; return }
+
+    $chosen = if ($Force) { $ghosts } else { Select-ChatItems $ghosts "$($ghosts.Count) ghost chats (no messages at all)" }
+    if (-not $chosen) { Write-Host 'nothing deleted'; return }
+    foreach ($g in $chosen) { $null = Remove-ChatSession $g }
+    Write-Host ''
+    Write-ChatGhostAdvice
+}
+
+function chatproviders {
+    <#
+    .SYNOPSIS
+    Show which chat tools were found on this machine, and where they store chats.
+    #>
+    Set-StrictMode -Off
+    $script:ChatProviders.GetEnumerator() | ForEach-Object {
+        $files = @(& $_.Value.Discover)
+        [pscustomobject]@{
+            Provider = $_.Key
+            Present  = Test-Path -LiteralPath $_.Value.Root
+            Chats    = $files.Count
+            MB       = [math]::Round((($files | Measure-Object Length -Sum).Sum) / 1MB, 1)
+            Root     = $_.Value.Root
+        }
+    }
+}
+
+#endregion
+
+#region search and delete -----------------------------------------------------
+
+function Get-ChatProjectScope {
+    # What "this project" means to each tool. Claude names its project folder
+    # after the whole path with every non-alphanumeric turned into a dash;
+    # Copilot and Codex only ever record the leaf folder name.
+    param([string]$Path = $PWD.Path)
+    $full = $Path.TrimEnd('\', '/')
+    [pscustomobject]@{
+        Slug = ($full -replace '[^A-Za-z0-9]', '-')
+        Leaf = Split-Path $full -Leaf
+    }
+}
+
+function Test-ChatInProject {
+    # Exact, never a prefix. Sibling repos nest - the slug for AS-RadarViewer
+    # is a prefix of the one for AS-RadarViewer-Mobile - so -like or StartsWith
+    # would quietly drag the neighbour in, which is the bug this exists to fix.
+    param($Row, $Scope)
+    if (-not $Row.Group) { return $false }
+    if ($Row.Provider -eq 'claude') { return $Row.Group -eq $Scope.Slug }
+    return $Row.Group -eq $Scope.Leaf
+}
+
+function Select-ChatInProject {
+    # Narrow rows to the project being stood in. Returns them untouched when
+    # this directory is not a project any tool knows - otherwise running from
+    # anywhere else would match nothing at all.
+    # -Cwd for the background watcher, whose own folder is wherever the first
+    # chatq happened to be typed, not the job's
+    param([object[]]$Rows, [switch]$AllProjects, [string]$Cwd = $PWD.Path)
+    if ($AllProjects -or -not $Rows) { return $Rows }
+    $scope = Get-ChatProjectScope $Cwd
+    $mine = @($Rows | Where-Object { Test-ChatInProject $_ $scope })
+    if ($mine) { return $mine }
+    return $Rows
+}
+
+function Find-ChatSessions {
+    param(
+        [string]$Needle,
+        [string[]]$Provider,
+        [switch]$Deep,
+        [switch]$All,
+        [switch]$AllProjects,
+        [switch]$TitleOnly
+    )
+    # match against the index; only matches are turned back into file objects
+    $rows = Select-ChatInProject @(Sync-ChatIndex -Provider $Provider) -AllProjects:$AllProjects
+    foreach ($row in $rows) {
+        if ($row.Hidden -and -not $All) { continue }
+        $hit = if ($Deep) {
+            Select-String -Path $row.Path -SimpleMatch -Pattern $Needle -Quiet -EA SilentlyContinue
+        }
+        elseif ($TitleOnly) {
+            # literal, not -like: a completed title may contain [ ] ? or *
+            $row.Title.IndexOf($Needle, [StringComparison]::OrdinalIgnoreCase) -ge 0
+        }
+        else {
+            ($row.Title -like "*$Needle*") -or
+            [bool](@($row.First) + @($row.Last) | Where-Object { $_ -like "*$Needle*" })
+        }
+        if (-not $hit) { continue }
+        $file = try { Get-Item -LiteralPath $row.Path -EA Stop } catch { continue }
+        [pscustomobject]@{
+            Provider = $row.Provider
+            File     = $file
+            Record   = [pscustomobject]@{
+                Id          = $row.Id
+                Title       = $row.Title
+                TitleSource = $row.Titled
+                Group       = $row.Group
+                Hidden      = $row.Hidden
+                When        = [datetime]::Parse($row.When, [System.Globalization.CultureInfo]::InvariantCulture,
+                    [System.Globalization.DateTimeStyles]::RoundtripKind)
+                First       = @($row.First)
+                Last        = @($row.Last)
+            }
+        }
+    }
+}
+
+function chatfind {
+    <#
+    .SYNOPSIS
+    Find local AI chat transcripts by title or message text.
+    .DESCRIPTION
+    Searches Claude Code, Copilot Chat and Codex transcripts on this machine and
+    returns one object per match, so results can be piped. Also refreshes the
+    index that makes chatrm's tab completion instant.
+    .PARAMETER Text
+    Text to look for in the chat title and the first/last user messages.
+    .PARAMETER Provider
+    Limit the search: claude, copilot, codex. Defaults to all of them.
+    .PARAMETER Deep
+    Match anywhere in the transcript rather than title and previews. Slower.
+    .PARAMETER All
+    Include subagent / workflow transcripts, which are hidden by default.
+    .PARAMETER AllProjects
+    Search every project rather than the one this directory belongs to.
+    .EXAMPLE
+    chatfind "brownout"
+    .EXAMPLE
+    chatfind gitignore -Provider copilot | Select-Object Title, Id, Age
+    .LINK
+    chatrm
+    #>
+    param(
+        [Parameter(Position = 0, ValueFromRemainingArguments)][string[]]$Text,
+        [string[]]$Provider,
+        [switch]$Deep,
+        [switch]$All,
+        [switch]$AllProjects
+    )
+    Set-StrictMode -Off
+
+    $needle = $Text -join ' '
+    if (-not $needle) { Write-Error 'usage: chatfind "text" [-Provider claude,copilot,codex] [-Deep] [-All] [-AllProjects]'; return }
+    # emits objects, not formatted text, so results stay pipeable
+    Find-ChatSessions -Needle $needle -Provider $Provider -Deep:$Deep -All:$All -AllProjects:$AllProjects | ForEach-Object {
+        $r = $_.Record
+        [pscustomobject]@{
+            Title    = $r.Title
+            Titled   = $r.TitleSource
+            Provider = $_.Provider
+            Id       = $r.Id
+            Group    = $r.Group
+            Age      = Get-ChatAge $r.When
+            LastAt   = $r.When.ToString('yyyy-MM-dd HH:mm')
+            Touched  = Get-ChatAge $_.File.LastWriteTime   # mtime, as the GUIs show it
+            MB       = [math]::Round($_.File.Length / 1MB, 2)
+            First    = Format-ChatMessages $r.First
+            Recent   = if (($r.First -join "`n") -eq ($r.Last -join "`n")) { '(same)' } else { Format-ChatMessages $r.Last }
+        }
+    }
+}
+
+function Get-ChatProviderForPath {
+    param([string]$Path)
+    foreach ($e in $script:ChatProviders.GetEnumerator()) {
+        if ($e.Value.Root -and $Path.StartsWith($e.Value.Root, [StringComparison]::OrdinalIgnoreCase)) {
+            return $e.Key
+        }
+    }
+    return $null
+}
+
+function Add-ChatTombstone {
+    # Remember what was deleted, because the window will write some of it back
+    param([string]$Path)
+    $dir = Split-Path $script:ChatTombPath -Parent
+    if (-not (Test-Path -LiteralPath $dir)) { [void](New-Item -ItemType Directory -Path $dir -Force) }
+    Add-Content -LiteralPath $script:ChatTombPath -Value ("{0}`t{1}" -f (Get-Date).ToString('o'), $Path)
+    Start-ChatGhostWatch
+}
+
+function Test-ChatGhostWatch {
+    # Asking Get-EventSubscriber for a name that is not registered raises an
+    # error - and -ErrorAction SilentlyContinue hides it but still files it in
+    # $Error. Listing and filtering asks the same question quietly.
+    [bool]@(Get-EventSubscriber -EA SilentlyContinue |
+        Where-Object { $_.SourceIdentifier -eq 'ChatGhostWatch' })
+}
+
+function Start-ChatGhostWatch {
+    # Why running it a second time works: the window flushes a tracked session
+    # to disk once, when it reloads. After that reload it rebuilds its list
+    # from disk and is no longer holding that session, so the next delete
+    # sticks. The write is a single event, not a state to out-wait - so watch
+    # for it instead of polling, and take the file back the moment it lands.
+    #
+    # Created only, and FileName only: transcripts are appended to constantly,
+    # and a rewritten ghost always arrives as a brand new file. That keeps this
+    # silent until the one event that matters.
+    #
+    # Here, not at the call sites: tombstones and the index sweep start it too,
+    # and the background watcher runs both. That process is headless and
+    # outlives the shell - a second watch there would only race this one.
+    if ($env:CHATQ_WATCHER -or $script:ChatNoGhostWatch) { return }
+    if (Test-ChatGhostWatch) { return }
+    $root = Join-Path $script:ChatClaudeHome 'projects'
+    if (-not (Test-Path -LiteralPath $root)) { return }
+
+    $fsw = New-Object System.IO.FileSystemWatcher $root, '*.jsonl'
+    $fsw.IncludeSubdirectories = $true
+    $fsw.NotifyFilter = [System.IO.NotifyFilters]::FileName
+    $fsw.EnableRaisingEvents = $true
+    $script:ChatGhostWatcher = $fsw          # a reference, or it is collected
+
+    # self-contained: this runs in its own runspace, with none of these
+    # functions loaded, and must stay silent so it cannot garble the prompt
+    $null = Register-ObjectEvent -InputObject $fsw -EventName Created `
+        -SourceIdentifier 'ChatGhostWatch' -MessageData $script:ChatTombPath -Action {
+        $tomb = $Event.MessageData
+        $path = $Event.SourceEventArgs.FullPath
+        if (-not (Test-Path -LiteralPath $tomb)) { return }
+        # the same seven days the sweep honours, or an entry the sweep would
+        # have dropped would still be acted on here
+        $cutoff = (Get-Date).AddDays(-7)
+        $wanted = @(Get-Content -LiteralPath $tomb -EA SilentlyContinue | ForEach-Object {
+                $parts = $_ -split "`t", 2
+                if ($parts.Count -eq 2) {
+                    $when = try {
+                        [datetime]::Parse($parts[0], [System.Globalization.CultureInfo]::InvariantCulture,
+                            [System.Globalization.DateTimeStyles]::RoundtripKind)
+                    }
+                    catch { $null }
+                    if ($when -and $when -ge $cutoff) { $parts[1] }
+                }
+            })
+        if ($wanted -notcontains $path) { return }
+        Start-Sleep -Milliseconds 200        # let the writer finish the file
+        $f = Get-Item -LiteralPath $path -EA SilentlyContinue
+        if (-not $f -or $f.Length -gt 65536) { return }
+        # runs in the watcher's own runspace, where the shared-read helpers are
+        # not defined - open the handle inline, sharing what a writer may hold
+        $t = try {
+            $fh = [System.IO.FileStream]::new($f.FullName, [System.IO.FileMode]::Open,
+                [System.IO.FileAccess]::Read,
+                ([System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete))
+            try { [System.IO.StreamReader]::new($fh).ReadToEnd() } finally { $fh.Dispose() }
+        }
+        catch { return }
+        if ($t -like '*"type":"user"*' -or $t -like '*"type":"assistant"*') { return }
+        Remove-Item -LiteralPath $path -Force -EA SilentlyContinue
+    }
+}
+
+function Stop-ChatGhostWatch {
+    if (Test-ChatGhostWatch) { Unregister-Event -SourceIdentifier 'ChatGhostWatch' -EA SilentlyContinue }
+    if ($script:ChatGhostWatcher) {
+        $script:ChatGhostWatcher.EnableRaisingEvents = $false
+        $script:ChatGhostWatcher.Dispose()
+        $script:ChatGhostWatcher = $null
+    }
+}
+
+function Clear-ChatTombstones {
+    # The window does not write a deleted session back straight away - it
+    # flushes session state when it reloads or closes, minutes later, and the
+    # file reappears with a brand new creation time.
+    #
+    # Start-ChatGhostWatch catches that write as it happens, but only while a
+    # shell that loaded this file is open. This is the backstop for the rest:
+    # the deletion is remembered, and taken again the next time any of these
+    # commands runs, in whatever shell.
+    #
+    # Only ever removes a file that is still a stub, so resuming one of these
+    # sessions for real makes it stop being a tombstone's business.
+    if (-not (Test-Path -LiteralPath $script:ChatTombPath)) { return }
+    $keep = [System.Collections.Generic.List[string]]::new()
+    $took = 0
+    $cutoff = (Get-Date).AddDays(-7)
+    foreach ($line in @(Get-Content -LiteralPath $script:ChatTombPath -EA SilentlyContinue)) {
+        $parts = $line -split "`t", 2
+        if ($parts.Count -ne 2) { continue }
+        $when = try {
+            [datetime]::Parse($parts[0], [System.Globalization.CultureInfo]::InvariantCulture,
+                [System.Globalization.DateTimeStyles]::RoundtripKind)
+        }
+        catch { continue }
+        if ($when -lt $cutoff) { continue }        # long gone, stop watching it
+        $path = $parts[1]
+        if (Test-Path -LiteralPath $path) {
+            $file = Get-Item -LiteralPath $path -EA SilentlyContinue
+            $name = Get-ChatProviderForPath $path
+            $prov = if ($name) { $script:ChatProviders[$name] } else { $null }
+            if ($file -and $prov -and $prov.IsEmpty -and (& $prov.IsEmpty $file)) {
+                Remove-Item -LiteralPath $path -Force -EA SilentlyContinue
+                if (-not (Test-Path -LiteralPath $path)) { $took++ }
+            }
+            elseif ($file) { continue }            # it has real content now - leave it, drop it
+        }
+        $keep.Add($line)
+    }
+    if ($keep.Count) {
+        Set-Content -LiteralPath $script:ChatTombPath -Value $keep.ToArray()
+        Start-ChatGhostWatch          # a new shell picks the watch back up
+    }
+    else {
+        Remove-Item -LiteralPath $script:ChatTombPath -Force -EA SilentlyContinue
+        Stop-ChatGhostWatch           # nothing left to watch for
+    }
+    if ($took) {
+        Write-Host "  took back $took chat$(if ($took -ne 1) { 's' }) the window had rewritten" -ForegroundColor DarkGray
+    }
+}
+
+function Test-ChatJobsHold {
+    # $true when a prompt queued by chatq holds this chat and it must stay.
+    # Deleting it would leave a job that resumes a transcript no longer there -
+    # and a claude -p still running into it would write it straight back as a
+    # fragment. -DropJobs drops them first, and waits out a running one.
+    param($Hit, [switch]$DropJobs)
+    $mine = { @(Get-ChatqJobs | Where-Object { $_.sessionId -eq $Hit.Record.Id }) }
+    $held = @(& $mine | Where-Object { $_.state -in 'queued', 'running' })
+    if (-not $held) { return $false }
+    $nums = ($held | ForEach-Object { "#$($_.seq)" }) -join ' '
+    if (-not $DropJobs) {
+        Write-Host "  KEPT     $($Hit.Record.Title)" -ForegroundColor Yellow
+        Write-Host "           $nums queued for it - -DropJobs drops them first" -ForegroundColor DarkGray
+        return $true
+    }
+    foreach ($j in $held) { chatqrm $j.seq -Force }
+    # a cancel is only read by the watcher, every few seconds
+    $until = (Get-Date).AddSeconds(20)
+    while ((Get-Date) -lt $until -and @(& $mine | Where-Object { $_.state -eq 'running' })) {
+        Start-Sleep -Milliseconds 500
+    }
+    if (@(& $mine | Where-Object { $_.state -eq 'running' })) {
+        Write-Host "  KEPT     $($Hit.Record.Title)" -ForegroundColor Yellow
+        Write-Host '           its run has not stopped yet - try again in a moment' -ForegroundColor DarkGray
+        return $true
+    }
+    # a cancelled run ends as a failed job; nothing is left to send, so it goes
+    foreach ($j in @(& $mine)) { chatqrm $j.seq -Force }
+    return $false
+}
+
+function Remove-ChatSession {
+    # Returns $true only if the transcript is actually gone. Windows refuses to
+    # delete a file another process holds open, and Remove-Item reports that as
+    # a non-terminating error - so without the check afterwards this printed
+    # "deleted" for a chat that was still sitting there.
+    param($Hit)
+    $path = $Hit.File.FullName
+    Remove-Item -LiteralPath $path -Force -EA SilentlyContinue
+    foreach ($p in @(& $script:ChatProviders[$Hit.Provider].Extras $Hit.File $Hit.Record)) {
+        if ($p -and (Test-Path -LiteralPath $p)) { Remove-Item -LiteralPath $p -Recurse -Force -EA SilentlyContinue }
+    }
+    if (Test-Path -LiteralPath $path) {
+        Write-Host "  LOCKED   $($Hit.Record.Title)" -ForegroundColor Yellow
+        Write-Host '           still on disk - another process has it open' -ForegroundColor DarkGray
+        return $false
+    }
+    Add-ChatTombstone $path
+    # the index is what Tab completes from, so a row left behind offers a title
+    # whose transcript is already gone
+    Remove-ChatIndexRow $path
+    # the title, not the full row: the row is wider than a narrow panel and wraps
+    Write-Host "  deleted  $($Hit.Record.Title)" -ForegroundColor DarkGray
+    return $true
+}
+
+$script:ChatIdleSeconds = 60
+
+function Get-ChatProjectFiles {
+    # The folders this project's chats live in, not the index rows themselves.
+    # A chat started since the index was built is missing from the rows, and
+    # that is precisely the chat most likely to be running.
+    param([switch]$AllProjects, [string]$Cwd = $PWD.Path)
+    $rows = Select-ChatInProject @(Get-ChatIndex) -AllProjects:$AllProjects -Cwd $Cwd
+    if (-not $rows) { return @() }
+    $dirs = @($rows | ForEach-Object { Split-Path $_.Path -Parent } | Sort-Object -Unique)
+    $out = [System.Collections.Generic.List[object]]::new()
+    foreach ($d in $dirs) {
+        if (-not (Test-Path -LiteralPath $d)) { continue }
+        foreach ($f in @(Get-ChildItem -LiteralPath $d -File -EA SilentlyContinue)) { $out.Add($f) }
+    }
+    return $out
+}
+
+function Test-ChatTranscriptBusy {
+    # Whether a transcript is parked mid-turn. $true mid-turn, $false finished,
+    # $null cannot tell.
+    #
+    # This exists because mtime is blind to the two states that matter most: a
+    # session waiting on a permission prompt, and one sitting inside a long tool
+    # call. Neither writes anything, so both look finished after a minute - and
+    # reloading either one throws away the pending prompt or the answer.
+    # The last record carrying a message says where the turn actually got to.
+    param([string]$Path)
+    if ($Path -notlike '*.jsonl') { return $null }   # Claude's format only
+    $c = Read-ChatChunk -Path $Path -Size 32768
+    if (-not $c) { return $null }
+    $text = if ($c.Split) { $c.Tail } else { $c.Head }
+    # TrimStart the BOM: a chunk taken from the head of a file carries it into
+    # the first line, and U+FEFF is not whitespace, so Trim leaves it there and
+    # ConvertFrom-Json rejects the line
+    $lines = @($text -split "`r?`n" |
+        ForEach-Object { $_.TrimStart([char]0xFEFF).Trim() } |
+        Where-Object { $_ })
+    for ($i = $lines.Count - 1; $i -ge 0; $i--) {
+        $o = try { $lines[$i] | ConvertFrom-Json } catch { $null }
+        # ai-title, mode and atis-latch trail a turn and say nothing about it,
+        # so walk back past them to the last real message
+        if (-not $o -or -not $o.message) { continue }
+        if ($o.type -eq 'assistant') {
+            # tool_use is the agent waiting on a tool - which includes waiting
+            # on you to allow one, or to answer a question it asked
+            return ($o.message.stop_reason -eq 'tool_use')
+        }
+        if ($o.type -eq 'user') { return $true }     # a reply is owed
+        return $null
+    }
+    return $null
+}
+
+function Test-ChatIdle {
+    # $true idle, $false active, $null when it cannot be told - and $null stays
+    # distinct, because "safe to reload" guessed wrong costs someone an answer.
+    param([int]$Seconds = $script:ChatIdleSeconds, [switch]$AllProjects, [string]$Cwd = $PWD.Path)
+    $files = @(Get-ChatProjectFiles -AllProjects:$AllProjects -Cwd $Cwd)
+    if (-not $files) { return $null }
+
+    # first layer: anything written just now is plainly live
+    $cut = (Get-Date).AddSeconds(-$Seconds)
+    foreach ($f in $files) { if ($f.LastWriteTime -gt $cut) { return $false } }
+
+    # second layer: quiet on disk is not the same as finished. Only a recently
+    # touched transcript can still be live, so the rest are not worth opening.
+    $since = (Get-Date).AddHours(-12)
+    foreach ($f in $files) {
+        if ($f.LastWriteTime -lt $since) { continue }
+        if ((Test-ChatTranscriptBusy $f.FullName) -eq $true) { return $false }
+    }
+    return $true
+}
+
+function Wait-ChatIdle {
+    # Blocks the shell on purpose. Printing this from a background runspace is
+    # what garbles the prompt - the ghost watcher stays silent for that reason -
+    # so waiting where the caller can see it is the honest version.
+    param([int]$Seconds = $script:ChatIdleSeconds, [switch]$AllProjects)
+    $safe = '  all project chat is idle - safe to reload now'
+    $state = Test-ChatIdle -Seconds $Seconds -AllProjects:$AllProjects
+    if ($null -eq $state) {
+        # waiting forever on a question that cannot be answered is worse than
+        # saying so, and claiming "safe" here would be a guess wearing a fact
+        Write-Host '  no index - cannot tell whether a chat is active' -ForegroundColor DarkGray
+        return
+    }
+    if ($state) {
+        Write-Host $safe -ForegroundColor Green
+        return
+    }
+    Write-Host "  waiting for project chat to go quiet for ${Seconds}s - Ctrl+C to stop" -ForegroundColor DarkGray
+    while ((Test-ChatIdle -Seconds $Seconds -AllProjects:$AllProjects) -eq $false) {
+        Start-Sleep -Seconds 5
+    }
+    Write-Host $safe -ForegroundColor Green
+}
+
+function Write-ChatReloadRequest {
+    # Left for the extension in extension/, if it is installed. Harmless when it
+    # is not: an unread file in data/. The cwd is what lets each window decide
+    # whether the delete was for its own workspace - so the background watcher
+    # passes the job's folder, never its own. Kind is 'deleted' for chatrm and
+    # 'ran' for a queued prompt that ran into a chat still open in a window.
+    param([string]$Title, [string]$Cwd = (Get-Location).Path, [string]$Kind = 'deleted')
+    try {
+        $dir = Split-Path $script:ChatReloadPath -Parent
+        if (-not (Test-Path -LiteralPath $dir)) {
+            New-Item -ItemType Directory -Path $dir -Force | Out-Null
+        }
+        $json = [ordered]@{
+            id    = [guid]::NewGuid().ToString()
+            kind  = $Kind
+            cwd   = $Cwd
+            title = $Title
+            at    = (Get-Date).ToString('o')
+        } | ConvertTo-Json -Compress
+        # NOT Set-Content -Encoding UTF8: that writes a BOM on 5.1 and
+        # JSON.parse rejects a BOM outright, so the extension would see nothing
+        [System.IO.File]::WriteAllText($script:ChatReloadPath, $json,
+            (New-Object System.Text.UTF8Encoding $false))
+    }
+    catch {}
+}
+
+function Write-ChatGhostAdvice {
+    # Said once, after a delete, and only while a window is up to do it. macOS
+    # runs VS Code as Electron and 'Code Helper (...)', never a bare Code, so the
+    # name has to differ per platform or the advice never prints there at all.
+    param([switch]$WaitForIdle, [switch]$AllProjects, [string]$Title)
+    $procs = if ($script:ChatIsMac) { @('Electron', 'Code Helper*') } else { @('Code') }
+    if (-not @(Get-Process -Name $procs -EA SilentlyContinue).Count) { return }
+    Write-ChatReloadRequest -Title $Title
+    Write-Host 'the session list is cached - reload to see it go:'
+    Write-Host '  Ctrl+Shift+P > Developer: Reload Window'
+    if (Test-ChatGhostWatch) {
+        Write-Host '  the window rewrites it as it reloads; that is watched for and taken back' -ForegroundColor DarkGray
+    }
+    else {
+        Write-Host '  then run any chat command - the window rewrites it as it reloads' -ForegroundColor DarkGray
+    }
+
+    # A reload restarts the extensions, so one taken mid-answer loses that
+    # answer. Nothing out here can reload the window for you - VS Code runs that
+    # command from inside an extension only - so the most this can do is say
+    # whether now is a safe moment.
+    if ($WaitForIdle) { Wait-ChatIdle -AllProjects:$AllProjects; return }
+    switch (Test-ChatIdle -AllProjects:$AllProjects) {
+        $true { Write-Host '  all project chat is idle - safe to reload now' -ForegroundColor Green }
+        $false {
+            Write-Host '  a chat is still active - reload once it finishes' -ForegroundColor Yellow
+            Write-Host '  -WaitForIdle waits and tells you when' -ForegroundColor DarkGray
+        }
+        default { }   # no index to judge by: say nothing rather than guess
+    }
+}
+function Format-ChatRow {
+    param($Hit)
+    $r = $Hit.Record
+    '{0,-52} {1,-8} {2,-28} {3,4} {4,6} MB' -f
+    $r.Title.Substring(0, [Math]::Min(52, $r.Title.Length)),
+    $Hit.Provider,
+    $r.Group.Substring(0, [Math]::Min(28, $r.Group.Length)),
+    (Get-ChatAge $r.When),
+    [math]::Round($Hit.File.Length / 1MB, 2)
+}
+
+function Test-ChatVT {
+    # can the cursor be moved with escape sequences? Absolute CursorPosition is
+    # not usable here: under the pseudo-console VS Code runs, setting it is
+    # accepted and does nothing, so a redrawing list paints a fresh copy of
+    # itself below the last one on every keypress. Relative moves work.
+    if ([Console]::IsInputRedirected) { return $false }
+    try { return [bool]$Host.UI.SupportsVirtualTerminal } catch { return $false }
+}
+
+function Invoke-ChatKeyLoop {
+    # Every picker below is this loop: back up over what was drawn last time,
+    # draw again, read one key. $Paint draws and returns how many lines it
+    # wrote; $OnKey returns nothing to keep going, or @{ Value = ... } to stop
+    # and hand that back. Shared state goes in a hashtable both blocks close
+    # over - a plain variable assigned inside a scriptblock would only ever
+    # change that block's own copy.
+    param([scriptblock]$Paint, [scriptblock]$OnKey)
+    $esc = [char]27
+    $painted = 0
+    while ($true) {
+        if ($painted) { Write-Host "$esc[${painted}A" -NoNewline }
+        $painted = [int](& $Paint)
+        $stop = & $OnKey ([Console]::ReadKey($true))
+        if ($stop) { return $stop.Value }
+    }
+}
+
+# What Format-ChatPickTail writes, anchored, so Enter can take it back off.
+# It has to come off: "#1/3" alone was a comment and harmless to leave, but
+# "(5d)" in front of it is not - PowerShell would run it as an expression.
+$script:ChatTailPattern = '\s*(\([^)]*\))?\s*#\d+/\d+\s*$'
+# The same tail with more typed after it. Narrow on purpose - only an age as
+# Get-ChatAge writes it - so text in a prompt is never mistaken for one.
+$script:ChatMidTailPattern = '\s(?:\((?:now|\d+(?:mo|m|h|d|y))\)\s)?#\d+/\d+(?=\s)'
+
+function Format-ChatPickTail {
+    # The decoration every path shares: the age, then where you are in the run.
+    # Tab puts this straight into the command line, so Enter strips it again
+    # before running - see the Enter handler.
+    param([string]$Age, [int]$Index, [int]$Count)
+    $t = ''
+    if ($Age) { $t = " ($Age)" }
+    return "$t #$Index/$Count"
+}
+
+function Format-ChatWalkRow {
+    # The line Tab leaves on the command line, rebuilt: the command, the full
+    # title, the tail. Walking matches after Enter should look exactly like
+    # walking them before it. Trimmed rather than padded so the tail stays
+    # beside the title, and its width is held back before clipping so a long
+    # title can never push it off the end.
+    param($Hit, [int]$Index, [int]$Count, [int]$Width, [switch]$Ambiguous)
+    $c = Get-ChatSyntaxColor
+    $tail = Format-ChatPickTail (Get-ChatAge $Hit.Record.When) $Index $Count
+    $segments = @(
+        @{ Text = '  chatrm '; Color = $c.Command }
+        @{ Text = "'" + $Hit.Record.Title.Replace("'", "''") + "'"; Color = $c.String }
+    )
+    # Only when title and age are both the same, which the line alone cannot
+    # separate - and Enter deletes on the spot, so they have to be separable.
+    # Project and size together, because two chats in one project can share a
+    # title and an age as well.
+    if ($Ambiguous) {
+        $segments += @{
+            Text  = "  $($Hit.Record.Group) $([math]::Round($Hit.File.Length / 1MB, 2))MB"
+            Color = $c.Param
+        }
+    }
+    # clip across the segments, measuring the text and never the escapes
+    $budget = $Width - (Get-ChatCells $tail)
+    $line = ''
+    $used = 0
+    foreach ($seg in $segments) {
+        if ($used -ge $budget) { break }
+        $piece = Format-ChatCell $seg.Text ($budget - $used) -NoPad
+        $line += $seg.Color + $piece
+        $used += Get-ChatCells $piece
+    }
+    return $line + $c.Comment + $tail + $c.Reset
+}
+
+function Confirm-ChatOne {
+    # One match, and the words typed were only part of its title. Deleting on
+    # that alone is how 'chatrm Haiku' took 'Haiku ChatGPT Opus Astra' with no
+    # prompt at all. Show the whole title and make the answer deliberate.
+    param($Item, [string]$Needle)
+    $width = [Math]::Max(20, $Host.UI.RawUI.WindowSize.Width - 1)
+    Write-Host ''
+    Write-Host "  '$Needle' is part of this title, not all of it:" -ForegroundColor Yellow
+    Write-Host (Format-ChatWalkRow $Item 1 1 $width)
+
+    # No VT means no key loop, and a confirm that only works under VT would
+    # leave the weakest hosts deleting unprompted - the bug in a new costume.
+    if (-not (Test-ChatVT)) {
+        Write-Host ''
+        return ((Read-Host "  delete it permanently? (y/N)").Trim() -match '^(y|yes)$')
+    }
+
+    $esc = [char]27
+    return Invoke-ChatKeyLoop -Paint {
+        Write-Host "  delete permanently?  y / Enter = yes,  n / Esc = no$esc[K"
+        1
+    } -OnKey {
+        param($key)
+        switch ($key.Key) {
+            'Enter' { return @{ Value = $true } }
+            'Escape' { return @{ Value = $false } }
+        }
+        switch ($key.KeyChar) {
+            'y' { return @{ Value = $true } }
+            'Y' { return @{ Value = $true } }
+            'n' { return @{ Value = $false } }
+            'N' { return @{ Value = $false } }
+            'q' { return @{ Value = $false } }
+        }
+    }
+}
+
+function Select-ChatOne {
+    # The same one-line walk Tab does, over the chats a title matched. Enter
+    # takes the one on screen and deletes it, with nothing in between.
+    param([object[]]$Items)
+    $width = [Math]::Max(20, $Host.UI.RawUI.WindowSize.Width - 1)
+    # one match still shows the line, so all three paths look alike - there is
+    # simply nothing to walk. The caller decides whether that one still needs
+    # confirming: an exact title does not, a fragment of one does.
+    if ($Items.Count -eq 1) {
+        Write-Host (Format-ChatWalkRow $Items[0] 1 1 $width)
+        return $Items[0]
+    }
+    if (-not (Test-ChatVT)) { return Select-ChatNumbered $Items -One }
+
+    # no header, no key hints: the counter says there is more than one, and the
+    # keys are the ones Tab already walks with
+    $esc = [char]27
+    # keyed on title AND age, because that pair is all the line shows - only a
+    # pair the counter cannot separate earns the project name
+    $seen = @{}
+    foreach ($it in $Items) {
+        $k = "$($it.Record.Title)|$(Get-ChatAge $it.Record.When)"
+        $seen[$k] = 1 + $(if ($seen.ContainsKey($k)) { $seen[$k] } else { 0 })
+    }
+    $s = @{ I = 0 }
+    return Invoke-ChatKeyLoop -Paint {
+        # no highlight - it is the only line on screen, so nothing needs
+        # marking, and an inverse bar the width of the terminal reads far
+        # heavier than the plain line Tab leaves behind
+        $it = $Items[$s.I]
+        $key = "$($it.Record.Title)|$(Get-ChatAge $it.Record.When)"
+        $row = Format-ChatWalkRow $it ($s.I + 1) $Items.Count $width -Ambiguous:($seen[$key] -gt 1)
+        Write-Host ($row + "$esc[K")
+        1
+    } -OnKey {
+        param($key)
+        $last = $Items.Count - 1
+        switch ($key.Key) {
+            'UpArrow' { $s.I = [Math]::Max(0, $s.I - 1); return }
+            'DownArrow' { $s.I = [Math]::Min($last, $s.I + 1); return }
+            'Enter' { return @{ Value = $Items[$s.I] } }
+            'Escape' { return @{ Value = $null } }
+        }
+        switch ($key.KeyChar) {
+            'k' { $s.I = [Math]::Max(0, $s.I - 1); return }
+            'j' { $s.I = [Math]::Min($last, $s.I + 1); return }
+            'q' { return @{ Value = $null } }
+        }
+    }
+}
+
+function Select-ChatItems {
+    # the same walk, but every chat can be ticked: clearing ghosts is a job you
+    # want to finish in one pass
+    param([object[]]$Items, [string]$Title = 'Select chats to delete')
+    if (-not (Test-ChatVT) -or $Host.Name -notlike '*ConsoleHost*') {
+        return Select-ChatNumbered $Items $Title
+    }
+
+    $width = [Math]::Max(20, $Host.UI.RawUI.WindowSize.Width - 1)
+    $window = [Math]::Min(15, $Items.Count)
+    $s = @{ I = 0; Top = 0; Picked = New-Object bool[] $Items.Count }
+
+    Write-Host "  $Title" -ForegroundColor Cyan
+    Write-Host '  up/down move   space toggle   a all   enter delete   esc cancel' -ForegroundColor DarkGray
+    return Invoke-ChatKeyLoop -Paint {
+        if ($s.I -lt $s.Top) { $s.Top = $s.I }
+        if ($s.I -ge $s.Top + $window) { $s.Top = $s.I - $window + 1 }
+        for ($n = $s.Top; $n -lt $s.Top + $window; $n++) {
+            $mark = if ($s.Picked[$n]) { '[x]' } else { '[ ]' }
+            $line = Format-ChatCell "  $mark $(Format-ChatRow $Items[$n])" $width
+            if ($n -eq $s.I) { Write-Host $line -ForegroundColor Black -BackgroundColor Cyan }
+            else { Write-Host $line }
+        }
+        $count = @($s.Picked | Where-Object { $_ }).Count
+        Write-Host (Format-ChatCell "  $count of $($Items.Count) selected" $width) -ForegroundColor DarkGray
+        $window + 1
+    } -OnKey {
+        param($key)
+        $last = $Items.Count - 1
+        switch ($key.Key) {
+            'UpArrow' { $s.I = [Math]::Max(0, $s.I - 1); return }
+            'DownArrow' { $s.I = [Math]::Min($last, $s.I + 1); return }
+            'Spacebar' { $s.Picked[$s.I] = -not $s.Picked[$s.I]; return }
+            'Enter' { return @{ Value = @(0..$last | Where-Object { $s.Picked[$_] } | ForEach-Object { $Items[$_] }) } }
+            'Escape' { return @{ Value = @() } }
+        }
+        switch ($key.KeyChar) {
+            'k' { $s.I = [Math]::Max(0, $s.I - 1); return }
+            'j' { $s.I = [Math]::Min($last, $s.I + 1); return }
+            'a' {
+                $all = @($s.Picked | Where-Object { $_ }).Count -lt $Items.Count
+                for ($n = 0; $n -le $last; $n++) { $s.Picked[$n] = $all }
+                return
+            }
+            'q' { return @{ Value = @() } }
+        }
+    }
+}
+
+function Select-ChatNumbered {
+    # what both of them fall back to where there is no raw keyboard
+    param([object[]]$Items, [string]$Title, [switch]$One)
+    Write-Host ''
+    if ($Title) { Write-Host "  $Title" -ForegroundColor Cyan }
+    $width = [Math]::Max(20, $Host.UI.RawUI.WindowSize.Width - 1)
+    for ($i = 0; $i -lt $Items.Count; $i++) {
+        Write-Host (Format-ChatCell ('  {0,2}. {1}' -f ($i + 1), (Format-ChatRow $Items[$i])) $width)
+    }
+    if ($One) {
+        $answer = (Read-Host '  which one? (empty=cancel)').Trim()
+        if ($answer -match '^\d+$' -and [int]$answer -ge 1 -and [int]$answer -le $Items.Count) {
+            return $Items[[int]$answer - 1]
+        }
+        return $null
+    }
+    $answer = Read-Host '  delete which? (1,3-5 / a=all / empty=cancel)'
+    if (-not $answer) { return @() }
+    if ($answer.Trim() -eq 'a') { return $Items }
+    $idx = [System.Collections.Generic.List[int]]::new()
+    foreach ($part in ($answer -split '[,\s]+' | Where-Object { $_ })) {
+        if ($part -match '^(\d+)-(\d+)$') { [int]$Matches[1]..[int]$Matches[2] | ForEach-Object { $idx.Add($_ - 1) } }
+        elseif ($part -match '^\d+$') { $idx.Add([int]$part - 1) }
+    }
+    return @($idx | Sort-Object -Unique | Where-Object { $_ -ge 0 -and $_ -lt $Items.Count } | ForEach-Object { $Items[$_] })
+}
+function chatrm {
+    <#
+    .SYNOPSIS
+    Delete a local AI chat transcript, permanently.
+    .DESCRIPTION
+    An id is unambiguous, so it deletes outright. A title can match several
+    chats, so those are listed and walked one by one.
+
+    Titles match on substring, so part of a title is a search, not a choice.
+    A single match found that way is shown in full and asked about before
+    anything goes - and at the prompt, Enter fills the title in the way Tab
+    would instead of running, so the whole of it is on screen before a second
+    Enter acts on it. A title typed in full deletes as it always did, and
+    -Force skips the asking entirely.
+
+    Tab fills in the whole argument - title or id, quoted or not - from the
+    index that chatfind keeps warm; run chatindex to rebuild it.
+    Also removes what the transcript leaves behind - sidecars, file-history and
+    session-env for Claude, chatEditingSessions for Copilot.
+    .PARAMETER Target
+    One or more ids (prefixes are fine), or a chat title.
+    .PARAMETER Provider
+    Limit to claude, copilot or codex. Defaults to all of them.
+    .PARAMETER Force
+    Skip the confirmation prompts in title mode.
+    .PARAMETER AllProjects
+    Match titles from every project rather than the one this directory belongs
+    to. Ids are unambiguous and always reach any project.
+    .PARAMETER WaitForIdle
+    Wait after deleting until nothing in this project's chats has been written
+    for a minute, then say the window is safe to reload. A reload restarts the
+    extensions, so one taken mid-answer loses that answer. It blocks the shell
+    while it waits; Ctrl+C stops it and deletes nothing back.
+    .PARAMETER DropJobs
+    A chat with a prompt queued for it by chatq is kept, and the job named.
+    -DropJobs drops those jobs first - cancelling one that is running and
+    waiting for it to stop - and then deletes.
+    .EXAMPLE
+    chatrm 44e899d3
+    .EXAMPLE
+    chatrm "Review uncommitted changes"
+    .LINK
+    chatfind
+    #>
+    param(
+        [Parameter(Position = 0, ValueFromRemainingArguments)][string[]]$Target,
+        [string[]]$Provider,
+        [switch]$Force,
+        [switch]$AllProjects,
+        [switch]$WaitForIdle,
+        [switch]$DropJobs
+    )
+    Set-StrictMode -Off
+
+    if (-not $Target) { Write-Error 'usage: chatrm <id>... | "<title>" [-Force] [-AllProjects] [-WaitForIdle] [-DropJobs]'; return }
+    $names = if ($Provider) { $Provider } else { @($script:ChatProviders.Keys) }
+    $deleted = 0
+    $lastTitle = ''
+    $byId = -not ($Target | Where-Object { $_ -notmatch '^[0-9a-fA-F]{6,}(-[0-9a-fA-F-]*)?$' })
+
+    # ids are not scoped to the project: an id names exactly one chat, so there
+    # is nothing for the current directory to disambiguate
+    if ($byId) {
+        foreach ($id in $Target) {
+            $found = $false
+            foreach ($name in $names) {
+                $p = $script:ChatProviders[$name]
+                if (-not $p) { continue }
+                foreach ($file in @(& $p.Discover)) {
+                    # substring, not prefix: Codex buries the uuid after a timestamp
+                    if ($file.BaseName -notlike "*$id*") { continue }
+                    $rec = & $p.Describe $file
+                    if (-not $rec) { continue }
+                    $hit = [pscustomobject]@{ Provider = $name; File = $file; Record = $rec }
+                    $found = $true
+                    if (Test-ChatJobsHold $hit -DropJobs:$DropJobs) { continue }
+                    if (Remove-ChatSession $hit) { $deleted++; $lastTitle = $hit.Record.Title }
+                }
+            }
+            if (-not $found) { Write-Warning "no transcript for $id - already deleted, or wrong id" }
+        }
+    }
+    else {
+        $needle = $Target -join ' '
+        $matched = @(Find-ChatSessions -Needle $needle -Provider $Provider -TitleOnly -AllProjects:$AllProjects)
+        if (-not $matched) {
+            $where = if ($AllProjects) { '' } else { ' here - add -AllProjects to look wider' }
+            Write-Warning "no chat titled like '$needle'$where"
+            return
+        }
+
+        # Titles match on substring, so one hit does NOT mean the right hit:
+        # 'Haiku' matched 'Haiku ChatGPT Opus Astra' and, with a single match
+        # taken as consent, deleted it outright. Typing a whole title is a
+        # decision; typing a fragment is a search, and a search must not delete.
+        $exact = $matched.Count -eq 1 -and
+        $matched[0].Record.Title.Equals($needle, [StringComparison]::OrdinalIgnoreCase)
+
+        $chosen = if ($Force) { $matched }
+        elseif ($matched.Count -eq 1 -and -not $exact) {
+            # the one guard that also covers scripts, -NoProfile and no-VT
+            # hosts, where no key handler exists to fill the title in first
+            if (Confirm-ChatOne $matched[0] $needle) { @($matched[0]) } else { @() }
+        }
+        else {
+            $one = Select-ChatOne $matched
+            if ($one) { @($one) } else { @() }
+        }
+
+        if (-not $chosen) { Write-Host 'nothing deleted'; return }
+        foreach ($m in $chosen) {
+            # already shown once - by the confirm above, or by the picker list
+            if (Test-ChatJobsHold $m -DropJobs:$DropJobs) { continue }
+            if (Remove-ChatSession $m) { $deleted++; $lastTitle = $m.Record.Title }
+        }
+    }
+
+    if ($deleted) {
+        $what = if ($deleted -eq 1) { $lastTitle } else { "$deleted chats" }
+        Write-ChatGhostAdvice -WaitForIdle:$WaitForIdle -AllProjects:$AllProjects -Title $what
+    }
+}
+
+#endregion
+
+#region discoverability -------------------------------------------------------
+
+function Compare-ChatVersion {
+    # -1 A older, 0 same, 1 A newer, $null if either side will not parse.
+    # $null is not "equal" - a stamp written by hand, or by some future format,
+    # has to read as a change rather than silently as "unchanged".
+    param([string]$A, [string]$B)
+    $pa = $null
+    $pb = $null
+    if (-not [version]::TryParse($A, [ref]$pa)) { return $null }
+    if (-not [version]::TryParse($B, [ref]$pb)) { return $null }
+    return $pa.CompareTo($pb)
+}
+
+# Any profile line that loads this file under a name it has had, or loads one
+# of the two tools it replaced - chatrm and chatq define the same commands.
+$script:ChatProfilePattern = '(chatrm|deleteLocalChat|chatq|VS-code-chat-manager)\.ps1'
+
+function chatinstall {
+    <#
+    .SYNOPSIS
+    Add this script to your PowerShell profile, so the chat commands are there in
+    every new shell. Dot-source the file once, then run chatinstall.
+    .DESCRIPTION
+    Writes the dot-source line into $PROFILE, creating the profile if there is
+    none, and backing it up to $PROFILE.bak first. The script knows where it is,
+    so no path has to be typed twice. A line left behind by an older copy is
+    replaced rather than left to load nothing - run this again after moving the
+    file.
+    .PARAMETER Force
+    Rewrite the line even when it is already there.
+    .EXAMPLE
+    . C:\tools\VS-code-chat-manager\VS-code-chat-manager.ps1
+    chatinstall
+    #>
+    [CmdletBinding()]
+    param([switch]$Force)
+    Set-StrictMode -Off
+
+    $me = $PSCommandPath
+    if (-not $me) {
+        Write-Host '  cannot tell where this file is' -ForegroundColor Yellow
+        Write-Host '  dot-source it by path first:  . C:\path\to\VS-code-chat-manager.ps1' -ForegroundColor DarkGray
+        return
+    }
+    # only Windows marks downloads; elsewhere the cmdlet does not exist at all
+    if (Get-Command Unblock-File -EA SilentlyContinue) { Unblock-File -LiteralPath $me -EA SilentlyContinue }
+
+    # read before anything is written: data/ outlives the .ps1 an update
+    # overwrites, so this is the only trace of which copy was here before
+    $was = $null
+    if (Test-Path -LiteralPath $script:ChatVersionPath) {
+        $was = Get-Content -LiteralPath $script:ChatVersionPath -TotalCount 1 -EA SilentlyContinue
+        if ($was) { $was = $was.Trim() }
+    }
+
+    $dir = Split-Path $PROFILE -Parent
+    if ($dir -and -not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    $lines = if (Test-Path -LiteralPath $PROFILE) { @(Get-Content -LiteralPath $PROFILE) } else { @() }
+
+    # every name this file has had: deleteLocalChat.ps1, then chatrm.ps1, and
+    # chatq.ps1 for the queue half. A profile still holding one of those lines
+    # has to be repaired, not added to - and both chatrm and chatq loaded next
+    # to this one would redefine the same commands
+    $mine = @($lines | Where-Object { $_ -match $script:ChatProfilePattern })
+    # IndexOf, not -like: a path is not a wildcard pattern, and one containing
+    # [ or ] would never match itself - appending a second line every run
+    $here = @($mine | Where-Object { $_.IndexOf($me, [StringComparison]::OrdinalIgnoreCase) -ge 0 })
+    if ($here -and -not $Force) {
+        # Deliberately not a return: a reinstall still has to reach the index
+        # check below. Bailing out here meant that deleting data/ and re-running
+        # the installer left Tab with nothing to complete from, which is the
+        # exact failure this was added to prevent.
+        Write-Host '  already installed' -ForegroundColor DarkGray
+        Write-Host "    $PROFILE" -ForegroundColor DarkGray
+        Write-Host '    the script itself was just overwritten with this copy' -ForegroundColor DarkGray
+    }
+    else {
+        # the whole file is rewritten to drop a stale line, so keep a copy: this
+        # is the user's profile and may hold plenty unrelated to us
+        if (Test-Path -LiteralPath $PROFILE) { Copy-Item -LiteralPath $PROFILE -Destination "$PROFILE.bak" -Force }
+        $kept = @($lines | Where-Object { $_ -notmatch $script:ChatProfilePattern })
+        $kept += ". `"$me`""
+        Set-Content -LiteralPath $PROFILE -Value $kept -Encoding UTF8
+
+        Write-Host '  installed' -ForegroundColor Green
+        Write-Host "    $PROFILE"
+        # only the lines that pointed somewhere else were really replaced - counting
+        # the current one too claimed "from an older location" on a plain -Force rerun
+        $stale = $mine.Count - $here.Count
+        if ($stale -gt 0) {
+            Write-Host "    replaced $stale line$(if ($stale -ne 1) { 's' }) from an older location" -ForegroundColor DarkGray
+        }
+        # Reaching this line means the file was dot-sourced - $PSCommandPath is
+        # empty otherwise and it returns above - so the commands are already
+        # defined right here. Saying "open a new terminal" sent people off to
+        # reopen a shell that was already working.
+        Write-Host '    ready in this shell - type chat' -ForegroundColor Green
+        Write-Host '    every new shell picks it up from now on' -ForegroundColor DarkGray
+    }
+
+    # Both branches print this. "installed" on its own cannot tell a real upgrade
+    # from the CDN handing back the copy you already had, which it does for
+    # minutes after a push - so say which of the two just happened.
+    if (-not $was) {
+        Write-Host "    version $script:ChatVersion" -ForegroundColor DarkGray
+    }
+    elseif ($was -eq $script:ChatVersion) {
+        Write-Host "    version $script:ChatVersion - unchanged" -ForegroundColor DarkGray
+    }
+    elseif ((Compare-ChatVersion $was $script:ChatVersion) -eq 1) {
+        Write-Host "    DOWNGRADED $was -> $script:ChatVersion" -ForegroundColor Yellow
+        Write-Host '    an older copy just overwrote a newer one' -ForegroundColor Yellow
+    }
+    else {
+        Write-Host "    updated $was -> $script:ChatVersion" -ForegroundColor Green
+    }
+
+    # Either path, first install or reinstall. Tab reads the index and never
+    # builds it - a keypress cannot afford 30s - so anything that removed data/
+    # left nothing to complete from until some search happened to run.
+    if (-not (Test-Path -LiteralPath $script:ChatIndexPath)) {
+        Write-Host '    building the index for Tab completion (~30s)...' -ForegroundColor DarkGray
+        # never let this fail the install - the index rebuilds on any search
+        try {
+            $n = @(Sync-ChatIndex).Count
+            Write-Host "    indexed $n chat$(if ($n -ne 1) { 's' })" -ForegroundColor DarkGray
+        }
+        catch {
+            Write-Host '    could not build it - run chatindex when convenient' -ForegroundColor Yellow
+        }
+    }
+
+    # the queue half needs a CLI to resume chats with; finding and deleting do not
+    if (-not (Find-ChatqExe claude) -and -not (Find-ChatqExe codex)) {
+        Write-Host '    no claude or codex CLI found - chatq needs one, or CHATQ_CLAUDE / CHATQ_CODEX' -ForegroundColor Yellow
+    }
+
+    # The extension defaults to ~/Tools/VS-code-chat-manager/data/reload-request.
+    # Anywhere else needs the setting, and without it the reload prompt simply
+    # never appears - a silence that looks like the extension being broken.
+    $defaultReload = Join-Path (Join-Path (Join-Path (Join-Path $HOME 'Tools') 'VS-code-chat-manager') 'data') 'reload-request'
+    if ($script:ChatReloadPath -ne $defaultReload) {
+        Write-Host '    using extension/? set chatManagerReload.signalFile to' -ForegroundColor DarkGray
+        Write-Host "      $($script:ChatReloadPath)" -ForegroundColor DarkGray
+    }
+
+    # last, so a run that died earlier leaves the old stamp alone and the next
+    # one still reports the real delta rather than comparing against a version
+    # that never finished installing
+    try {
+        $vdir = Split-Path $script:ChatVersionPath -Parent
+        if ($vdir -and -not (Test-Path -LiteralPath $vdir)) {
+            New-Item -ItemType Directory -Path $vdir -Force | Out-Null
+        }
+        Set-Content -LiteralPath $script:ChatVersionPath -Value $script:ChatVersion -Encoding UTF8
+    }
+    catch {}
+}
+
+function chatuninstall {
+    <#
+    .SYNOPSIS
+    Take the chat commands back out of your PowerShell profile.
+    .DESCRIPTION
+    Drops the dot-source line from $PROFILE, backing it up to $PROFILE.bak first,
+    and leaves everything else in that file alone. Matches the old filename too,
+    so a profile still carrying a deleteLocalChat line is cleaned as well.
+
+    The commands stay defined in the shell you run this from - they are already
+    in memory, and nothing can unload them. Close it and they are gone.
+
+    The folder is left on disk by default, data/ and all, since it holds the
+    index, the tombstones and any queued prompts. -All deletes it too.
+    .PARAMETER All
+    Also delete the script's own folder, including data/ and every queued
+    prompt in it.
+    .EXAMPLE
+    chatuninstall
+    .EXAMPLE
+    chatuninstall -All
+    #>
+    [CmdletBinding()]
+    param([switch]$All)
+    Set-StrictMode -Off
+
+    # a live watcher outlasts the file it was started for, so stop it first -
+    # the ghost watch in this shell, and chatq's background one
+    Stop-ChatGhostWatch
+    $pending = @(Get-ChatqJobs | Where-Object { $_.state -in 'queued', 'running' })
+    if ($pending) {
+        Write-Host "  $($pending.Count) job$(if ($pending.Count -ne 1) { 's' }) still queued - they will not be sent" -ForegroundColor Yellow
+    }
+    if (Test-ChatqWatcherAlive) {
+        Save-ChatqText $script:ChatqStopPath 'stop'
+        for ($i = 0; $i -lt 40 -and (Test-ChatqWatcherAlive); $i++) { Start-Sleep -Milliseconds 250 }
+        Write-Host '  stopped the watcher' -ForegroundColor DarkGray
+    }
+
+    $lines = if (Test-Path -LiteralPath $PROFILE) { @(Get-Content -LiteralPath $PROFILE) } else { @() }
+    $mine = @($lines | Where-Object { $_ -match $script:ChatProfilePattern })
+    if ($mine.Count) {
+        Copy-Item -LiteralPath $PROFILE -Destination "$PROFILE.bak" -Force
+        Set-Content -LiteralPath $PROFILE -Encoding UTF8 -Value `
+        @($lines | Where-Object { $_ -notmatch $script:ChatProfilePattern })
+        Write-Host "  removed $($mine.Count) line$(if ($mine.Count -ne 1) { 's' }) from the profile" -ForegroundColor Green
+        Write-Host "    $PROFILE" -ForegroundColor DarkGray
+        Write-Host "    backup: $PROFILE.bak" -ForegroundColor DarkGray
+    }
+    else {
+        Write-Host '  nothing in the profile to remove' -ForegroundColor DarkGray
+    }
+
+    $here = if ($PSCommandPath) { Split-Path $PSCommandPath -Parent } else { $null }
+    if ($All) {
+        if (-not $here) {
+            Write-Host '  cannot tell where this file is - delete the folder by hand' -ForegroundColor Yellow
+        }
+        else {
+            # the .ps1 is not held open once dot-sourced, so it can delete itself
+            Remove-Item -LiteralPath $here -Recurse -Force -EA SilentlyContinue
+            $gone = -not (Test-Path -LiteralPath $here)
+            Write-Host "  $(if ($gone) { 'deleted' } else { 'COULD NOT DELETE' })  $here" -ForegroundColor $(if ($gone) { 'Green' } else { 'Yellow' })
+            if (-not $gone) { Write-Host '    something in it is open elsewhere' -ForegroundColor DarkGray }
+        }
+    }
+    elseif ($here) {
+        Write-Host "  the folder is still there - delete it when you want to:" -ForegroundColor DarkGray
+        Write-Host "      Remove-Item -LiteralPath `"$here`" -Recurse -Force" -ForegroundColor Cyan
+    }
+
+    Write-Host '  these commands stay in this shell until you close it' -ForegroundColor DarkGray
+}
+
+function chat {
+    <#
+    .SYNOPSIS
+    Cheat sheet for the chat commands. Type chat<Tab> to cycle through them.
+    #>
+    Set-StrictMode -Off
+    Write-Host ''
+    Write-Host '  find and delete' -ForegroundColor DarkGray
+    Write-Host '  chatfind "text"        find chats by title or message' -ForegroundColor Cyan
+    Write-Host '  chatrm <id> | "title"  delete a chat, permanently' -ForegroundColor Cyan
+    Write-Host '  chatclean              delete ghost chats left by the VS Code list' -ForegroundColor Cyan
+    Write-Host '  chatproviders          which tools were found, and where' -ForegroundColor Cyan
+    Write-Host '  chatindex              rebuild the tab-completion index' -ForegroundColor Cyan
+    Write-Host ''
+    Write-Host '  queue prompts for when the usage limit resets' -ForegroundColor DarkGray
+    Write-Host '  chatq "title" [-Prompt s]  queue a prompt for that chat' -ForegroundColor Cyan
+    Write-Host '  chatqlist [-Board]     what is queued, when it sends, what ran' -ForegroundColor Cyan
+    Write-Host '  chatqrm / chatqrun     drop a job / requeue one, or -Now' -ForegroundColor Cyan
+    Write-Host '  chatqlog / chatqnotify what a run did / phone alerts' -ForegroundColor Cyan
+    Write-Host ''
+    Write-Host '  chatinstall            load these in every new shell (once)' -ForegroundColor DarkGray
+    Write-Host '  chatuninstall [-All]   undo that; -All removes the folder too' -ForegroundColor DarkGray
+    Write-Host ''
+    Write-Host '  Tab fills in the argument: type any part of a title, no quotes needed'
+    Write-Host '  -Provider claude|copilot|codex   -Deep   -All   -AllProjects   -Force'
+    Write-Host '  Get-Help chatfind -Full           full help, examples and notes'
+    Write-Host ''
+    Write-Host "  VS-code-chat-manager $script:ChatVersion" -ForegroundColor DarkGray
+    Write-Host "  $PSCommandPath" -ForegroundColor DarkGray
+    Write-Host ''
+}
+
+# verb-noun aliases so Get-Command *-Chat* and Find-<Tab> surface these too
+Set-Alias -Name Find-Chat -Value chatfind -Scope Global -Force
+Set-Alias -Name Remove-Chat -Value chatrm -Scope Global -Force
+Set-Alias -Name Get-ChatProvider -Value chatproviders -Scope Global -Force
+Set-Alias -Name Update-ChatIndex -Value chatindex -Scope Global -Force
+
+Register-ArgumentCompleter -CommandName chatfind, chatrm, chatindex -ParameterName Provider -ScriptBlock {
+    param($cmd, $param, $word)
+    @('claude', 'copilot', 'codex') | Where-Object { $_ -like "$word*" } | ForEach-Object {
+        [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)
+    }
+}
+
+function Get-ChatCells {
+    # width in console cells, not characters: Hangul and CJK draw two cells
+    # each, so String.Length leaves a column of Korean titles ragged
+    param([string]$Text)
+    $n = 0
+    foreach ($c in $Text.ToCharArray()) {
+        $u = [int]$c
+        if (($u -ge 0x1100 -and $u -le 0x115F) -or ($u -ge 0x2E80 -and $u -le 0x303E) -or
+            ($u -ge 0x3041 -and $u -le 0x33FF) -or ($u -ge 0x3400 -and $u -le 0x4DBF) -or
+            ($u -ge 0x4E00 -and $u -le 0x9FFF) -or ($u -ge 0xA000 -and $u -le 0xA4CF) -or
+            ($u -ge 0xAC00 -and $u -le 0xD7A3) -or ($u -ge 0xF900 -and $u -le 0xFAFF) -or
+            ($u -ge 0xFE30 -and $u -le 0xFE6F) -or ($u -ge 0xFF00 -and $u -le 0xFF60) -or
+            ($u -ge 0xFFE0 -and $u -le 0xFFE6)) { $n += 2 } else { $n++ }
+    }
+    return $n
+}
+
+function Format-ChatCell {
+    # clip to exactly $Cells console cells, padding short text out to the same
+    # unless -NoPad, which callers use when they are joining pieces themselves
+    param([string]$Text, [int]$Cells, [switch]$NoPad)
+    # a narrow terminal can hand in zero or less, and ' ' * -1 throws
+    if ($Cells -le 0) { return '' }
+    $w = Get-ChatCells $Text
+    if ($w -le $Cells) {
+        if ($NoPad) { return $Text }
+        return $Text + (' ' * ($Cells - $w))
+    }
+    # three ASCII dots, not U+2026: the ellipsis and the middle dot draw two
+    # cells wide in a CP949 console, which throws off every in-place redraw
+    if ($Cells -le 3) { return '.' * $Cells }
+    # one character at a time rather than re-measuring a growing prefix
+    $len = 0
+    $used = 0
+    while ($len -lt $Text.Length) {
+        $cw = Get-ChatCells $Text.Substring($len, 1)
+        if ($used + $cw -gt $Cells - 3) { break }
+        $used += $cw
+        $len++
+    }
+    $out = $Text.Substring(0, $len) + '...'
+    if ($NoPad) { return $out }
+    return $out + (' ' * [Math]::Max(0, $Cells - $used - 3))
+}
+
+function Get-ChatSyntaxColor {
+    # PSReadLine's own colours, read from the live options rather than guessed,
+    # so the walked line is painted exactly like the line Tab writes into the
+    # buffer - and follows the user's theme if they changed it
+    if ($script:ChatColors) { return $script:ChatColors }
+    $esc = [char]27
+    $c = @{
+        Command = "$esc[93m"; String = "$esc[36m"
+        Param   = "$esc[90m"; Comment = "$esc[32m"; Reset = "$esc[0m"
+    }
+    $o = try { Get-PSReadLineOption -EA Stop } catch { $null }
+    if ($o) {
+        if ($o.CommandColor) { $c.Command = $o.CommandColor }
+        if ($o.StringColor) { $c.String = $o.StringColor }
+        if ($o.ParameterColor) { $c.Param = $o.ParameterColor }
+        if ($o.CommentColor) { $c.Comment = $o.CommentColor }
+    }
+    $script:ChatColors = $c
+    return $c
+}
+
+function Format-ChatMenuRow {
+    # One menu row: title, owner, age, opening prompt. PSReadLine 2.0 draws no
+    # tooltip, so this line is the whole preview. Fixed columns rather than
+    # free text - run together, the rows read as one paragraph.
+    param($Row, [int]$Extra = 0)
+    $when = try {
+        Get-ChatAge ([datetime]::Parse($Row.When, [System.Globalization.CultureInfo]::InvariantCulture,
+                [System.Globalization.DateTimeStyles]::RoundtripKind))
+    }
+    catch { '?' }
+    $tag = if ($Extra) { "[$Extra chats $when]" } else { "[$($Row.Provider) $when]" }
+
+    $total = [Math]::Max(24, $Host.UI.RawUI.WindowSize.Width - 4)
+    $tagCells = 15
+    $titleCells = [Math]::Max(12, [Math]::Min(44, [int]($total * 0.42)))
+    $rest = $total - $titleCells - $tagCells - 2
+    if ($rest -lt 12) {
+        # too narrow for an excerpt - give the space back to the title
+        $titleCells = [Math]::Max(8, $total - $tagCells - 1)
+        $rest = 0
+    }
+
+    $text = (Format-ChatCell $Row.Title $titleCells) + ' ' + (Format-ChatCell $tag $tagCells)
+    $first = @($Row.First)[0]
+    if ($rest -and $first) {
+        $text += ' ' + (Format-ChatCell ('> ' + ($first -replace '\s+', ' ')) $rest)
+    }
+    return $text
+}
+
+function Get-ChatCompletionPreview {
+    # the multi-line tooltip - shown by Ctrl+Space and PSReadLine 2.2+
+    param($Row, [int]$Extra = 0)
+    $when = try {
+        Get-ChatAge ([datetime]::Parse($Row.When, [System.Globalization.CultureInfo]::InvariantCulture,
+                [System.Globalization.DateTimeStyles]::RoundtripKind))
+    }
+    catch { '?' }
+    $lines = @("$($Row.Title)", "$($Row.Provider) / $($Row.Group) / $when")
+    if ($Extra) { $lines += "$Extra chats share this title - you pick from a list" }
+    $clip = { param($t) if ($t.Length -gt 76) { $t.Substring(0, 76) + '...' } else { $t } }
+    foreach ($m in @($Row.First) | Select-Object -First 2) { $lines += '  > ' + (& $clip $m) }
+    $tail = @($Row.Last)
+    if ($tail -and (@($Row.First) -join "`n") -ne ($tail -join "`n")) {
+        $lines += '  ...'
+        $lines += '  > ' + (& $clip $tail[-1])
+    }
+    return ($lines -join "`n")
+}
+
+$script:ChatTitleCompleter = {
+    # One completer for chatrm, chatfind and chatq. All five parameters, because
+    # the last one - the switches already typed - is how -All and -AllProjects
+    # reach it; with three, Tab offered what the command then refused to match.
+    param($cmd, $param, $word, $ast, $bound)
+    Set-StrictMode -Off
+    $w = ([string]$word).Trim('"', "'")
+    $queue = $cmd -eq 'chatq'
+    # chatq 3 means job 3 - a number is not the start of a title
+    if ($queue -and $w -match '^\d{1,4}$') { return }
+    $all = $bound -and [bool]$bound['All']
+    $wide = $bound -and [bool]$bound['AllProjects']
+    # (empty) are abandoned sessions; Hidden ones are subagents, which the
+    # search skips without -All, so Tab must not offer them either
+    $rows = @(Get-ChatIndex | Where-Object { $_.Title -ne '(empty)' -and ($all -or -not $_.Hidden) })
+    # a queued prompt needs a CLI to resume the chat, and Copilot has none
+    if ($queue) { $rows = @($rows | Where-Object { $_.Provider -in 'claude', 'codex' }) }
+    if (-not $rows) {
+        # Hand back what was typed, never ''. CompletionText REPLACES the word,
+        # so returning '' wiped the argument and left a bare pair of quotes on
+        # the line - it read as a broken completer rather than an empty index.
+        # Echoing the word leaves the line alone; the hint rides in the tooltip.
+        return [System.Management.Automation.CompletionResult]::new(
+            $word, 'no index yet - run chatindex', 'ParameterValue',
+            'No index yet - run chatindex once (~30s), or any chatfind')
+    }
+
+    # hex looks like an id - and ids are never scoped, one id is one chat. A
+    # title can start with hex letters too ('add', 'cafe'), so no id match
+    # falls through to titles rather than completing nothing.
+    if ($w -match '^[0-9a-fA-F]{2,}$') {
+        $ids = @($rows | Where-Object { $_.Id -like "$w*" })
+        if ($ids) {
+            return $ids | Sort-Object When -Descending | Select-Object -First 25 | ForEach-Object {
+                [System.Management.Automation.CompletionResult]::new(
+                    $_.Id, (Format-ChatMenuRow $_), 'ParameterValue',
+                    (Get-ChatCompletionPreview $_))
+            }
+        }
+    }
+
+    # titles are scoped like the search is
+    $rows = @(Select-ChatInProject $rows -AllProjects:$wide)
+    $starts = @($rows | Where-Object { -not $w -or $_.Title.StartsWith($w, [StringComparison]::OrdinalIgnoreCase) })
+    if (-not $starts -and $w) {
+        $starts = @($rows | Where-Object { $_.Title.IndexOf($w, [StringComparison]::OrdinalIgnoreCase) -ge 0 })
+    }
+    $starts |
+        Group-Object Title | ForEach-Object {
+            $newest = ($_.Group | Sort-Object When -Descending)[0]
+            $extra = if ($_.Count -gt 1) { $_.Count } else { 0 }
+            [pscustomobject]@{
+                Title = $_.Name; When = $newest.When
+                Label = Format-ChatMenuRow $newest $extra
+                Tip   = Get-ChatCompletionPreview $newest $extra
+            }
+        } |
+        Sort-Object When -Descending | Select-Object -First 25 | ForEach-Object {
+            # single quotes: titles carry apostrophes, $ and braces that would
+            # otherwise be interpreted when the line is run - and every quote
+            # PowerShell treats as one is doubled, typographic ones included
+            $quoted = "'" + [System.Management.Automation.Language.CodeGeneration]::EscapeSingleQuotedStringContent($_.Title) + "'"
+            [System.Management.Automation.CompletionResult]::new($quoted, $_.Label, 'ParameterValue', $_.Tip)
+        }
+}
+
+# the same titles for all three, under their own parameter names
+Register-ArgumentCompleter -CommandName chatrm -ParameterName Target -ScriptBlock $script:ChatTitleCompleter
+Register-ArgumentCompleter -CommandName chatfind -ParameterName Text -ScriptBlock $script:ChatTitleCompleter
+Register-ArgumentCompleter -CommandName chatq -ParameterName Target -ScriptBlock $script:ChatTitleCompleter
+
+# ---------------------------- the one-line cycler ----------------------------
+# Tab does not open a list, and does not complete the word under the cursor. It
+# replaces the whole argument with one chat and describes it on the same line,
+# in a trailing comment PowerShell ignores; arrows walk to the next one.
+# It has to work this way: a preview pane of our own would have to read the
+# arrow keys itself, and inside a key handler PSReadLine's key reader is
+# already blocked on the console waiting for them - the two race and the pane
+# never gets a keystroke. Rewriting the buffer needs no keyboard at all.
+
+$script:ChatCycle = $null
+
+function Get-ChatCycleRows {
+    # candidates for the cycler: ids if it looks like one, else titles,
+    # prefix first and only then widening to a contains-match
+    param([string]$Filter, [ref]$ById, [switch]$Queue)
+    # scoped like the search is: offering a chat from another project that
+    # chatrm would then refuse to match is worse than offering nothing. Hidden
+    # rows (subagents) too, which the search skips without -All.
+    $all = @(Get-ChatIndex | Where-Object { $_.Title -ne '(empty)' -and -not $_.Hidden })
+    # chatq can only resume what a CLI can: no Copilot
+    if ($Queue) { $all = @($all | Where-Object { $_.Provider -in 'claude', 'codex' }) }
+    $all = @(Select-ChatInProject $all)
+    if ($Filter -match '^[0-9a-fA-F]{2,}$') {
+        $hit = @($all | Where-Object { $_.Id -like "$Filter*" })
+        if ($hit) {
+            $ById.Value = $true
+            return @($hit | Sort-Object When -Descending | Select-Object -First 40)
+        }
+    }
+    $ById.Value = $false
+    $rows = @($all | Where-Object { -not $Filter -or $_.Title.StartsWith($Filter, [StringComparison]::OrdinalIgnoreCase) })
+    if (-not $rows -and $Filter) {
+        $rows = @($all | Where-Object { $_.Title.IndexOf($Filter, [StringComparison]::OrdinalIgnoreCase) -ge 0 })
+    }
+    # one entry per title - chatrm sorts out duplicates itself, with its own list
+    $uniq = $rows | Group-Object Title | ForEach-Object { ($_.Group | Sort-Object When -Descending)[0] }
+    return @($uniq | Sort-Object When -Descending | Select-Object -First 40)
+}
+
+function Get-ChatRowAge {
+    # The cycler runs off the cached index, which is only as fresh as the last
+    # chatfind or chatrm - it read 2h for a chat the panel called 32m, because
+    # the chat had grown 1.1 MB since the index was written. Only one row is
+    # ever on screen, so re-read that one when its file has moved. The walk
+    # after Enter needs none of this: Find-ChatSessions syncs first.
+    param($Row)
+    $when = try {
+        [datetime]::Parse($Row.When, [System.Globalization.CultureInfo]::InvariantCulture,
+            [System.Globalization.DateTimeStyles]::RoundtripKind)
+    }
+    catch { $null }
+    $f = Get-Item -LiteralPath $Row.Path -EA SilentlyContinue
+    if ($f -and ($f.Length -ne $Row.Size -or $f.LastWriteTimeUtc.Ticks -ne $Row.Mtime)) {
+        $name = Get-ChatProviderForPath $Row.Path
+        $rec = if ($name) { & $script:ChatProviders[$name].Describe $f } else { $null }
+        if ($rec) { $when = $rec.When }
+    }
+    if ($when) { return Get-ChatAge $when }
+    return ''
+}
+
+function Set-ChatCycleLine {
+    # move by $Step through the run and rewrite the whole buffer
+    param([int]$Step)
+    $c = $script:ChatCycle
+    $c.Index = ($c.Index + $Step) % $c.Items.Count
+    if ($c.Index -lt 0) { $c.Index += $c.Items.Count }
+    $row = $c.Items[$c.Index]
+
+    $pick = if ($c.ById) { $row.Id } else { "'" + $row.Title.Replace("'", "''") + "'" }
+    $head = $c.Head + $pick
+    # once per chat per run: re-reading a growing transcript costs ~300ms, and
+    # arrowing back and forth would pay it again every time
+    if (-not $c.Ages.ContainsKey($row.Path)) { $c.Ages[$row.Path] = Get-ChatRowAge $row }
+    # the same tail the walk shows, so both look like one another
+    $line = $head + (Format-ChatPickTail $c.Ages[$row.Path] ($c.Index + 1) $c.Items.Count)
+
+    $cur = $null; $pos = 0
+    [Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState([ref]$cur, [ref]$pos)
+    [Microsoft.PowerShell.PSConsoleReadLine]::Replace(0, $cur.Length, $line)
+    # leave the cursor on the chat, not out in the comment
+    [Microsoft.PowerShell.PSConsoleReadLine]::SetCursorPosition($head.Length)
+    $c.Line = $line
+}
+
+function Test-ChatCycling {
+    # still on the line we wrote last time?
+    param([string]$Line)
+    $script:ChatCycle -and $script:ChatCycle.Line -eq $Line
+}
+
+function Test-ChatPartialTarget {
+    # Is what was typed part of a title rather than all of it? Enter fills the
+    # match in instead of running when it is, so the whole title is on screen
+    # before anything acts on it. Every uncertain answer is $false: Enter then
+    # keeps its ordinary meaning, and chatrm's own confirm still stands behind.
+    param([string]$Line)
+    try {
+        $m = [regex]::Match($Line, '^\s*chatrm\s+')
+        if (-not $m.Success) { return $false }
+        $arg = ($Line.Substring($m.Length) -replace $script:ChatTailPattern, '').Trim()
+        if (-not $arg) { return $false }
+        # a switch means this is not a bare title, and -Force is a decision
+        # already made - neither should have Enter quietly do something else
+        if ($arg -match '(^|\s)-\w') { return $false }
+        $arg = $arg.Trim("'", '"').Trim()
+        if (-not $arg) { return $false }
+        # an id is exact by definition, and never scoped to a project
+        if ($arg -match '^[0-9a-fA-F]{6,}(-[0-9a-fA-F-]*)?$') { return $false }
+        if (-not (Test-Path -LiteralPath $script:ChatIndexPath)) { return $false }
+
+        $rows = @(Select-ChatInProject @(Get-ChatIndex | Where-Object { $_.Title -ne '(empty)' -and -not $_.Hidden }))
+        if (-not $rows) { return $false }
+        # a title typed in full is a decision, however many others contain it
+        foreach ($r in $rows) {
+            if ($r.Title.Equals($arg, [StringComparison]::OrdinalIgnoreCase)) { return $false }
+        }
+        foreach ($r in $rows) {
+            if ($r.Title.IndexOf($arg, [StringComparison]::OrdinalIgnoreCase) -ge 0) { return $true }
+        }
+        return $false
+    }
+    catch { return $false }
+}
+
+function Start-ChatCycle {
+    # begin a run from whatever has been typed after the command
+    param([string]$Line)
+    $m = [regex]::Match($Line, '^\s*chat(rm|find|q)\s+')
+    if (-not $m.Success) { return $false }
+    $queue = $m.Groups[1].Value -eq 'q'
+    $arg = $Line.Substring($m.Length)
+    # everything after the command is the filter, spaces and quotes included - a
+    # quote the user opened is dropped here and Set-ChatCycleLine puts single
+    # ones back, so typing one neither helps the match nor breaks it
+    $arg = ($arg -replace $script:ChatTailPattern, '').Trim().Trim("'", '"').Trim()
+    if ($arg.StartsWith('-')) { return $false }        # a parameter, not a title
+    # chatq 3 is job 3, and chatq 'title' -Prompt ... is past the title already
+    if ($queue -and ($arg -match '^\d{1,4}$' -or $arg -match '\s-\w')) { return $false }
+    $byId = $false
+    # an absent index is not the same as no match, and silence made the two look
+    # identical - the caller says so rather than leaving Tab looking broken
+    if (-not (Test-Path -LiteralPath $script:ChatIndexPath)) {
+        $script:ChatNoIndex = $true
+        return $false
+    }
+    $script:ChatNoIndex = $false
+    $rows = @(Get-ChatCycleRows $arg ([ref]$byId) -Queue:$queue)
+    if (-not $rows) { return $false }
+    $script:ChatCycle = @{
+        Head  = $Line.Substring(0, $m.Length)
+        Items = $rows
+        Index = -1
+        ById  = $byId
+        Line  = ''
+        Ages  = @{}
+    }
+    Set-ChatCycleLine 1
+    return $true
+}
+
+# Tab starts or advances the run, Shift+Tab steps back, and the arrows do the
+# same but only while a run is live - otherwise they stay history navigation.
+# Opt out with $ChatNoKeyBindings = $true before the dot-source line. Read
+# through Get-Variable: under StrictMode an unset one throws, and every shell
+# start would lose its key handlers. Never in the background watcher, which
+# has no keyboard, nor anywhere else not interactive.
+if (-not (Get-Variable -Name ChatNoKeyBindings -ValueOnly -EA SilentlyContinue) -and
+    -not $env:CHATQ_WATCHER -and [Environment]::UserInteractive -and
+    (Get-Module PSReadLine -ListAvailable -EA SilentlyContinue)) {
+    try {
+        Import-Module PSReadLine -EA Stop
+
+        # remember what the arrows did before we took them over
+        $script:ChatArrowWas = @{}
+        foreach ($k in 'UpArrow', 'DownArrow') {
+            $bound = Get-PSReadLineKeyHandler -Bound | Where-Object { $_.Key -eq $k }
+            $script:ChatArrowWas[$k] = if ($bound) { $bound.Function } else { $null }
+        }
+
+        function Invoke-ChatPSReadLine {
+            # call a PSReadLine action by name, so the arrows keep doing
+            # whatever they were bound to before this file was loaded
+            param([string]$Name, [string]$Fallback)
+            if (-not $Name) { $Name = $Fallback }
+            $mi = [Microsoft.PowerShell.PSConsoleReadLine].GetMethod(
+                $Name, [type[]]@([System.Nullable[System.ConsoleKeyInfo]], [object]))
+            if (-not $mi) {
+                $mi = [Microsoft.PowerShell.PSConsoleReadLine].GetMethod(
+                    $Fallback, [type[]]@([System.Nullable[System.ConsoleKeyInfo]], [object]))
+            }
+            if ($mi) { [void]$mi.Invoke($null, @($null, $null)) }
+        }
+
+        Set-PSReadLineKeyHandler -Key Tab -BriefDescription 'ChatCycleNext' `
+            -Description 'Fill in the next matching chat, described in a trailing comment' -ScriptBlock {
+            Set-StrictMode -Off
+            $line = $null; $pos = 0
+            [Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState([ref]$line, [ref]$pos)
+            if (Test-ChatCycling $line) { Set-ChatCycleLine 1; return }
+            $script:ChatCycle = $null
+            if (-not (Start-ChatCycle $line)) {
+                # No index at all is worth saying out loud. Falling through to
+                # TabCompleteNext here is what put a bare '' on the line and made
+                # an empty index look like a broken completer.
+                if ($script:ChatNoIndex) {
+                    try {
+                        [Microsoft.PowerShell.PSConsoleReadLine]::AddToHistory($null)
+                    }
+                    catch {}
+                    Write-Host ''
+                    Write-Host '  no index yet - run chatindex once (~30s)' -ForegroundColor Yellow
+                    # redraw, or the line is left sitting under what was printed
+                    try { [Microsoft.PowerShell.PSConsoleReadLine]::InvokePrompt() } catch {}
+                    return
+                }
+                [Microsoft.PowerShell.PSConsoleReadLine]::TabCompleteNext()
+            }
+        }
+
+        Set-PSReadLineKeyHandler -Key Shift+Tab -BriefDescription 'ChatCyclePrev' `
+            -Description 'Step back through the matching chats' -ScriptBlock {
+            Set-StrictMode -Off
+            $line = $null; $pos = 0
+            [Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState([ref]$line, [ref]$pos)
+            if (Test-ChatCycling $line) { Set-ChatCycleLine -1; return }
+            [Microsoft.PowerShell.PSConsoleReadLine]::TabCompletePrevious()
+        }
+
+        Set-PSReadLineKeyHandler -Key DownArrow -BriefDescription 'ChatCycleOrHistory' `
+            -Description 'Next matching chat while cycling, history otherwise' -ScriptBlock {
+            Set-StrictMode -Off
+            $line = $null; $pos = 0
+            [Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState([ref]$line, [ref]$pos)
+            if (Test-ChatCycling $line) { Set-ChatCycleLine 1; return }
+            Invoke-ChatPSReadLine $script:ChatArrowWas['DownArrow'] 'NextHistory'
+        }
+
+        Set-PSReadLineKeyHandler -Key UpArrow -BriefDescription 'ChatCycleOrHistory' `
+            -Description 'Previous matching chat while cycling, history otherwise' -ScriptBlock {
+            Set-StrictMode -Off
+            $line = $null; $pos = 0
+            [Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState([ref]$line, [ref]$pos)
+            if (Test-ChatCycling $line) { Set-ChatCycleLine -1; return }
+            Invoke-ChatPSReadLine $script:ChatArrowWas['UpArrow'] 'PreviousHistory'
+        }
+
+        Set-PSReadLineKeyHandler -Key Enter -BriefDescription 'ChatAcceptLine' `
+            -Description 'Drop the age and counter, then run the line' -ScriptBlock {
+            Set-StrictMode -Off
+            $line = $null; $pos = 0
+            [Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState([ref]$line, [ref]$pos)
+            # not only while cycling: the tail survives an edit, and left on the
+            # line "(5d)" would be run as an expression rather than ignored
+            if ($line -match '^\s*chat(rm|find|q)\s') {
+                $clean = $line -replace $script:ChatTailPattern, ''
+                # chatq goes on past the title (-Prompt ...). The cursor is left
+                # before the tail, but text typed after it would put -Prompt in
+                # the comment and leave "(5d)" mid-line to be run
+                if ($clean -match '^\s*chatq\s') { $clean = $clean -replace $script:ChatMidTailPattern, '' }
+                if ($clean -ne $line) {
+                    [Microsoft.PowerShell.PSConsoleReadLine]::Replace(0, $line.Length, $clean)
+                    $line = $clean
+                }
+                $script:ChatCycle = $null
+
+                # chatrm only, and only when the argument is part of a title
+                # rather than all of it: fill the title in the way Tab would and
+                # hold the line, so the whole thing is on screen before Enter
+                # can act on it. chatfind is a search and deletes nothing, so it
+                # runs as typed.
+                # never let this break Enter: a throw inside a key handler makes
+                # the key unusable, which would be far worse than the eager
+                # delete it exists to prevent
+                try {
+                    if ($line -match '^\s*chatrm\s' -and (Test-ChatPartialTarget $line)) {
+                        if (Start-ChatCycle $line) { return }
+                    }
+                }
+                catch {}
+            }
+            [Microsoft.PowerShell.PSConsoleReadLine]::AcceptLine()
+        }
+    }
+    catch {}
+}
+
+#endregion
+
+#region queue: configuration --------------------------------------------
+
 $script:ChatqIsWindows = [System.Environment]::OSVersion.Platform -eq 'Win32NT'
 
 # Every runtime file lives in data/ beside the script, never in AppData or
 # TEMP - the folder is the whole installation, and deleting it is the uninstall.
 $script:ChatqData = Join-Path $PSScriptRoot 'data'
-$script:ChatqIndexPath = Join-Path $script:ChatqData 'chat-index.csv'
-$script:ChatqVersionPath = Join-Path $script:ChatqData 'version.txt'
 $script:ChatqQueueDir = Join-Path $script:ChatqData 'queue'
 $script:ChatqLogDir = Join-Path $script:ChatqData 'logs'
 $script:ChatqConfigPath = Join-Path $script:ChatqData 'config.json'
@@ -107,219 +2649,22 @@ $script:ChatqStatusUrl = 'https://status.claude.com/api/v2/components.json'
 $script:ChatqStatusComponent = 'Claude Code'
 
 # Caches and flags, set here so a caller's Set-StrictMode -Version Latest -
-# which this dot-sourced file inherits - never meets one unset. Every command
-# also turns StrictMode off for itself; these cover the load itself.
-$script:ChatqIndexStamp = $null
-$script:ChatqIndexCache = @()
-$script:ChatqCodexNames = $null
-$script:ChatqCodexNamesAt = 0
+# which this dot-sourced file inherits - never meets one unset.
 $script:ChatqCliVersions = @{}
 $script:ChatqAwake = $false
 $script:ChatqAwakeProc = $null
 $script:ChatqLastAlertError = $null
 $script:ChatqForeground = $false
 
-#region index -----------------------------------------------------------------
-# Lifted from chatrm (Get-ChatIndex / Save-ChatIndex / Sync-ChatIndex) and
-# renamed: both files are dot-sourced into the same global scope, so a shared
-# name would have chatq's index quietly overwrite chatrm's functions.
-# Reading every transcript takes ~30s, so nothing does it twice: a file is only
-# re-read when its size or mtime changed.
-
-$script:ChatqIndexSep = [char]0x1F   # unit separator: never appears in prompt text
-
-function Get-ChatqIndex {
-    if (-not (Test-Path -LiteralPath $script:ChatqIndexPath)) { return @() }
-    $stamp = try {
-        $fi = [System.IO.FileInfo]::new($script:ChatqIndexPath)
-        "$($fi.LastWriteTimeUtc.Ticks):$($fi.Length)"
-    }
-    catch { $null }
-    if ($stamp -and $stamp -eq $script:ChatqIndexStamp) { return $script:ChatqIndexCache }
-    try {
-        $rows = @(Import-Csv -LiteralPath $script:ChatqIndexPath | ForEach-Object {
-                [pscustomobject]@{
-                    Provider = $_.Provider
-                    Path     = $_.Path
-                    Size     = [int64]$_.Size
-                    Mtime    = [int64]$_.Mtime
-                    Id       = $_.Id
-                    Title    = $_.Title
-                    Titled   = $_.Titled
-                    Group    = $_.Group
-                    Hidden   = $_.Hidden -eq 'True'
-                    When     = $_.When
-                    First    = @($_.First -split $script:ChatqIndexSep | Where-Object { $_ })
-                    Last     = @($_.Last -split $script:ChatqIndexSep | Where-Object { $_ })
-                }
-            })
-        $script:ChatqIndexCache = $rows
-        $script:ChatqIndexStamp = $stamp
-        return $rows
-    }
-    catch { return @() }
-}
-
-function Save-ChatqIndex {
-    param([object[]]$Rows)
-    try {
-        $dir = Split-Path $script:ChatqIndexPath -Parent
-        if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-        $Rows | ForEach-Object {
-            [pscustomobject]@{
-                Provider = $_.Provider; Path = $_.Path; Size = $_.Size; Mtime = $_.Mtime
-                Id = $_.Id; Title = $_.Title; Titled = $_.Titled; Group = $_.Group
-                Hidden = $_.Hidden; When = $_.When
-                First = (@($_.First) -join $script:ChatqIndexSep)
-                Last = (@($_.Last) -join $script:ChatqIndexSep)
-            }
-        } | Export-Csv -LiteralPath $script:ChatqIndexPath -NoTypeInformation -Encoding UTF8
-    }
-    catch {}
-}
-
-function Sync-ChatqIndex {
-    # returns the index rows for $Provider, re-reading only what changed
-    param([string[]]$Provider, [switch]$Force)
-    $names = if ($Provider) { $Provider } else { @($script:ChatqProviders.Keys) }
-    $cached = @(Get-ChatqIndex)
-    $old = @{}
-    foreach ($r in $cached) {
-        if (-not $r.Path) { continue }
-        if ($Force -and $names -contains $r.Provider) { continue }
-        $old[$r.Path] = $r
-    }
-
-    $rows = [System.Collections.Generic.List[object]]::new()
-    $fresh = 0
-    $reused = 0
-    foreach ($name in $names) {
-        $p = $script:ChatqProviders[$name]
-        if (-not $p) { Write-Warning "unknown provider '$name'"; continue }
-        foreach ($file in @(& $p.Discover)) {
-            $hit = $old[$file.FullName]
-            if ($hit -and $hit.Size -eq $file.Length -and $hit.Mtime -eq $file.LastWriteTimeUtc.Ticks) {
-                $rows.Add($hit)
-                $reused++
-                continue
-            }
-            $rec = & $p.Describe $file
-            if (-not $rec) { continue }
-            $fresh++
-            $rows.Add([pscustomobject]@{
-                    Provider = $name
-                    Path     = $file.FullName
-                    Size     = $file.Length
-                    Mtime    = $file.LastWriteTimeUtc.Ticks
-                    Id       = $rec.Id
-                    Title    = $rec.Title
-                    Titled   = $rec.TitleSource
-                    Group    = $rec.Group
-                    Hidden   = [bool]$rec.Hidden
-                    When     = $rec.When.ToString('o')
-                    First    = @($rec.First)
-                    Last     = @($rec.Last)
-                })
-        }
-    }
-    $others = @($cached | Where-Object { $names -notcontains $_.Provider })
-    $stale = ($reused + $others.Count) -ne $cached.Count
-    if ($fresh -or $stale) { Save-ChatqIndex @($others + $rows.ToArray()) }
-    return $rows.ToArray()
-}
-
 #endregion
 
-#region generic helpers (from chatrm) -----------------------------------------
-
-function Get-ChatqAge {
-    param([datetime]$When)
-    $s = ([datetime]::Now - $When).TotalSeconds
-    if ($s -lt 60) { return 'now' }
-    if ($s -lt 3600) { return "$([math]::Floor($s / 60))m" }
-    if ($s -lt 86400) { return "$([math]::Floor($s / 3600))h" }
-    if ($s -lt 2592000) { return "$([math]::Floor($s / 86400))d" }
-    if ($s -lt 31536000) { return "$([math]::Floor($s / 2592000))mo" }
-    return "$([math]::Floor($s / 31536000))y"
-}
-
-function Format-ChatqTitle {
-    param([string]$Text, [int]$Width = 60)
-    if (-not $Text) { return '(empty)' }
-    $t = ($Text -replace '\s+', ' ').Trim()
-    if ($t.Length -gt $Width) { $t = $t.Substring(0, $Width).TrimEnd() + '...' }
-    return $t
-}
-
-function Test-ChatqNoise {
-    # prompts that are machinery, not something the user typed
-    param([string]$Text)
-    $Text.StartsWith('<') -or $Text.StartsWith('Caveat') -or $Text -like '*system-reminder*' -or
-    $Text -like '`[Request interrupted*'
-}
-
-function Select-ChatqDistinctRun {
-    # drop consecutive repeats - Codex re-injects the same prompt every turn
-    param([string[]]$Texts)
-    $out = [System.Collections.Generic.List[string]]::new()
-    $prev = $null
-    foreach ($t in $Texts) {
-        $key = ($t -replace '[^\w]', '').ToLowerInvariant()
-        $key = $key.Substring(0, [Math]::Min(80, $key.Length))
-        if ($key -ne $prev) { $out.Add($t) }
-        $prev = $key
-    }
-    return $out.ToArray()
-}
-
-function Open-ChatqRead {
-    # Codex holds every rollout open for the life of the window, and Claude
-    # appends to the transcript of a running chat: share what the writer holds.
-    param([string]$Path)
-    [System.IO.FileStream]::new($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read,
-        ([System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete))
-}
-
-function Read-ChatqAllText {
-    param([string]$Path)
-    $fs = Open-ChatqRead $Path
-    try {
-        $sr = [System.IO.StreamReader]::new($fs, [System.Text.Encoding]::UTF8)
-        try { return $sr.ReadToEnd() } finally { $sr.Dispose() }
-    }
-    finally { $fs.Dispose() }
-}
-
-function Read-ChatqChunk {
-    # head+tail only - transcripts run to megabytes and there are thousands
-    param([string]$Path, [int]$Size = 524288)
-    $fi = [System.IO.FileInfo]::new($Path)
-    try { $fs = Open-ChatqRead $Path } catch { return $null }
-    try {
-        if ($fi.Length -le 2 * $Size) {
-            $buf = [byte[]]::new($fi.Length)
-            $fs.Read($buf, 0, $buf.Length) | Out-Null
-            return [pscustomobject]@{ Head = [System.Text.Encoding]::UTF8.GetString($buf); Tail = ''; Split = $false }
-        }
-        $hb = [byte[]]::new($Size)
-        $fs.Read($hb, 0, $Size) | Out-Null
-        $tb = [byte[]]::new($Size)
-        $fs.Seek(-$Size, [System.IO.SeekOrigin]::End) | Out-Null
-        $fs.Read($tb, 0, $Size) | Out-Null
-        return [pscustomobject]@{
-            Head  = [System.Text.Encoding]::UTF8.GetString($hb)
-            Tail  = [System.Text.Encoding]::UTF8.GetString($tb)
-            Split = $true
-        }
-    }
-    finally { $fs.Dispose() }
-}
+#region queue: readers only the queue needs ----------------------------
 
 function Read-ChatqTail {
     # The last $Size bytes as text. Cutting mid-character only garbles the first
     # few bytes, which a caller looking for whole JSON lines skips anyway.
     param([string]$Path, [int64]$Size)
-    try { $fs = Open-ChatqRead $Path } catch { return $null }
+    try { $fs = Open-ChatRead $Path } catch { return $null }
     try {
         $n = [int][Math]::Min($Size, $fs.Length)
         if ($n -le 0) { return '' }
@@ -344,107 +2689,10 @@ function Find-ChatqTailString {
     $len = try { ([System.IO.FileInfo]::new($Path)).Length } catch { 0 }
     foreach ($size in 65536, 1048576, 8388608, 67108864) {
         $t = Read-ChatqTail $Path $size
-        $v = Get-ChatqJsonString $t $Key
+        $v = Get-ChatJsonString $t $Key
         if ($v) { return $v }
         if ($size -ge $len) { break }
     }
-    return $null
-}
-
-function Get-ChatqJsonLines {
-    # index scan for a marker, not a line split + pipeline - that was 10x slower
-    param([string]$Text, [string[]]$Marker, [int]$Count, [switch]$FromEnd,
-        [string[]]$Skip = @('"tool_result"', '"isMeta":true', 'system-reminder'))
-    $out = [System.Collections.Generic.List[string]]::new()
-    if (-not $Text) { return , @() }
-    $needle = $Marker | Where-Object { $Text.IndexOf($_, [StringComparison]::Ordinal) -ge 0 } | Select-Object -First 1
-    if (-not $needle) { return , @() }
-    $Marker = $needle
-    $pos = if ($FromEnd) { $Text.Length - 1 } else { 0 }
-    while ($out.Count -lt $Count) {
-        $j = if ($FromEnd) { $Text.LastIndexOf($Marker, [Math]::Min($pos, $Text.Length - 1), [StringComparison]::Ordinal) }
-        else { $Text.IndexOf($Marker, $pos, [StringComparison]::Ordinal) }
-        if ($j -lt 0) { break }
-        $s = $Text.LastIndexOf("`n", $j) + 1
-        $e = $Text.IndexOf("`n", $j)
-        if ($e -lt 0) { $e = $Text.Length }
-        $line = $Text.Substring($s, $e - $s)
-        $keep = $line.Length -lt 200000
-        if ($keep) { foreach ($s2 in $Skip) { if ($line -like "*$s2*") { $keep = $false; break } } }
-        if ($keep) {
-            if ($FromEnd) { $out.Insert(0, $line) } else { $out.Add($line) }
-        }
-        $pos = if ($FromEnd) { $s - 1 } else { $e + 1 }
-        if ($FromEnd -and $pos -lt 0) { break }
-        if (-not $FromEnd -and $pos -ge $Text.Length) { break }
-    }
-    return , $out.ToArray()
-}
-
-function Get-ChatqTimestampFromText {
-    param($Prompts, [System.IO.FileInfo]$File)
-    foreach ($t in @($Prompts.Tail, $Prompts.Head)) {
-        if (-not $t) { continue }
-        $m = [regex]::Matches($t, '"timestamp":\s*"([^"]+)"')
-        if ($m.Count) {
-            try {
-                return [datetime]::Parse($m[$m.Count - 1].Groups[1].Value,
-                    [System.Globalization.CultureInfo]::InvariantCulture,
-                    [System.Globalization.DateTimeStyles]::RoundtripKind).ToLocalTime()
-            }
-            catch {}
-        }
-    }
-    return $File.LastWriteTime
-}
-
-function Get-ChatqHeadTailPrompts {
-    # walk head and tail for prompt lines, parse only those, and fall back to the
-    # whole file when one turn is bigger than the chunk and hides every prompt
-    param([string]$Path, [string[]]$Marker, [scriptblock]$Parse, [int]$Count = $script:ChatqPreview)
-    $chunk = Read-ChatqChunk $Path
-    if (-not $chunk) { return $null }
-    $scan = $Count * 4
-    $head = $chunk.Head
-    $tail = if ($chunk.Split) { $chunk.Tail } else { $chunk.Head }
-    $first = @(); $last = @()
-    foreach ($pass in 1, 2) {
-        $headLines = Get-ChatqJsonLines $head $Marker $scan
-        $tailLines = Get-ChatqJsonLines $tail $Marker $scan -FromEnd
-        $headTexts = Select-ChatqDistinctRun @($headLines | ForEach-Object { & $Parse $_ } | Where-Object { $_ })
-        $tailTexts = Select-ChatqDistinctRun @($tailLines | ForEach-Object { & $Parse $_ } | Where-Object { $_ })
-        $first = @($headTexts | Select-Object -First $Count)
-        $last = @($tailTexts | Select-Object -Last $Count)
-        if (-not $chunk.Split -or ($first.Count -gt 0 -and $last.Count -gt 0)) { break }
-        if ($pass -eq 1) {
-            $head = Read-ChatqAllText $Path
-            $tail = $head
-            $chunk = [pscustomobject]@{ Head = $head; Tail = ''; Split = $false }
-        }
-    }
-    return [pscustomobject]@{ First = $first; Last = $last; Head = $chunk.Head; Tail = $chunk.Tail }
-}
-
-function Convert-ChatqJsonEscaped {
-    param([string]$Text)
-    if ($Text -notlike '*\*') { return $Text }
-    try { return ('"' + $Text + '"') | ConvertFrom-Json } catch { return $Text }
-}
-
-function Get-ChatqJsonString {
-    # index lookup rather than regex: this runs over megabyte-sized text.
-    # the LAST occurrence wins - titles and modes are appended, never rewritten
-    param([string]$Text, [string]$Key)
-    if (-not $Text) { return $null }
-    $best = -1
-    $len = 0
-    foreach ($anchor in @("`"$Key`":`"", "`"$Key`": `"")) {
-        $i = $Text.LastIndexOf($anchor, [StringComparison]::Ordinal)
-        if ($i -gt $best) { $best = $i; $len = $anchor.Length }
-    }
-    if ($best -lt 0) { return $null }
-    $rest = $Text.Substring($best + $len)
-    if ($rest -match '^((?:[^"\\]|\\.)*)"') { return $Matches[1] }
     return $null
 }
 
@@ -469,167 +2717,6 @@ function Read-ChatqJsonObjectAt {
         }
     }
     return $null
-}
-
-#endregion
-
-#region providers (Discover/Describe from chatrm) -----------------------------
-
-function Read-ChatqClaudePrompt {
-    param([string]$Line)
-    if ($Line -like '*"tool_result"*' -or $Line -like '*"isMeta":true*' -or $Line -like '*system-reminder*') { return $null }
-    try { $o = $Line | ConvertFrom-Json } catch { return $null }
-    if ($o.type -ne 'user') { return $null }
-    $c = $o.message.content
-    if ($c -isnot [string]) { $c = ($c | Where-Object { $_.type -eq 'text' } | ForEach-Object { $_.text }) -join ' ' }
-    if (-not $c) { return $null }
-    $c = $c.Trim()
-    if (Test-ChatqNoise $c) { return $null }
-    return ($c -replace '\s+', ' ')
-}
-
-function Get-ChatqCodexThreadNames {
-    # Codex keeps the thread's name in session_index.jsonl, never in the rollout
-    $path = Join-Path $script:ChatqCodexHome 'session_index.jsonl'
-    $f = Get-Item -LiteralPath $path -EA SilentlyContinue
-    $stamp = if ($f) { $f.LastWriteTimeUtc.Ticks } else { 0 }
-    if ($script:ChatqCodexNames -and $script:ChatqCodexNamesAt -eq $stamp) { return $script:ChatqCodexNames }
-    $map = @{}
-    if ($f) {
-        foreach ($line in (Get-Content -LiteralPath $path -Encoding UTF8 -EA SilentlyContinue)) {
-            $o = try { $line | ConvertFrom-Json } catch { $null }
-            if ($o.id -and $o.thread_name) { $map[[string]$o.id] = [string]$o.thread_name }
-        }
-    }
-    $script:ChatqCodexNames = $map
-    $script:ChatqCodexNamesAt = $stamp
-    return $map
-}
-
-function Read-ChatqCodexPrompt {
-    param([string]$Line)
-    try { $o = $Line | ConvertFrom-Json } catch { return $null }
-    if ($o.payload.role -ne 'user') { return $null }
-    $t = ($o.payload.content | Where-Object { $_.type -eq 'input_text' } | ForEach-Object { $_.text }) -join ' '
-    if (-not $t) { return $null }
-    $t = $t.Trim()
-    $i = $t.IndexOf('## My request for Codex:')
-    if ($i -ge 0) { $t = $t.Substring($i + 24).Trim() }
-    if ($t.StartsWith('# AGENTS.md') -or $t.StartsWith('<') -or $t.StartsWith('# Context from my IDE')) { return $null }
-    if (Test-ChatqNoise $t) { return $null }
-    return ($t -replace '\s+', ' ')
-}
-
-# Copilot is chatrm's third provider and is left out on purpose: it has no CLI
-# that can resume a chat headless, so there is nothing to deliver a prompt with.
-$script:ChatqProviders = [ordered]@{
-
-    claude = [pscustomobject]@{
-        Root     = (Join-Path $script:ChatqClaudeHome 'projects')
-        Discover = {
-            # only projects/<slug>/<uuid>.jsonl - a recursive sweep also drags in
-            # workflow journals and agent transcripts, which are not chats
-            $root = Join-Path $script:ChatqClaudeHome 'projects'
-            if (Test-Path -LiteralPath $root) {
-                Get-ChildItem -LiteralPath $root -Directory | ForEach-Object {
-                    Get-ChildItem -LiteralPath $_.FullName -Filter *.jsonl -File |
-                        Where-Object { $_.BaseName -match '^[0-9a-fA-F-]{36}$' }
-                }
-            }
-        }
-        Describe = {
-            param($File)
-            $p = Get-ChatqHeadTailPrompts $File.FullName '"type":"user"' ${function:Read-ChatqClaudePrompt}
-            if (-not $p) { return $null }
-            $nl = $p.Head.IndexOf("`n")
-            $firstLine = if ($nl -ge 0) { $p.Head.Substring(0, $nl) } else { $p.Head }
-            $hidden = $firstLine -like '*"isSidechain":true*'
-            $title = $null; $source = 'first message'
-            foreach ($t in @($p.Tail, $p.Head)) {
-                if (-not $title) { $title = Get-ChatqJsonString $t 'customTitle'; if ($title) { $source = 'renamed' } }
-            }
-            if (-not $title) {
-                foreach ($t in @($p.Tail, $p.Head)) {
-                    if (-not $title) { $title = Get-ChatqJsonString $t 'aiTitle'; if ($title) { $source = 'auto' } }
-                }
-            }
-            if ($title) { $title = Convert-ChatqJsonEscaped $title }
-            if (-not $title) { $title = @($p.First)[0] }
-            [pscustomobject]@{
-                Id          = $File.BaseName
-                Title       = Format-ChatqTitle $title
-                TitleSource = $source
-                Group       = $File.Directory.Name
-                Hidden      = $hidden
-                When        = Get-ChatqTimestampFromText $p $File
-                First       = $p.First
-                Last        = $p.Last
-            }
-        }
-    }
-
-    codex  = [pscustomobject]@{
-        Root     = (Join-Path $script:ChatqCodexHome 'sessions')
-        Discover = {
-            $root = Join-Path $script:ChatqCodexHome 'sessions'
-            if (Test-Path -LiteralPath $root) { Get-ChildItem -LiteralPath $root -Filter *.jsonl -Recurse -File }
-        }
-        Describe = {
-            param($File)
-            $p = Get-ChatqHeadTailPrompts $File.FullName @('"role":"user"', '"role": "user"') ${function:Read-ChatqCodexPrompt}
-            if (-not $p) { return $null }
-            $id = if ($File.BaseName -match '([0-9a-fA-F-]{36})$') { $Matches[1] } else { $File.BaseName }
-            $cwd = Get-ChatqJsonString $p.Head 'cwd'
-            $group = if ($cwd) { Split-Path ($cwd -replace '\\\\', '\') -Leaf } else { 'codex' }
-            $named = (Get-ChatqCodexThreadNames)[$id]
-            $title = if ($named) { $named } else { @($p.First)[0] }
-            [pscustomobject]@{
-                Id          = $id
-                Title       = Format-ChatqTitle $title
-                TitleSource = if ($named) { 'thread name' } else { 'first message' }
-                Group       = $group
-                Hidden      = $false
-                When        = Get-ChatqTimestampFromText $p $File
-                First       = $p.First
-                Last        = $p.Last
-            }
-        }
-    }
-}
-
-#endregion
-
-#region project scope (from chatrm) -------------------------------------------
-
-function Get-ChatqProjectScope {
-    # Claude names its project folder after the whole path with every
-    # non-alphanumeric turned into a dash; Codex records the leaf folder name.
-    param([string]$Path = $PWD.Path)
-    $full = $Path.TrimEnd('\', '/')
-    [pscustomobject]@{
-        Slug = ($full -replace '[^A-Za-z0-9]', '-')
-        Leaf = Split-Path $full -Leaf
-    }
-}
-
-function Test-ChatqInProject {
-    # Exact, never a prefix: the slug for D:\src\app is a prefix of the one for
-    # D:\src\app-Mobile. Case-insensitive, since drive letters vary.
-    param($Row, $Scope)
-    if (-not $Row.Group) { return $false }
-    if ($Row.Provider -eq 'claude') { return $Row.Group -eq $Scope.Slug }
-    return $Row.Group -eq $Scope.Leaf
-}
-
-function Select-ChatqInProject {
-    # Rows of the project being stood in; all rows when this directory is not a
-    # project any tool knows, so running from elsewhere still offers something
-    param([object[]]$Rows, [switch]$AllProjects)
-    if ($AllProjects -or -not $Rows) { return $Rows }
-    $scope = Get-ChatqProjectScope
-    $mine = @($Rows | Where-Object { Test-ChatqInProject $_ $scope })
-    if ($mine) { return $mine }
-    return $Rows
 }
 
 function ConvertTo-ChatqDate {
@@ -747,13 +2834,18 @@ function Resolve-ChatqTarget {
     param([string]$Target, [string]$Prompt, [string[]]$Provider, [switch]$AllProjects)
     $typed = ConvertTo-ChatqNorm ($Target.Trim().Trim("'", '"'))
     if (-not $typed) { return [pscustomobject]@{ Error = 'no target given' } }
-    $all = @(Sync-ChatqIndex -Provider $Provider | Where-Object { -not $_.Hidden -and $_.Title -ne '(empty)' })
+    $all = @(Sync-ChatIndex -Provider $Provider | Where-Object { -not $_.Hidden -and $_.Title -ne '(empty)' })
     if (-not $all) { return [pscustomobject]@{ Error = 'no chats found on this machine' } }
     $when = @{}
     foreach ($r in $all) { $when[$r.Path] = ConvertTo-ChatqDate $r.When }
 
     $make = {
         param($Row, $Rule, $Tier, $Score, $Runner, $RunnerScore, $Cluster, $Count, $Wide, $NoProject)
+        # Copilot chats are searched so that naming one says why it cannot be
+        # queued, rather than quietly resolving to some other chat instead
+        if ($Row.Provider -eq 'copilot') {
+            return [pscustomobject]@{ Error = "'$($Row.Title)' is a Copilot chat - Copilot has no CLI that can resume a chat, so nothing can deliver a prompt to it. Type more of the title to pick a Claude or Codex chat." }
+        }
         [pscustomobject]@{
             Error = $null; Row = $Row; When = $when[$Row.Path]; Rule = $Rule; Tier = $Tier
             Score = $Score; RunnerUp = $Runner; RunnerUpScore = $RunnerScore
@@ -772,8 +2864,8 @@ function Resolve-ChatqTarget {
         # no id starts with it: 'facade' is a fine title and valid hex
     }
 
-    $scope = Get-ChatqProjectScope
-    $mine = if ($AllProjects) { $all } else { @($all | Where-Object { Test-ChatqInProject $_ $scope }) }
+    $scope = Get-ChatProjectScope
+    $mine = if ($AllProjects) { $all } else { @($all | Where-Object { Test-ChatInProject $_ $scope }) }
     $noProject = -not $mine
     if ($noProject) { $mine = $all }
     $pools = @(@{ Rows = $mine; Wide = $false })
@@ -808,7 +2900,9 @@ function Resolve-ChatqTarget {
         if ($noProject -and -not $AllProjects) {
             return [pscustomobject]@{ Error = "no chat title matches '$typed', and this folder is not a project - cd into the project, type more of the title, or add -AllProjects to guess across all of them" }
         }
-        $cands = $mine; $tier = 'nomatch'
+        # a guess is never a Copilot chat - it could only end in a refusal
+        $cands = @($mine | Where-Object { $_.Provider -ne 'copilot' }); $tier = 'nomatch'
+        if (-not $cands.Count) { return [pscustomobject]@{ Error = "no chat title matches '$typed', and this project has no Claude or Codex chat to guess from" } }
     }
 
     $sorted = @($cands | Sort-Object { $when[$_.Path] } -Descending)
@@ -830,7 +2924,7 @@ function Write-ChatqPick {
     # one line for the pick, then only what explains it
     param($Res, [string]$Lead = '  ->')
     $r = $Res.Row
-    $age = if ($Res.When) { " ($(Get-ChatqAge $Res.When))" } else { '' }
+    $age = if ($Res.When) { " ($(Get-ChatAge $Res.When))" } else { '' }
     $why = switch -Wildcard ($Res.Rule) {
         'id' { 'id' }
         'exact' { 'exact title' }
@@ -848,7 +2942,7 @@ function Write-ChatqPick {
         Write-Host "     no title matched - this is a guess from $from" -ForegroundColor Yellow
     }
     if ($Res.RunnerUp) {
-        $ra = if ($Res.RunnerUpWhen) { " ($(Get-ChatqAge $Res.RunnerUpWhen))" } else { '' }
+        $ra = if ($Res.RunnerUpWhen) { " ($(Get-ChatAge $Res.RunnerUpWhen))" } else { '' }
         $rs = if ($null -ne $Res.RunnerUpScore) { " $($Res.RunnerUpScore)" } else { '' }
         Write-Host "     runner-up '$($Res.RunnerUp.Title)'$ra$rs" -ForegroundColor DarkGray
     }
@@ -920,13 +3014,13 @@ function Get-ChatqClaudeMeta {
     $meta = [pscustomobject]@{ Exists = $false; Cwd = $null; Mode = $null; Model = $null; LastTurn = $null }
     if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return $meta }
     $meta.Exists = $true
-    $chunk = Read-ChatqChunk $Path 262144
+    $chunk = Read-ChatChunk $Path 262144
     if ($chunk) {
         # Both d:\ and D:\ turn up for the same folder. The one whose slug is
         # this project's folder name is the one Claude filed the chat under.
         $seen = [System.Collections.Generic.List[string]]::new()
         foreach ($m in [regex]::Matches($chunk.Head + "`n" + $chunk.Tail, '"cwd":"((?:[^"\\]|\\.)*)"')) {
-            $v = Convert-ChatqJsonEscaped $m.Groups[1].Value
+            $v = Convert-ChatJsonEscaped $m.Groups[1].Value
             if ($v -and -not $seen.Contains($v)) { $seen.Add($v) }
         }
         $meta.Cwd = @($seen | Where-Object { ($_.TrimEnd('\', '/') -replace '[^A-Za-z0-9]', '-') -eq $Group -and (Test-Path -LiteralPath $_) }) |
@@ -947,10 +3041,10 @@ function Get-ChatqCodexMeta {
     $meta = [pscustomobject]@{ Exists = $false; Cwd = $null; Sandbox = $null; Network = $false; Approval = $null; Model = $null }
     if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return $meta }
     $meta.Exists = $true
-    $chunk = Read-ChatqChunk $Path 262144
-    if ($chunk -and $chunk.Head -match '"cwd":\s*"((?:[^"\\]|\\.)*)"') { $meta.Cwd = Convert-ChatqJsonEscaped $Matches[1] }
+    $chunk = Read-ChatChunk $Path 262144
+    if ($chunk -and $chunk.Head -match '"cwd":\s*"((?:[^"\\]|\\.)*)"') { $meta.Cwd = Convert-ChatJsonEscaped $Matches[1] }
     $text = if ($chunk.Split) { $chunk.Tail } else { $chunk.Head }
-    $lines = Get-ChatqJsonLines $text @('"type":"turn_context"', '"type": "turn_context"') 1 -FromEnd -Skip @()
+    $lines = Get-ChatJsonLines $text @('"type":"turn_context"', '"type": "turn_context"') 1 -FromEnd -Skip @()
     if ($lines.Count) {
         $o = try { $lines[0] | ConvertFrom-Json } catch { $null }
         if ($o.payload) {
@@ -969,13 +3063,13 @@ function Get-ChatqCutOffChats {
     # queued for: the ones you would otherwise walk round typing "continue"
     # into, one at a time. Only transcripts touched in the last $Hours count.
     param([object[]]$Jobs, [int]$Hours = 12)
-    $root = Join-Path $script:ChatqClaudeHome 'projects'
+    $root = Join-Path $script:ChatClaudeHome 'projects'
     if (-not (Test-Path -LiteralPath $root)) { return @() }
     $since = (Get-Date).AddHours(-$Hours)
     $busy = @{}
     foreach ($j in $Jobs) { if ($j.state -in 'queued', 'running') { $busy[$j.sessionId] = $true } }
     $rows = @{}
-    foreach ($r in @(Get-ChatqIndex)) { $rows[$r.Path] = $r }
+    foreach ($r in @(Get-ChatIndex)) { $rows[$r.Path] = $r }
     $out = foreach ($d in @(Get-ChildItem -LiteralPath $root -Directory -EA SilentlyContinue)) {
         foreach ($f in @(Get-ChildItem -LiteralPath $d.FullName -Filter *.jsonl -File -EA SilentlyContinue |
                     Where-Object { $_.LastWriteTime -gt $since -and $_.BaseName -match '^[0-9a-fA-F-]{36}$' })) {
@@ -1145,7 +3239,7 @@ function Find-ChatqExe {
     if ($cmd) { return $cmd.Source }
     $exe = if ($script:ChatqIsWindows) { "$name.exe" } else { $name }
     foreach ($p in @((Join-Path (Join-Path (Join-Path $HOME '.local') 'bin') $exe),
-            (Join-Path (Join-Path $script:ChatqClaudeHome 'local') $exe))) {
+            (Join-Path (Join-Path $script:ChatClaudeHome 'local') $exe))) {
         if ($name -eq 'claude' -and (Test-Path -LiteralPath $p)) { return $p }
     }
     # Both VS Code extensions ship their own copy and put none on PATH - on a
@@ -1585,10 +3679,10 @@ function Test-ChatqPromptLanded {
     $want = ($Prompt -replace '\s+', ' ').Trim()
     $want = $want.Substring(0, [Math]::Min(60, $want.Length))
     $text = Read-ChatqTail $Path 4194304
-    # assigned, never @()-wrapped: Get-ChatqJsonLines returns its array behind a
+    # assigned, never @()-wrapped: Get-ChatJsonLines returns its array behind a
     # comma, and @(...) around that makes an array holding one array
     $marker = if ($Provider -eq 'codex') { @('"role":"user"', '"role": "user"') } else { @('"type":"user"') }
-    $lines = Get-ChatqJsonLines $text $marker 40 -FromEnd -Skip @('"tool_result"')
+    $lines = Get-ChatJsonLines $text $marker 40 -FromEnd -Skip @('"tool_result"')
     foreach ($line in $lines) {
         $o = try { $line | ConvertFrom-Json } catch { continue }
         if ($since -and (ConvertTo-ChatqDate $o.timestamp) -lt $since.AddSeconds(-5)) { continue }
@@ -1690,7 +3784,7 @@ function Read-ChatqUsageCache {
     param([string]$ConfigDir)
     $path = if ($ConfigDir) { Join-Path $ConfigDir '.claude.json' } else { Join-Path $HOME '.claude.json' }
     if (-not (Test-Path -LiteralPath $path)) { return $null }
-    $t = try { Read-ChatqAllText $path } catch { return $null }
+    $t = try { Read-ChatAllText $path } catch { return $null }
     $i = $t.IndexOf('"cachedUsageUtilization"', [StringComparison]::Ordinal)
     if ($i -lt 0) { return $null }
     $j = $t.IndexOf('{', $i)
@@ -1846,7 +3940,7 @@ function Invoke-ChatqRun {
         return (Get-ChatqCodexOutcome $st $proc)
     }
     $v = Get-ChatqCliVersion $exe
-    if ($v -and ((Compare-ChatqVersion $v $script:ChatqClaudeMin) -eq -1)) {
+    if ($v -and ((Compare-ChatVersion $v $script:ChatqClaudeMin) -eq -1)) {
         return [pscustomobject]@{ kind = 'failed'; reason = "Claude Code $v is too old for unattended runs - needs $($script:ChatqClaudeMin)+" }
     }
     $a = @('-p', '--resume', $Job.sessionId, '--output-format', 'stream-json', '--verbose',
@@ -2114,44 +4208,6 @@ function Get-ChatqPromptStats {
     [pscustomobject]@{ First = if ($first) { $first.Trim() } else { '' }; Chars = $Text.Length; Lines = $lines }
 }
 
-function Get-ChatqCells {
-    # width in console cells, not characters: Hangul and CJK draw two cells each
-    param([string]$Text)
-    $n = 0
-    foreach ($c in $Text.ToCharArray()) {
-        $u = [int]$c
-        if (($u -ge 0x1100 -and $u -le 0x115F) -or ($u -ge 0x2E80 -and $u -le 0x303E) -or
-            ($u -ge 0x3041 -and $u -le 0x33FF) -or ($u -ge 0x3400 -and $u -le 0x4DBF) -or
-            ($u -ge 0x4E00 -and $u -le 0x9FFF) -or ($u -ge 0xA000 -and $u -le 0xA4CF) -or
-            ($u -ge 0xAC00 -and $u -le 0xD7A3) -or ($u -ge 0xF900 -and $u -le 0xFAFF) -or
-            ($u -ge 0xFE30 -and $u -le 0xFE6F) -or ($u -ge 0xFF00 -and $u -le 0xFF60) -or
-            ($u -ge 0xFFE0 -and $u -le 0xFFE6)) { $n += 2 } else { $n++ }
-    }
-    return $n
-}
-
-function Format-ChatqCell {
-    # clip to exactly $Cells console cells, padding short text out to the same
-    param([string]$Text, [int]$Cells, [switch]$NoPad)
-    if ($Cells -le 0) { return '' }
-    $w = Get-ChatqCells $Text
-    if ($w -le $Cells) {
-        if ($NoPad) { return $Text }
-        return $Text + (' ' * ($Cells - $w))
-    }
-    $len = 0
-    $used = 0
-    while ($len -lt $Text.Length) {
-        $cw = Get-ChatqCells $Text.Substring($len, 1)
-        if ($used + $cw -gt $Cells - 1) { break }
-        $used += $cw
-        $len++
-    }
-    $out = $Text.Substring(0, $len) + $script:ChatqEllipsis
-    if ($NoPad) { return $out }
-    return $out + (' ' * [Math]::Max(0, $Cells - $used - 1))
-}
-
 function Get-ChatqWidth {
     $w = 0
     try { $w = $Host.UI.RawUI.WindowSize.Width } catch {}
@@ -2199,34 +4255,34 @@ function Write-ChatqList {
         $rest = [Math]::Max(30, $width - $numW - $sendW - 6)
         $chatW = [int]($rest * 0.42)
         $promptW = $rest - $chatW
-        Write-Host ('  ' + (Format-ChatqCell '#' $numW) + (Format-ChatqCell 'chat' $chatW) + ' ' +
-            (Format-ChatqCell 'prompt' $promptW) + ' ' + 'sends') -ForegroundColor DarkGray
+        Write-Host ('  ' + (Format-ChatCell '#' $numW) + (Format-ChatCell 'chat' $chatW) + ' ' +
+            (Format-ChatCell 'prompt' $promptW) + ' ' + 'sends') -ForegroundColor DarkGray
         foreach ($j in $open) {
             $text = if ($j.kind -eq 'continue') { 'continue' } else { [string](Read-ChatqPrompt $j) }
             $ps = Get-ChatqPromptStats $text
             $when = ConvertTo-ChatqDate $j.chatWhen
-            $age = if ($when) { " ($(Get-ChatqAge $when))" } else { '' }
+            $age = if ($when) { " ($(Get-ChatAge $when))" } else { '' }
             $state = switch ($j.state) {
                 'queued' { $eta[$j.id] }
                 'running' {
                     $s = ConvertTo-ChatqDate $j.startedAt
-                    $a = if ($s) { Get-ChatqAge $s } else { 'now' }
+                    $a = if ($s) { Get-ChatAge $s } else { 'now' }
                     if ($a -eq 'now') { 'running' } else { "running $a" }
                 }
                 'needs-input' { 'needs you' }
                 'failed' { 'failed' }
             }
             $color = switch ($j.state) { 'needs-input' { 'Yellow' } 'failed' { 'Red' } 'running' { 'Green' } default { 'Gray' } }
-            Write-Host ('  ' + (Format-ChatqCell "$($j.seq)" $numW)) -NoNewline
-            Write-Host ((Format-ChatqCell "$($j.title)$age" $chatW) + ' ') -NoNewline -ForegroundColor Cyan
-            Write-Host ((Format-ChatqCell $ps.First $promptW) + ' ') -NoNewline
+            Write-Host ('  ' + (Format-ChatCell "$($j.seq)" $numW)) -NoNewline
+            Write-Host ((Format-ChatCell "$($j.title)$age" $chatW) + ' ') -NoNewline -ForegroundColor Cyan
+            Write-Host ((Format-ChatCell $ps.First $promptW) + ' ') -NoNewline
             Write-Host $state -ForegroundColor $color
             $pad = ' ' * (2 + $numW + $chatW + 1)
-            if ($ps.Lines -gt 1 -or (Get-ChatqCells $ps.First) -gt $promptW) {
+            if ($ps.Lines -gt 1 -or (Get-ChatCells $ps.First) -gt $promptW) {
                 Write-Host ($pad + [char]0x21B3 + ' ' + ('{0:N0} chars {1} {2} lines' -f $ps.Chars, $script:ChatqDot, $ps.Lines)) -ForegroundColor DarkGray
             }
             if ($j.state -in 'needs-input', 'failed' -and $j.result.reason) {
-                Write-Host ($pad + (Format-ChatqCell ([string]$j.result.reason) $promptW -NoPad)) -ForegroundColor DarkGray
+                Write-Host ($pad + (Format-ChatCell ([string]$j.result.reason) $promptW -NoPad)) -ForegroundColor DarkGray
             }
         }
     }
@@ -2251,7 +4307,7 @@ function Write-ChatqList {
         $mark = if ($j.state -eq 'skipped') { '-' } else { [string][char]0x2713 }
         $x = if ($j.result.excerpt) { " $($script:ChatqDot) `"$($j.result.excerpt)`"" } elseif ($j.result.reason) { " $($script:ChatqDot) $($j.result.reason)" } else { '' }
         $line = "  $mark #$($j.seq) $($j.title)$x"
-        Write-Host ((Format-ChatqCell $line ($width - 8) -NoPad) + '  ' + $end.ToString('HH:mm')) -ForegroundColor DarkGray
+        Write-Host ((Format-ChatCell $line ($width - 8) -NoPad) + '  ' + $end.ToString('HH:mm')) -ForegroundColor DarkGray
     }
     Write-Host "  chatq <n> opens prompt n $($script:ChatqDot) chatqlist -Board = live board in VS Code $($script:ChatqDot) chatqlog <n> = what a run did" -ForegroundColor DarkGray
     Write-Host ''
@@ -2377,7 +4433,7 @@ function Save-ChatqWatchState {
         }
     }
     $s = [ordered]@{
-        pid = $PID; version = $script:ChatqVersion; startedAt = $W.startedAt; heartbeat = (Get-ChatqStamp)
+        pid = $PID; version = $script:ChatVersion; startedAt = $W.startedAt; heartbeat = (Get-ChatqStamp)
         current = $W.current; next = $W.next; blocked = $blocked; outage = $outage
     }
     try { Save-ChatqJson $script:ChatqStatePath $s } catch {}
@@ -2403,7 +4459,7 @@ function Set-ChatqKeepAwake {
             # dies: caffeinate -w watches the pid, and tail --pid exits with it.
             # A plain 'sleep infinity' would hold the machine awake for good
             # after a kill -9.
-            $cmd = if ($script:ChatqIsMac) { @('caffeinate', '-i', '-w', "$PID") }
+            $cmd = if ($script:ChatIsMac) { @('caffeinate', '-i', '-w', "$PID") }
             elseif (Get-Command systemd-inhibit -EA SilentlyContinue) {
                 @('systemd-inhibit', '--what=sleep:idle', '--who=chatq', '--why=queued prompts', 'tail', "--pid=$PID", '-f', '/dev/null')
             }
@@ -2689,10 +4745,17 @@ function Invoke-ChatqJob {
     if ($wasCancelled) { Remove-Item -LiteralPath $cancel -Force -EA SilentlyContinue }
     Set-ChatqProp $Job 'runnerPid' $null
     if ($stale) { Set-ChatqProp $out 'stale' $true }
+    # The window still holding this chat shows none of the run until it
+    # reloads. The extension in extension/ offers that reload, in that window
+    # only - the job's folder is what it matches on, never this process's own.
+    # Not for a run that goes back in the queue: it is not finished yet.
+    if ($stale -and -not $wasCancelled -and $out.kind -notin 'limited', 'overloaded') {
+        Write-ChatReloadRequest -Title $Job.title -Cwd $Job.cwd -Kind 'ran'
+    }
 
     $dur = ''
     $s0 = ConvertTo-ChatqDate $Job.startedAt
-    if ($s0) { $dur = Get-ChatqAge $s0; if ($dur -eq 'now') { $dur = '<1m' } }
+    if ($s0) { $dur = Get-ChatAge $s0; if ($dur -eq 'now') { $dur = '<1m' } }
     $reload = if ($stale) { " $($script:ChatqDot) reload the VS Code window before typing in this chat" } else { '' }
     # limited and overloaded both go back in the queue; a prompt that already
     # reached the chat comes back as "continue", never as itself a second time
@@ -2796,7 +4859,7 @@ function Invoke-ChatqWatchLoop {
     try {
         Set-Content -LiteralPath $script:ChatqPidPath -Value $PID -Encoding ASCII
         if (Test-Path -LiteralPath $script:ChatqStopPath) { Remove-Item -LiteralPath $script:ChatqStopPath -Force }
-        Write-ChatqWatchLog "watcher $PID started ($script:ChatqVersion)"
+        Write-ChatqWatchLog "watcher $PID started ($script:ChatVersion)"
         Repair-ChatqInterrupted
         $wakeSeen = $null
         while ($true) {
@@ -3453,158 +5516,12 @@ function Write-ChatqCheatSheet {
     Write-Host '  chatqnotify                 phone alerts through Join' -ForegroundColor Cyan
     Write-Host ''
     Write-Host '  -WhatIf shows the pick only   -Mode auto|acceptEdits|...   -At 13:00 / -In 2h' -ForegroundColor DarkGray
-    Write-Host '  Tab completes titles; for several words open a quote first:  chatq ''card red<Tab>' -ForegroundColor DarkGray
-    Write-Host "  chatq $script:ChatqVersion $($script:ChatqDot) $script:ChatqScriptPath" -ForegroundColor DarkGray
+    Write-Host '  Tab fills in a title from any part of it, like chatrm: chatq card red<Tab>' -ForegroundColor DarkGray
+    Write-Host '  chat = every command, find and delete included' -ForegroundColor DarkGray
+    Write-Host "  VS-code-chat-manager $script:ChatVersion $($script:ChatqDot) $script:ChatqScriptPath" -ForegroundColor DarkGray
 }
 
 #endregion
-
-#region install ---------------------------------------------------------------
-
-function Compare-ChatqVersion {
-    # -1 A older, 0 same, 1 A newer, $null if either side will not parse
-    param([string]$A, [string]$B)
-    $pa = $null
-    $pb = $null
-    if (-not [version]::TryParse($A, [ref]$pa)) { return $null }
-    if (-not [version]::TryParse($B, [ref]$pb)) { return $null }
-    return $pa.CompareTo($pb)
-}
-
-function chatqinstall {
-    <#
-    .SYNOPSIS
-    Add chatq to your PowerShell profile, so its commands - and the watcher, if
-    jobs are waiting - come back in every new shell.
-    #>
-    [CmdletBinding()]
-    param([switch]$Force)
-    Set-StrictMode -Off
-    $me = $script:ChatqScriptPath
-    if (-not $me) {
-        Write-Host '  cannot tell where this file is' -ForegroundColor Yellow
-        Write-Host '  dot-source it by path first:  . C:\path\to\VS-code-chat-manager.ps1' -ForegroundColor DarkGray
-        return
-    }
-    if (Get-Command Unblock-File -EA SilentlyContinue) { Unblock-File -LiteralPath $me -EA SilentlyContinue }
-    $was = $null
-    if (Test-Path -LiteralPath $script:ChatqVersionPath) {
-        $was = Get-Content -LiteralPath $script:ChatqVersionPath -TotalCount 1 -EA SilentlyContinue
-        if ($was) { $was = $was.Trim() }
-    }
-    $dir = Split-Path $PROFILE -Parent
-    if ($dir -and -not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-    $lines = if (Test-Path -LiteralPath $PROFILE) { @(Get-Content -LiteralPath $PROFILE) } else { @() }
-    $mine = @($lines | Where-Object { $_ -match '(chatq|VS-code-chat-manager).ps1' })
-    $here = @($mine | Where-Object { $_.IndexOf($me, [StringComparison]::OrdinalIgnoreCase) -ge 0 })
-    if ($here -and -not $Force) {
-        Write-Host '  already installed' -ForegroundColor DarkGray
-        Write-Host "    $PROFILE" -ForegroundColor DarkGray
-    }
-    else {
-        if (Test-Path -LiteralPath $PROFILE) { Copy-Item -LiteralPath $PROFILE -Destination "$PROFILE.bak" -Force }
-        $kept = @($lines | Where-Object { $_ -notmatch '(chatq|VS-code-chat-manager).ps1' })
-        $kept += ". `"$me`""
-        Set-Content -LiteralPath $PROFILE -Value $kept -Encoding UTF8
-        Write-Host '  installed' -ForegroundColor Green
-        Write-Host "    $PROFILE"
-        $stale = $mine.Count - $here.Count
-        if ($stale -gt 0) { Write-Host "    replaced $stale line$(if ($stale -ne 1) { 's' }) from an older location" -ForegroundColor DarkGray }
-        Write-Host '    ready in this shell - type chatq' -ForegroundColor Green
-    }
-    if (-not $was) { Write-Host "    version $script:ChatqVersion" -ForegroundColor DarkGray }
-    elseif ($was -eq $script:ChatqVersion) { Write-Host "    version $script:ChatqVersion - unchanged" -ForegroundColor DarkGray }
-    elseif ((Compare-ChatqVersion $was $script:ChatqVersion) -eq 1) { Write-Host "    DOWNGRADED $was -> $script:ChatqVersion" -ForegroundColor Yellow }
-    else { Write-Host "    updated $was -> $script:ChatqVersion" -ForegroundColor Green }
-    if (-not (Test-Path -LiteralPath $script:ChatqIndexPath)) {
-        Write-Host '    building the index for Tab completion (~30s)...' -ForegroundColor DarkGray
-        try {
-            $n = @(Sync-ChatqIndex).Count
-            Write-Host "    indexed $n chat$(if ($n -ne 1) { 's' })" -ForegroundColor DarkGray
-        }
-        catch { Write-Host '    could not build it - any chatq run builds it' -ForegroundColor Yellow }
-    }
-    if (-not (Find-ChatqExe claude) -and -not (Find-ChatqExe codex)) {
-        Write-Host '    no claude or codex CLI found - install one, or set CHATQ_CLAUDE / CHATQ_CODEX' -ForegroundColor Yellow
-    }
-    try {
-        New-ChatqDir $script:ChatqData
-        Set-Content -LiteralPath $script:ChatqVersionPath -Value $script:ChatqVersion -Encoding UTF8
-    }
-    catch {}
-}
-
-function chatquninstall {
-    <#
-    .SYNOPSIS
-    Take chatq back out of your profile; -All deletes its folder too, data/ and
-    every queued prompt with it.
-    #>
-    [CmdletBinding()]
-    param([switch]$All)
-    Set-StrictMode -Off
-    $pending = @(Get-ChatqJobs | Where-Object { $_.state -in 'queued', 'running' })
-    if ($pending) { Write-Host "  $($pending.Count) job$(if ($pending.Count -ne 1) { 's' }) still queued - they will not be sent" -ForegroundColor Yellow }
-    if (Test-ChatqWatcherAlive) {
-        Save-ChatqText $script:ChatqStopPath 'stop'
-        for ($i = 0; $i -lt 40 -and (Test-ChatqWatcherAlive); $i++) { Start-Sleep -Milliseconds 250 }
-        Write-Host '  stopped the watcher' -ForegroundColor DarkGray
-    }
-    $lines = if (Test-Path -LiteralPath $PROFILE) { @(Get-Content -LiteralPath $PROFILE) } else { @() }
-    $mine = @($lines | Where-Object { $_ -match '(chatq|VS-code-chat-manager).ps1' })
-    if ($mine.Count) {
-        Copy-Item -LiteralPath $PROFILE -Destination "$PROFILE.bak" -Force
-        Set-Content -LiteralPath $PROFILE -Encoding UTF8 -Value @($lines | Where-Object { $_ -notmatch '(chatq|VS-code-chat-manager).ps1' })
-        Write-Host "  removed $($mine.Count) line$(if ($mine.Count -ne 1) { 's' }) from the profile" -ForegroundColor Green
-        Write-Host "    backup: $PROFILE.bak" -ForegroundColor DarkGray
-    }
-    else { Write-Host '  nothing in the profile to remove' -ForegroundColor DarkGray }
-    $here = if ($script:ChatqScriptPath) { Split-Path $script:ChatqScriptPath -Parent } else { $null }
-    if ($All -and $here) {
-        Remove-Item -LiteralPath $here -Recurse -Force -EA SilentlyContinue
-        $gone = -not (Test-Path -LiteralPath $here)
-        Write-Host "  $(if ($gone) { 'deleted' } else { 'COULD NOT DELETE' })  $here" -ForegroundColor $(if ($gone) { 'Green' } else { 'Yellow' })
-    }
-    elseif ($here) {
-        Write-Host '  the folder is still there - delete it when you want to:' -ForegroundColor DarkGray
-        Write-Host "      Remove-Item -LiteralPath `"$here`" -Recurse -Force" -ForegroundColor Cyan
-    }
-    Write-Host '  these commands stay in this shell until you close it' -ForegroundColor DarkGray
-}
-
-#endregion
-
-#region tab completion --------------------------------------------------------
-
-$script:ChatqTitleCompleter = {
-    # One quoted title replaces the word being typed. Scoped to this project
-    # the way the resolver scopes its first pass, so Tab offers what chatq picks.
-    param($cmd, $param, $word)
-    Set-StrictMode -Off
-    $w = ([string]$word).Trim('"', "'")
-    $rows = @(Select-ChatqInProject @(Get-ChatqIndex | Where-Object { $_.Title -ne '(empty)' -and -not $_.Hidden }))
-    if (-not $rows) {
-        return [System.Management.Automation.CompletionResult]::new(
-            $word, 'no index yet - run chatq once', 'ParameterValue', 'No index yet - any chatq search builds it (~30s)')
-    }
-    if ($w -match '^\d{1,4}$') { return }   # a job number - nothing to complete
-    $hits = @($rows | Where-Object { -not $w -or $_.Title.StartsWith($w, [StringComparison]::OrdinalIgnoreCase) })
-    if (-not $hits -and $w) { $hits = @($rows | Where-Object { $_.Title.IndexOf($w, [StringComparison]::OrdinalIgnoreCase) -ge 0 }) }
-    $hits | Group-Object Title | ForEach-Object { ($_.Group | Sort-Object When -Descending)[0] } |
-        Sort-Object When -Descending | Select-Object -First 25 | ForEach-Object {
-            $when = ConvertTo-ChatqDate $_.When
-            $age = if ($when) { Get-ChatqAge $when } else { '?' }
-            $first = @($_.First)[0]
-            $label = (Format-ChatqCell $_.Title 44) + ' ' + (Format-ChatqCell "[$($_.Provider) $age]" 15)
-            if ($first) { $label += ' > ' + (Format-ChatqCell ($first -replace '\s+', ' ') 40 -NoPad) }
-            $tip = "$($_.Title)`n$($_.Provider) / $($_.Group) / $age"
-            if ($first) { $tip += "`n  > $first" }
-            # every single-quote PowerShell knows is doubled - typographic ones too
-            $esc = [System.Management.Automation.Language.CodeGeneration]::EscapeSingleQuotedStringContent($_.Title)
-            [System.Management.Automation.CompletionResult]::new("'" + $esc + "'", $label, 'ParameterValue', $tip)
-        }
-}
-Register-ArgumentCompleter -CommandName chatq -ParameterName Target -ScriptBlock $script:ChatqTitleCompleter
 
 $script:ChatqJobCompleter = {
     param($cmd, $param, $word)
@@ -3615,16 +5532,25 @@ $script:ChatqJobCompleter = {
 }
 Register-ArgumentCompleter -CommandName chatqrm, chatqrun, chatqlog -ParameterName Ref -ScriptBlock $script:ChatqJobCompleter
 
-#endregion
 
-# Run instead of dot-sourced - & file.ps1, powershell -File, a double-click -
-# leaves a shell with no chatq command and nothing said about why.
+# a shell opened after the delete picks the watch back up
+if (Test-Path -LiteralPath $script:ChatTombPath) { Start-ChatGhostWatch }
+
+# Run instead of dot-sourced - & file.ps1, powershell -File, a double-click.
+# Everything above was defined in a scope about to be thrown away, leaving a
+# shell with no chat command and nothing said about why. InvocationName is '.'
+# for a real dot-source, at the prompt and from inside a profile alike, and the
+# path or '&' otherwise, so this cannot fire on a legitimate load.
 if ($MyInvocation.InvocationName -ne '.') {
     Write-Host ''
     Write-Host '  nothing was loaded - this file has to be dot-sourced' -ForegroundColor Yellow
+    Write-Host '  a dot and a space in front of the path is the whole difference:' -ForegroundColor DarkGray
+    # iex has no file behind it, so PSCommandPath is empty there - printing
+    # . "" would be advice nobody can follow, and is how an empty dot-source
+    # line ends up pasted into a profile in the first place
     $shown = if ($PSCommandPath) { $PSCommandPath } else { 'C:\path\to\VS-code-chat-manager.ps1' }
     Write-Host "      . `"$shown`"" -ForegroundColor Cyan
-    Write-Host '  then chatqinstall, to have every new shell do it for you' -ForegroundColor DarkGray
+    Write-Host '  then chatinstall, to have every new shell do it for you' -ForegroundColor DarkGray
     Write-Host ''
 }
 elseif (-not $env:CHATQ_WATCHER -and -not $env:CLAUDECODE -and [Environment]::UserInteractive -and
