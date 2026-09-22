@@ -1,5 +1,5 @@
 <#
-chatq self-test. No Pester, no network, no model: every claude/codex call goes
+VS-code-chat-manager self-test. No Pester, no network, no model: every claude/codex call goes
 to tests/fake-agent.ps1. The exit code is the number of failed checks.
 
     powershell -NoProfile -ExecutionPolicy Bypass -File tests\run-tests.ps1
@@ -7,7 +7,7 @@ to tests/fake-agent.ps1. The exit code is the number of failed checks.
 
 It builds a sandbox in tests/.sandbox - fake Claude and Codex homes whose chats
 are generated here with timestamps relative to now, so no fixture ever goes
-stale - copies chatq.ps1 into it (its data/ follows the script, so the sandbox
+stale - copies the script into it (its data/ follows the script, so the sandbox
 gets its own), and dot-sources that copy. -Keep leaves the sandbox behind.
 
 This file is ASCII: Hangul is written as \uXXXX and decoded by U, because
@@ -39,8 +39,8 @@ $codexHome = Join-Path $sb 'codex'
 $work = Join-Path $sb 'work'
 $projA = Join-Path $work 'projA'
 $projM = Join-Path $work 'projA-Mobile'
-foreach ($d in $claudeHome, $codexHome, $projA, $projM, (Join-Path $sb 'chatq')) { $null = New-Item -ItemType Directory -Path $d -Force }
-Copy-Item -LiteralPath (Join-Path $root 'chatq.ps1') -Destination (Join-Path $sb 'chatq\chatq.ps1')
+foreach ($d in $claudeHome, $codexHome, $projA, $projM, (Join-Path $sb 'tool')) { $null = New-Item -ItemType Directory -Path $d -Force }
+Copy-Item -LiteralPath (Join-Path $root 'VS-code-chat-manager.ps1') -Destination (Join-Path $sb 'tool\VS-code-chat-manager.ps1')
 
 $env:CLAUDE_CONFIG_DIR = $claudeHome
 $env:CODEX_HOME = $codexHome
@@ -159,7 +159,7 @@ $cxLines = @(
     (([ordered]@{ id = $cxId; thread_name = 'Codex gitignore thread'; updated_at = $now.ToString('o') } | ConvertTo-Json -Compress) + "`n"), $utf8)
 
 # --- load --------------------------------------------------------------------
-. (Join-Path $sb 'chatq\chatq.ps1')
+. (Join-Path $sb 'tool\VS-code-chat-manager.ps1')
 Set-Location -LiteralPath $projA
 
 Section 'bigrams and cosine'
@@ -328,7 +328,7 @@ $esc = [System.Management.Automation.Language.CodeGeneration]::EscapeSingleQuote
 Check 'completion quotes a typographic apostrophe' ($null -ne [scriptblock]::Create("'$esc'"))
 # a profile with StrictMode on: dot-source there, then only what a user types
 $exe = (Get-Process -Id $PID).Path
-$probe = "Set-StrictMode -Version Latest; `$ErrorActionPreference = 'Stop'; try { . '$(Join-Path $sb 'chatq\chatq.ps1')'; Set-Location -LiteralPath '$projA'; chatq plugin -WhatIf *> `$null; chatqlist *> `$null; chatqlog 1 *> `$null; `$r = & `$script:ChatqTitleCompleter 'chatq' 'Target' 'Pars'; 'ok' } catch { 'threw: ' + `$_.Exception.Message }"
+$probe = "Set-StrictMode -Version Latest; `$ErrorActionPreference = 'Stop'; try { . '$(Join-Path $sb 'tool\VS-code-chat-manager.ps1')'; Set-Location -LiteralPath '$projA'; chatq plugin -WhatIf *> `$null; chatqlist *> `$null; chatqlog 1 *> `$null; `$r = & `$script:ChatqTitleCompleter 'chatq' 'Target' 'Pars'; 'ok' } catch { 'threw: ' + `$_.Exception.Message }"
 $strict = (& $exe -NoProfile -NonInteractive -Command $probe | Select-Object -Last 1)
 Check 'works from a StrictMode Latest session' ($strict -eq 'ok') $strict
 

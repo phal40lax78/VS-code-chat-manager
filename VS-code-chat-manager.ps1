@@ -9,9 +9,9 @@ the limit resets, chatq resumes each chat in turn, sends its prompt, runs it to
 the end, and tells your phone how it went.
 
 INSTALL
-    iex (irm https://raw.githubusercontent.com/phal40lax78/chatq/main/install.ps1)
+    iex (irm https://raw.githubusercontent.com/phal40lax78/VS-code-chat-manager/main/install.ps1)
   or, with the file already on disk:
-    . "$HOME\Tools\chatq\chatq.ps1"
+    . "$HOME\Tools\VS-code-chat-manager\VS-code-chat-manager.ps1"
     chatqinstall
   The leading dot matters: `. file.ps1` loads the commands into this shell,
   `& file.ps1` runs them into a scope that is thrown away. Same as chatrm.
@@ -2912,7 +2912,7 @@ function Start-ChatqWatcher {
     elseif ($Wake -eq 'now') { Send-ChatqWake 'now' }
     $path = $script:ChatqScriptPath
     if (-not $path -or -not (Test-Path -LiteralPath $path)) {
-        Write-Host '  cannot start the watcher: this shell does not know where chatq.ps1 is' -ForegroundColor Yellow
+        Write-Host '  cannot start the watcher: this shell does not know where VS-code-chat-manager.ps1 is' -ForegroundColor Yellow
         return $false
     }
     $q = { param($s) "'" + ([string]$s).Replace("'", "''") + "'" }
@@ -3483,7 +3483,7 @@ function chatqinstall {
     $me = $script:ChatqScriptPath
     if (-not $me) {
         Write-Host '  cannot tell where this file is' -ForegroundColor Yellow
-        Write-Host '  dot-source it by path first:  . C:\path\to\chatq.ps1' -ForegroundColor DarkGray
+        Write-Host '  dot-source it by path first:  . C:\path\to\VS-code-chat-manager.ps1' -ForegroundColor DarkGray
         return
     }
     if (Get-Command Unblock-File -EA SilentlyContinue) { Unblock-File -LiteralPath $me -EA SilentlyContinue }
@@ -3495,7 +3495,7 @@ function chatqinstall {
     $dir = Split-Path $PROFILE -Parent
     if ($dir -and -not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
     $lines = if (Test-Path -LiteralPath $PROFILE) { @(Get-Content -LiteralPath $PROFILE) } else { @() }
-    $mine = @($lines | Where-Object { $_ -match 'chatq\.ps1' })
+    $mine = @($lines | Where-Object { $_ -match '(chatq|VS-code-chat-manager).ps1' })
     $here = @($mine | Where-Object { $_.IndexOf($me, [StringComparison]::OrdinalIgnoreCase) -ge 0 })
     if ($here -and -not $Force) {
         Write-Host '  already installed' -ForegroundColor DarkGray
@@ -3503,7 +3503,7 @@ function chatqinstall {
     }
     else {
         if (Test-Path -LiteralPath $PROFILE) { Copy-Item -LiteralPath $PROFILE -Destination "$PROFILE.bak" -Force }
-        $kept = @($lines | Where-Object { $_ -notmatch 'chatq\.ps1' })
+        $kept = @($lines | Where-Object { $_ -notmatch '(chatq|VS-code-chat-manager).ps1' })
         $kept += ". `"$me`""
         Set-Content -LiteralPath $PROFILE -Value $kept -Encoding UTF8
         Write-Host '  installed' -ForegroundColor Green
@@ -3551,10 +3551,10 @@ function chatquninstall {
         Write-Host '  stopped the watcher' -ForegroundColor DarkGray
     }
     $lines = if (Test-Path -LiteralPath $PROFILE) { @(Get-Content -LiteralPath $PROFILE) } else { @() }
-    $mine = @($lines | Where-Object { $_ -match 'chatq\.ps1' })
+    $mine = @($lines | Where-Object { $_ -match '(chatq|VS-code-chat-manager).ps1' })
     if ($mine.Count) {
         Copy-Item -LiteralPath $PROFILE -Destination "$PROFILE.bak" -Force
-        Set-Content -LiteralPath $PROFILE -Encoding UTF8 -Value @($lines | Where-Object { $_ -notmatch 'chatq\.ps1' })
+        Set-Content -LiteralPath $PROFILE -Encoding UTF8 -Value @($lines | Where-Object { $_ -notmatch '(chatq|VS-code-chat-manager).ps1' })
         Write-Host "  removed $($mine.Count) line$(if ($mine.Count -ne 1) { 's' }) from the profile" -ForegroundColor Green
         Write-Host "    backup: $PROFILE.bak" -ForegroundColor DarkGray
     }
@@ -3622,7 +3622,7 @@ Register-ArgumentCompleter -CommandName chatqrm, chatqrun, chatqlog -ParameterNa
 if ($MyInvocation.InvocationName -ne '.') {
     Write-Host ''
     Write-Host '  nothing was loaded - this file has to be dot-sourced' -ForegroundColor Yellow
-    $shown = if ($PSCommandPath) { $PSCommandPath } else { 'C:\path\to\chatq.ps1' }
+    $shown = if ($PSCommandPath) { $PSCommandPath } else { 'C:\path\to\VS-code-chat-manager.ps1' }
     Write-Host "      . `"$shown`"" -ForegroundColor Cyan
     Write-Host '  then chatqinstall, to have every new shell do it for you' -ForegroundColor DarkGray
     Write-Host ''
