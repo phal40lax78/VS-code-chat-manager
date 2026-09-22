@@ -51,6 +51,7 @@ function message(req) {
     if (req.kind === 'ran') {
         return 'A queued prompt ran in ' + what + ', which this window still has open. Reload to show it?';
     }
+    if (req.kind === 'archived') return 'Archived ' + what + '. Reload to refresh the chat list?';
     return 'Deleted ' + what + '. Reload to refresh the chat list?';
 }
 

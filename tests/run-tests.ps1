@@ -195,9 +195,45 @@ foreach ($d in 'file-history', 'session-env') {
     $null = New-Item -ItemType Directory -Path $dd -Force
     [System.IO.File]::WriteAllText((Join-Path $dd 'x'), 'x', $utf8)
 }
-# more prompts than the index previews, one of them only -Deep can see
+# the rest of claude-chats-delete's inventory, each named or found by the id
+$left = @{
+    Debug = Join-Path $claudeHome "debug\$idDoom1.txt"
+    Tasks = Join-Path $claudeHome "tasks\$idDoom1\t.json"
+    Sec = Join-Path $claudeHome "security\security_warnings_state_$idDoom1.json"
+    SecLock = Join-Path $claudeHome "security\security_warnings_state_$idDoom1.lock"
+    Tele = Join-Path $claudeHome "telemetry\evt-$idDoom1-1.json"
+    Todo = Join-Path $claudeHome "todos\$idDoom1-agent-1.json"
+    Job = Join-Path $claudeHome 'jobs\cccccccc\state.json'
+    Plan = Join-Path $claudeHome 'plans\doom-slug.md'
+    PlanAgent = Join-Path $claudeHome 'plans\doom-slug-agent-a1.md'
+    Shared = Join-Path $claudeHome 'plans\shared-slug.md'
+}
+foreach ($p in $left.Values) {
+    $null = New-Item -ItemType Directory -Path (Split-Path $p -Parent) -Force
+    [System.IO.File]::WriteAllText($p, 'x', $utf8)
+}
+[System.IO.File]::WriteAllText($left.Job, ('{"sessionId":"' + $idDoom1 + '"}'), $utf8)
+function Add-Slug([string]$Path, [string]$Slug) {
+    [System.IO.File]::AppendAllText($Path, ('{"type":"system","subtype":"x","slug":"' + $Slug + '","sessionId":"s"}' + "`n"), $utf8)
+}
+Add-Slug $pDoom1 'doom-slug'
+Add-Slug $pDoom2 'shared-slug'
+# more prompts than the index previews, one of them only -Deep can see - and
+# it shares doomed chat two's plan slug, so that plan must stay
 $idDeep = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'
-$null = New-FakeChat $projA $idDeep 'Many prompts chat' 3 @('p1', 'p2', 'p3', 'p4', 'needle-deep-xyz', 'p6', 'p7', 'p8')
+$pDeep = New-FakeChat $projA $idDeep 'Many prompts chat' 3 @('p1', 'p2', 'p3', 'p4', 'needle-deep-xyz', 'p6', 'p7', 'p8')
+Add-Slug $pDeep 'shared-slug'
+# one to hold open while deleting, one to archive and bring back
+$idLock = '16161616-1616-4161-8161-161616161616'
+$pLock = New-FakeChat $projA $idLock 'Locked open chat' 8 @('hold me')
+$lockHist = Join-Path $claudeHome "file-history\$idLock"
+$null = New-Item -ItemType Directory -Path $lockHist -Force
+[System.IO.File]::WriteAllText((Join-Path $lockHist 'x'), 'x', $utf8)
+$idArch = '17171717-1717-4171-8171-171717171717'
+$pArch = New-FakeChat $projA $idArch 'Archive me please' 9 @('archive this one')
+$archHist = Join-Path $claudeHome "file-history\$idArch"
+$null = New-Item -ItemType Directory -Path $archHist -Force
+[System.IO.File]::WriteAllText((Join-Path $archHist 'x'), 'x', $utf8)
 $idQuote = 'ffffffff-ffff-4fff-8fff-ffffffffffff'
 $null = New-FakeChat $projA $idQuote 'Say "hi" to it' 4 @('greet')
 $idDead = '12121212-1212-4121-8121-121212121212'
@@ -217,6 +253,16 @@ $hidLines = @(
 # --- load --------------------------------------------------------------------
 . (Join-Path $sb 'tool\VS-code-chat-manager.ps1')
 Set-Location -LiteralPath $projA
+# nothing real leaves the sandbox: no desktop toast, no idle clock (as if
+# nobody were at the PC), no push service, no ghost-watch events
+$script:Toasts = [System.Collections.Generic.List[string]]::new()
+$script:ChatqToastSeam = { param($t, $x) $script:Toasts.Add("$t|$x") }
+$script:ChatqIdleSeam = 99999
+$script:Ntfys = [System.Collections.Generic.List[object]]::new()
+$script:ChatqNtfySeam = { param($server, $body, $headers) $script:Ntfys.Add([pscustomobject]@{ Server = $server; Body = $body; Headers = $headers }) }
+$script:ChatNoGhostWatch = $true
+# and no real background watcher: one would outlive the sandbox it runs in
+$script:ChatqSpawn = { $true }
 
 Section 'bigrams and cosine'
 $a = Get-ChatqBigrams 'card UI redesign'
@@ -589,12 +635,21 @@ Check 'chatrm -Force removes the transcript and its leftovers' (-not (Test-Path 
     -not (Test-Path -LiteralPath (Join-Path $claudeHome "file-history\$idDoom1")) -and -not (Test-Path -LiteralPath (Join-Path $claudeHome "session-env\$idDoom1")))
 $tomb = if (Test-Path -LiteralPath $script:ChatTombPath) { [System.IO.File]::ReadAllText($script:ChatTombPath, $utf8) } else { '' }
 Check 'a tombstone is written and the row leaves the index' ($tomb -like "*$idDoom1*" -and -not @(Get-ChatIndex | Where-Object { $_.Id -eq $idDoom1 }))
+$gone = @('Debug', 'Tasks', 'Sec', 'SecLock', 'Tele', 'Todo', 'Plan', 'PlanAgent' | Where-Object { Test-Path -LiteralPath $left[$_] })
+Check 'and every other leftover: debug, tasks, security, telemetry, todos, plans' (-not $gone) ($gone -join ',')
+Check 'a background job folder goes by the id inside it' (-not (Test-Path -LiteralPath (Split-Path $left.Job -Parent)))
 
 $j = New-TestJob 'Doomed chat two' 'keep me'
 chatrm 'Doomed chat two' -Force *> $null
 Check 'a chat with a prompt queued for it is kept' ((Test-Path -LiteralPath $pDoom2) -and (Find-ChatqJob $j.id))
 chatrm 'Doomed chat two' -Force -DropJobs *> $null
 Check '-DropJobs drops the prompt, then deletes' (-not (Test-Path -LiteralPath $pDoom2) -and -not (Find-ChatqJob $j.id))
+Check 'a plan file another chat in the project shares is kept' (Test-Path -LiteralPath $left.Shared)
+
+# held open without delete sharing, as a live window holds it: nothing goes
+$fh = [System.IO.File]::Open($pLock, 'Open', 'Read', 'Read')
+try { chatrm 'Locked open chat' -Force *> $null } finally { $fh.Dispose() }
+Check 'a locked transcript keeps its leftovers' ((Test-Path -LiteralPath $pLock) -and (Test-Path -LiteralPath $lockHist))
 
 $r = Resolve-ChatqTarget 'Copilot chat about tests'
 Check 'a Copilot chat is named, then refused' ($r.Error -like '*Copilot*') $r.Error
@@ -642,6 +697,234 @@ Copy-Item -LiteralPath (Join-Path $root 'VS-code-chat-manager.ps1') -Destination
 $probe2 = "Remove-Item env:CHATQ_WATCHER -EA SilentlyContinue; Set-StrictMode -Version Latest; `$ErrorActionPreference = 'Stop'; try { . '$(Join-Path $sb2 'VS-code-chat-manager.ps1')'; Set-Location -LiteralPath '$projA'; chatfind Doomed *> `$null; chatindex *> `$null; `$r = & `$script:ChatTitleCompleter 'chatrm' 'Target' 'Pars' `$null @{}; chatqlist *> `$null; chat *> `$null; 'ok' } catch { 'threw: ' + `$_.Exception.Message + ' ' + `$_.InvocationInfo.PositionMessage }"
 $strict2 = (& $exe -NoProfile -NonInteractive -Command $probe2 | Select-Object -Last 1)
 Check 'loads and runs under StrictMode as a normal shell does' ($strict2 -eq 'ok') $strict2
+
+function Get-AlertCount([string]$Like) {
+    $f = Join-Path $script:ChatqLogDir 'alerts.log'
+    if (-not (Test-Path -LiteralPath $f)) { return 0 }
+    @([System.IO.File]::ReadAllLines($f, $utf8) | Where-Object { $_ -like $Like }).Count
+}
+function Lock-Queue([scriptblock]$Do) {
+    # a held lock is what a running watcher looks like: chatq queues, starts none
+    New-ChatqDir $script:ChatqData
+    $lk = [System.IO.File]::Open($script:ChatqLockPath, 'OpenOrCreate', 'ReadWrite', 'None')
+    try { & $Do } finally { $lk.Dispose() }
+}
+
+Section 'retries and failures'
+$o = Invoke-Scenario 'network'
+Check 'a dropped connection -> network, not failed' ($o.kind -eq 'network') "$($o.kind) $($o.reason)"
+$o = Invoke-Scenario 'auth'
+Check 'an expired login -> auth' ($o.kind -eq 'auth') "$($o.kind) $($o.reason)"
+$st = New-ChatqRunState
+foreach ($l in [System.IO.File]::ReadAllLines((Join-Path $here 'fixtures\stream\codex-network.jsonl'), $utf8)) { if ($l.Trim()) { Update-ChatqCodexState $st $l } }
+$o = Get-ChatqCodexOutcome $st ([pscustomobject]@{ ExitCode = 1; StdErr = ''; Stopped = $null })
+Check 'codex "stream disconnected" -> network' ($o.kind -eq 'network') "$($o.kind) $($o.reason)"
+$o = Get-ChatqClaudeOutcome (New-ChatqRunState) ([pscustomobject]@{ ExitCode = 1; StdErr = 'ECONNRESET'; Stopped = 'timeout' }) 'auto'
+Check 'chatq''s own time limit is never taken for a network drop' ($o.kind -eq 'failed' -and $o.reason -eq 'timeout') "$($o.kind) $($o.reason)"
+
+$pDead = Join-Path (Join-Path (Join-Path $claudeHome 'projects') (Get-Slug $projA)) "$idDead.jsonl"
+$env:FAKE_RECORD = $rec
+$j = New-TestJob 'Deadline notes' 'survive the drop'
+$env:FAKE_SCENARIO = Join-Path $here 'fixtures\stream\network.jsonl'
+$env:FAKE_LAND = $pDead
+$Wn = New-ChatqWatchState
+Invoke-ChatqJob $Wn (Find-ChatqJob $j.id)
+$j = Find-ChatqJob $j.id
+$ra = ConvertTo-ChatqDate $j.retryAt
+$inS = if ($ra) { ($ra - (Get-Date)).TotalSeconds } else { -1 }
+Check 'network drop -> queued again, a minute out' ($j.state -eq 'queued' -and $inS -gt 30 -and $inS -lt 90) "$($j.state) in $inS s"
+Check 'the landed prompt comes back as a continue that is always sent' ($j.retryAs -eq 'continue' -and -not $j.autoContinue -and [int]$j.netRetries -eq 1) "$($j.retryAs) $($j.autoContinue) $($j.netRetries)"
+Check 'the watcher will not pick it before then' ($null -ne (Get-ChatqDueTime $Wn $j (Get-Date)))
+foreach ($k in 2, 3, 4) { Invoke-ChatqJob $Wn (Find-ChatqJob $j.id) }
+$j = Find-ChatqJob $j.id
+Check 'three retries, then it fails' ($j.state -eq 'failed' -and $j.result.reason -like '*gave up after 3*') "$($j.state) $($j.result.reason)"
+Remove-Item env:FAKE_SCENARIO, env:FAKE_LAND
+
+$cfg0 = Get-ChatqConfig
+Set-ChatqProp $cfg0 'maxRetries' 2
+Save-ChatqJson $script:ChatqConfigPath $cfg0
+$j = New-TestJob 'Many prompts chat' 'try twice'
+$Wc = New-ChatqWatchState
+$env:FAKE_SCENARIO = Join-Path $here 'fixtures\stream\rejected.jsonl'
+Invoke-ChatqJob $Wc (Find-ChatqJob $j.id)
+$j1 = Find-ChatqJob $j.id
+Check 'a run cut off before any reply counts toward the cap' ($j1.state -eq 'queued' -and [int]$j1.noProgress -eq 1) "$($j1.state) $($j1.noProgress)"
+$env:FAKE_SCENARIO = Join-Path $here 'fixtures\stream\weekly-synthetic.jsonl'
+Invoke-ChatqJob $Wc (Find-ChatqJob $j.id)
+$j1 = Find-ChatqJob $j.id
+Check 'one that got a reply first starts the count over' ($j1.state -eq 'queued' -and [int]$j1.noProgress -eq 0) "$($j1.state) $($j1.noProgress)"
+$env:FAKE_SCENARIO = Join-Path $here 'fixtures\stream\rejected.jsonl'
+Invoke-ChatqJob $Wc (Find-ChatqJob $j.id)
+Invoke-ChatqJob $Wc (Find-ChatqJob $j.id)
+$j1 = Find-ChatqJob $j.id
+Check 'maxRetries in a row with no reply -> gave up' ($j1.state -eq 'failed' -and $j1.result.reason -like 'gave up*') "$($j1.state) $($j1.result.reason)"
+$cfg0.PSObject.Properties.Remove('maxRetries')
+Save-ChatqJson $script:ChatqConfigPath $cfg0
+
+$env:FAKE_SCENARIO = Join-Path $here 'fixtures\stream\auth.jsonl'
+$Wa = New-ChatqWatchState
+$ja = [pscustomobject]@{ id = 'auth-x'; provider = 'claude'; home = $null; model = 'claude-opus-5'; runModel = $null; cwd = $projA; title = 'x'; seq = 99 }
+$a0 = Get-AlertCount '*logged out*'
+$ok = Confirm-ChatqAllowed $Wa $ja
+Check 'a login gone: the lane waits and its jobs stay queued' (-not $ok -and $Wa.blocked[(Get-ChatqLane $ja)].Type -eq 'login needed') "$ok $($Wa.blocked['claude'].Type)"
+$null = Confirm-ChatqAllowed $Wa $ja
+Check 'with one alert, not one per probe' ((Get-AlertCount '*logged out*') -eq $a0 + 1)
+Check 'and the status line says logged out' ((Get-ChatqStatusLine @() $Wa.blocked) -like '*logged out*')
+Remove-Item env:FAKE_SCENARIO
+
+Set-FakeStatus 'major_outage'
+$Wr = New-ChatqWatchState
+$Wr.outage['claude'] = @{ Since = (Get-Date).AddHours(-7); Attempts = 3; Status = 'major_outage'; Alerted = $true; LastProbe = (Get-Date).AddMinutes(-2); NextCheck = (Get-Date).AddSeconds(-1) }
+$r0 = Get-AlertCount '*still overloaded after 6 h*'
+$null = Test-ChatqOutageOver $Wr $ja
+$Wr.outage['claude'].NextCheck = (Get-Date).AddSeconds(-1)
+$null = Test-ChatqOutageOver $Wr $ja
+Check 'an outage past 6 h sends one reminder' ((Get-AlertCount '*still overloaded after 6 h*') -eq $r0 + 1)
+Set-FakeStatus 'operational'
+
+Section 'per-job model and order'
+Lock-Queue { chatq 'Deadline notes' -Prompt 'on another model' -Model 'claude-sonnet-9' *> $null }
+$jm = @(Get-ChatqJobs | Where-Object { $_.runModel -eq 'claude-sonnet-9' })[0]
+Check '-Model is kept apart from the chat''s own model' ($jm -and $jm.model -eq 'claude-opus-5') "$($jm.runModel) $($jm.model)"
+$null = Invoke-ChatqProbe 'claude' $jm
+$argv = [System.IO.File]::ReadAllText((Join-Path $rec 'argv.txt'))
+Check 'the probe asks with it' ($argv -match '--no-session-persistence' -and $argv -match '--model\s+claude-sonnet-9') ($argv -replace "`n", ' ')
+Invoke-ChatqJob (New-ChatqWatchState) (Find-ChatqJob $jm.id)
+$argv = [System.IO.File]::ReadAllText((Join-Path $rec 'argv.txt'))
+Check 'and the run uses it' ($argv -match '--resume' -and $argv -match '--model\s+claude-sonnet-9') ($argv -replace "`n", ' ')
+Lock-Queue { chatq 'Codex gitignore thread' -Prompt 'on gpt-9' -Model 'gpt-9' *> $null }
+$jx = @(Get-ChatqJobs | Where-Object { $_.runModel -eq 'gpt-9' })[0]
+$null = Invoke-ChatqRun $jx 'x' $null $null
+$argv = [System.IO.File]::ReadAllText((Join-Path $rec 'argv.txt'))
+Check 'a Codex run gets -m before the thread id' ($argv -match "-m\s+gpt-9\s+$cxId") ($argv -replace "`n", ' ')
+chatqrm $jx.seq -Force *> $null
+
+Lock-Queue {
+    chatq 'Old chat about gitignore rules' -Prompt 'back of the line' *> $null
+    chatq 'Old chat about gitignore rules' -Prompt 'front of the line' -First *> $null
+}
+$q = @(Get-ChatqJobs | Where-Object { $_.state -eq 'queued' })
+Check '-First puts a job ahead of older ones' ((Read-ChatqPrompt $q[0]) -eq 'front of the line') (Read-ChatqPrompt $q[0])
+$eta = Get-ChatqEta $q @{}
+Check 'and the "sends" column agrees' ($eta[$q[0].id] -eq 'next') $eta[$q[0].id]
+$back = @($q | Where-Object { (Read-ChatqPrompt $_) -eq 'back of the line' })[0]
+chatqrun $back.seq -First *> $null
+$q = @(Get-ChatqJobs | Where-Object { $_.state -eq 'queued' })
+Check 'chatqrun <n> -First moves a queued job up' ($q[0].id -eq $back.id) (Read-ChatqPrompt $q[0])
+foreach ($x in @($q | Where-Object { (Read-ChatqPrompt $_) -like '*of the line' })) { chatqrm $x.seq -Force *> $null }
+Remove-Item env:FAKE_RECORD
+
+Section 'watcher handoff'
+$Wh = New-ChatqWatchState
+$Wh.blocked['claude'] = [pscustomobject]@{ Until = (Get-Date).AddHours(2); Type = 'five_hour'; Source = 'probe' }
+$Wh.outage['codex'] = @{ Since = (Get-Date).AddMinutes(-30); Attempts = 2; Status = $null; Alerted = $true; Reminded = $false; LastProbe = (Get-Date).AddMinutes(-5); NextCheck = (Get-Date).AddMinutes(1) }
+$Wh.authAlerted['claude|x'] = $true
+$Wh.handoff = $true
+Save-ChatqWatchState $Wh
+$Wg = New-ChatqWatchState
+Check 'a successor carries on from the watcher before it' ((Restore-ChatqWatchState $Wg) -and $Wg.blocked['claude'].Type -eq 'five_hour' -and $Wg.outage['codex'].Alerted -and $Wg.authAlerted['claude|x'])
+$Wh.handoff = $false
+Save-ChatqWatchState $Wh
+Check 'a cold start asks again instead' (-not (Restore-ChatqWatchState (New-ChatqWatchState)))
+$script:Spawned = 0
+$script:ChatqSpawn = { $script:Spawned++; $true }
+Lock-Queue { chatq 'Deadline notes' -Prompt 'keep the loop busy' *> $null }
+Save-ChatqText $script:ChatqRestartPath 'restart'
+Invoke-ChatqWatchLoop *> $null
+$sh = Get-ChatqState
+Check 'a restart request hands over: lock let go, successor started, state kept' ($script:Spawned -eq 1 -and -not (Test-ChatqWatcherAlive) -and $sh.handoff -and -not (Test-Path -LiteralPath $script:ChatqRestartPath)) "spawned $($script:Spawned) handoff $($sh.handoff)"
+Save-ChatqText $script:ChatqRestartPath 'restart'
+$env:FAKE_RECORD = $rec
+# -Now, or the loop waits out the sandbox's own two-hour limit record
+Send-ChatqWake 'now'
+Invoke-ChatqWatchLoop -Foreground *> $null
+Remove-Item env:FAKE_RECORD
+Check 'never in a console someone is watching' ($script:Spawned -eq 1 -and (Test-Path -LiteralPath $script:ChatqRestartPath))
+Remove-Item -LiteralPath $script:ChatqRestartPath -Force
+$script:ChatqSpawn = { $true }
+
+Section 'alert channels'
+$topic = 'chatq-test-topic-7f3a'
+$said = (chatqnotify -Ntfy $topic 6>&1 | Out-String)
+Check 'ntfy is saved, and the topic is never printed whole' ((Get-ChatqConfig).ntfy.topic -and $said -notlike "*$topic*" -and $said -like '*cha...*') $said
+$script:ChatqIdleSeam = 30
+$n0 = $script:Ntfys.Count; $t0 = $script:Toasts.Count
+$sent = Send-ChatqAlert 'done' 'at the desk' 1
+Check 'at the PC: the toast shows, the phone stays quiet' ($script:Toasts.Count -eq $t0 + 1 -and $script:Ntfys.Count -eq $n0 -and -not $sent)
+chatqnotify -Test *> $null
+Check 'chatqnotify -Test reaches the phone anyway' ($script:Ntfys.Count -eq $n0 + 1)
+$script:ChatqIdleSeam = 99999
+$txt = "done $([char]0xC644)$([char]0xB8CC) a & b %PATH%"
+$sent = Send-ChatqAlert 'done' $txt 2
+$nb = $script:Ntfys[$script:Ntfys.Count - 1].Body | ConvertFrom-Json
+Check 'away: ntfy gets JSON - the title, Hangul intact, priority 5' ($sent -and $nb.topic -eq $topic -and $nb.title -eq "chatq $([char]0xB7) done" -and $nb.message -eq $txt -and $nb.priority -eq 5) ($script:Ntfys[$script:Ntfys.Count - 1].Body)
+$hookOut = Join-Path $sb 'hook.txt'
+chatqnotify -Command ("Set-Content -LiteralPath '$hookOut' -Encoding UTF8 -Value (`$env:CHATQ_EVENT + '|' + `$env:CHATQ_TEXT + '|' + `$env:CHATQ_PRESENT)") *> $null
+$null = Send-ChatqAlert 'needs input' $txt 2
+$hk = if (Test-Path -LiteralPath $hookOut) { [System.IO.File]::ReadAllText($hookOut, $utf8).Trim() } else { '' }
+Check 'the command gets the alert in its environment, & and %PATH% as they are' ($hk -eq "needs input|$txt|0") $hk
+$script:ChatqHookTimeoutSec = 2
+chatqnotify -Command 'Start-Sleep -Seconds 30' *> $null
+$t1 = Get-Date
+$null = Send-ChatqAlert 'test' 'slow hook' 0
+Check 'a command that hangs is stopped' ((@($script:ChatqAlertReport) -join ' ') -like '*stopped after 2 s*' -and ((Get-Date) - $t1).TotalSeconds -lt 15) (@($script:ChatqAlertReport) -join ' ')
+$script:ChatqHookTimeoutSec = $null
+chatqnotify -Off *> $null
+Check 'chatqnotify -Off clears the phone and the command' (-not (Get-ChatqConfig).PSObject.Properties['ntfy'] -and -not (Get-ChatqConfig).PSObject.Properties['command'])
+$script:ChatqIdleSeam = $null
+$idle = try { Get-ChatqIdleSeconds } catch { 'threw' }
+$script:ChatqIdleSeam = 99999
+Check 'the idle clock reads without an error' ($null -eq $idle -or ($idle -is [double] -and $idle -ge 0)) "$idle"
+
+Section 'usage'
+$fetched = [DateTimeOffset]::Now.AddMinutes(-20).ToUnixTimeMilliseconds()
+$cj = '{"numStartups":3,"cachedUsageUtilization":{"fetchedAtMs":' + $fetched + ',"utilization":{"limits":[' +
+'{"kind":"session","percent":83,"resets_at":"' + $now.AddHours(2).ToString('o') + '","scope":null},' +
+'{"kind":"weekly_all","percent":41,"resets_at":"' + $now.AddDays(3).ToString('o') + '","scope":null},' +
+'{"kind":"weekly_scoped","percent":0,"resets_at":null,"scope":{"model":{"display_name":"Fable"}}}]}},"other":1}'
+[System.IO.File]::WriteAllText((Join-Path $claudeHome '.claude.json'), $cj, $utf8)
+$u = @(Get-ChatqUsage)
+$ucl = @($u | Where-Object { $_.Provider -eq 'Claude' })[0]
+$ucx = @($u | Where-Object { $_.Provider -eq 'Codex' })[0]
+Check 'Claude''s usage from its own cache, with how old it is' ($ucl -and ($ucl.Parts -join ',') -eq '5h 83%,week 41%' -and $ucl.AsOf) "$($ucl.Parts -join ',') $($ucl.AsOf)"
+Check 'Codex''s from the newest rollout that has any' ($ucx -and $ucx.Parts[0] -like '5h 100%, resets *' -and $ucx.Parts[1] -eq 'week 12%') "$($ucx.Parts -join ',')"
+$shown = (Write-ChatqList 6>&1 | Out-String)
+Check 'chatqlist shows it' ($shown -like '*usage  Claude 5h 83%*') ''
+
+Section 'archive and restore'
+chatrm 'Archive me please' -Archive -Force *> $null
+$man = Join-Path $script:ChatArchiveDir "claude\$idArch\manifest.json"
+Check 'chatrm -Archive moves the chat and its leftovers into data/archive' (-not (Test-Path -LiteralPath $pArch) -and -not (Test-Path -LiteralPath $archHist) -and (Test-Path -LiteralPath $man))
+$tomb = if (Test-Path -LiteralPath $script:ChatTombPath) { [System.IO.File]::ReadAllText($script:ChatTombPath, $utf8) } else { '' }
+Check 'the old path is tombstoned and leaves the index' ($tomb -like "*$idArch*" -and -not @(Get-ChatIndex | Where-Object { $_.Id -eq $idArch }))
+Check 'chatrestore lists it' (@(Get-ChatArchive | Where-Object { $_.Id -eq $idArch }).Count -eq 1)
+# what the window writes back on its next reload: a stub, no messages
+[System.IO.File]::WriteAllText($pArch, ('{"type":"ai-title","aiTitle":"Archive me please","sessionId":"' + $idArch + '"}' + "`n"), $utf8)
+chatrestore 'Archive me please' *> $null
+$backText = if (Test-Path -LiteralPath $pArch) { [System.IO.File]::ReadAllText($pArch, $utf8) } else { '' }
+Check 'restore replaces the stub with the chat, leftovers and all' ($backText -like '*archive this one*' -and (Test-Path -LiteralPath (Join-Path $archHist 'x')) -and -not (Test-Path -LiteralPath (Split-Path $man -Parent)))
+$tomb = if (Test-Path -LiteralPath $script:ChatTombPath) { [System.IO.File]::ReadAllText($script:ChatTombPath, $utf8) } else { '' }
+Check 'its tombstone is cleared and it is back in the index' ($tomb -notlike "*$idArch*" -and @(Get-ChatIndex | Where-Object { $_.Id -eq $idArch }).Count -eq 1)
+chatrm 'Archive me please' -Archive -Force *> $null
+[System.IO.File]::WriteAllText($pArch, ('{"type":"user","message":{"role":"user","content":"written since"},"sessionId":"x"}' + "`n"), $utf8)
+chatrestore 'Archive me please' *> $null
+Check 'restore never moves over a chat with messages in it' ((Test-Path -LiteralPath $man) -and ([System.IO.File]::ReadAllText($pArch, $utf8) -like '*written since*'))
+Remove-Item -LiteralPath $pArch -Force
+chatrestore 'Archive me please' *> $null
+$env:FAKE_AGENTS = '[{"pid":1,"sessionId":"' + $idArch + '","kind":"interactive","status":"idle"}]'
+chatrm 'Archive me please' -Archive -Force *> $null
+Remove-Item env:FAKE_AGENTS
+Check 'a chat still open in a window is not archived' ((Test-Path -LiteralPath $pArch) -and -not (Test-Path -LiteralPath $man))
+chatrm 'Codex gitignore thread' -Archive -Force *> $null
+$cxArch = @(Get-ChildItem -LiteralPath (Join-Path $codexHome 'archived_sessions') -Filter "*$cxId*" -Recurse -File -EA SilentlyContinue)
+Check 'a Codex thread goes through codex archive' ($cxArch.Count -eq 1 -and -not (Test-Path -LiteralPath $cxPath))
+Check 'and chatrestore lists it too' (@(Get-ChatArchive | Where-Object { $_.Id -eq $cxId -and $_.Provider -eq 'codex' }).Count -eq 1)
+chatrestore 'Codex gitignore thread' *> $null
+Check 'codex unarchive brings it back' ((Test-Path -LiteralPath $cxPath) -and -not (Test-Path -LiteralPath (Join-Path $script:ChatArchiveDir "codex\$cxId")))
+chatrm 'Archive me please' -Archive -Force *> $null
+chatuninstall -All *> $null
+Check 'chatuninstall -All will not take the only copy of an archived chat' ((Test-Path -LiteralPath $man) -and (Test-Path -LiteralPath (Join-Path $sb 'tool\VS-code-chat-manager.ps1')))
+chatrestore 'Archive me please' *> $null
 
 Section 'status and alerts'
 Write-ChatqBoard

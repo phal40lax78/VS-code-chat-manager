@@ -1,0 +1,2 @@
+{"type":"system","subtype":"init","session_id":"{{SESSION}}","model":"claude-fake-1","permissionMode":"auto","claude_code_version":"2.1.278"}
+{"is_error":true,"num_turns":1,"subtype":"success","result":"API Error: Connection error.","session_id":"{{SESSION}}","permission_denials":[],"type":"result"}

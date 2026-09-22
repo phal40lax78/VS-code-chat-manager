@@ -6,10 +6,18 @@
 #                  way a real run does before the limit cuts it off
 #   FAKE_STDERR    bytes of noise to write to stderr first (pipe-deadlock test)
 #   FAKE_SLEEP     seconds to hang before answering (timeout test)
+#   FAKE_AGENTS    what `claude agents --json` prints (live chats)
+#   FAKE_ARCHIVE_FAIL  make `codex archive` / `unarchive` fail
 # Output goes out as raw UTF-8 bytes: Write-Output would encode it in the
 # console code page, which is exactly the bug class these tests exist for.
 
 $ErrorActionPreference = 'Stop'
+# fake-claude.cmd hands the command line over as one string; split it the way
+# the MSVCRT does for what chatq sends - quoted runs, \" inside them - which
+# keeps "" (an empty argument) and a lone - intact
+$argv = @([regex]::Matches([string]$env:FAKE_ARGV, '"((?:\\"|[^"])*)"|(\S+)') | ForEach-Object {
+        if ($_.Groups[1].Success) { $_.Groups[1].Value.Replace('\"', '"') } else { $_.Groups[2].Value }
+    })
 $in = [Console]::OpenStandardInput()
 $ms = New-Object System.IO.MemoryStream
 $in.CopyTo($ms)
@@ -17,7 +25,28 @@ $bytes = $ms.ToArray()
 $utf8 = New-Object System.Text.UTF8Encoding $false
 $prompt = $utf8.GetString($bytes)
 
-if ($args.Count -and $args[0] -eq 'agents') {
+if ($argv.Count -and $argv[0] -in 'archive', 'unarchive') {
+    # codex archive / unarchive <id>: the rollout moves between sessions/ and
+    # archived_sessions/ under CODEX_HOME, keeping its dated sub-path
+    $home2 = $env:CODEX_HOME
+    $from = if ($argv[0] -eq 'archive') { 'sessions' } else { 'archived_sessions' }
+    $to = if ($argv[0] -eq 'archive') { 'archived_sessions' } else { 'sessions' }
+    $root = Join-Path $home2 $from
+    $f = @(Get-ChildItem -LiteralPath $root -Filter "*$($argv[1])*.jsonl" -File -Recurse -EA SilentlyContinue) | Select-Object -First 1
+    if (-not $f -or $env:FAKE_ARCHIVE_FAIL) {
+        $e = [Console]::OpenStandardError()
+        $b = $utf8.GetBytes("Error: no session found for $($argv[1])`n")
+        $e.Write($b, 0, $b.Length); $e.Flush()
+        exit 1
+    }
+    $rel = $f.FullName.Substring($root.Length).TrimStart('\', '/')
+    $dest = Join-Path (Join-Path $home2 $to) $rel
+    New-Item -ItemType Directory -Path (Split-Path $dest -Parent) -Force | Out-Null
+    Move-Item -LiteralPath $f.FullName -Destination $dest -Force
+    exit 0
+}
+
+if ($argv.Count -and $argv[0] -eq 'agents') {
     # claude agents --json: FAKE_AGENTS, or nobody live
     $o = [Console]::OpenStandardOutput()
     $b = $utf8.GetBytes($(if ($env:FAKE_AGENTS) { $env:FAKE_AGENTS } else { '[]' }) + "`n")
@@ -29,14 +58,14 @@ if ($env:FAKE_RECORD) {
     New-Item -ItemType Directory -Path $env:FAKE_RECORD -Force | Out-Null
     [IO.File]::WriteAllText((Join-Path $env:FAKE_RECORD 'pid.txt'), "$PID", $utf8)
     [IO.File]::WriteAllBytes((Join-Path $env:FAKE_RECORD 'stdin.bin'), $bytes)
-    [IO.File]::WriteAllText((Join-Path $env:FAKE_RECORD 'argv.txt'), ($args -join "`n"), $utf8)
+    [IO.File]::WriteAllText((Join-Path $env:FAKE_RECORD 'argv.txt'), ($argv -join "`n"), $utf8)
     $seen = @('ANTHROPIC_API_KEY', 'CLAUDECODE', 'CLAUDE_CODE_SESSION_ID', 'CLAUDE_CONFIG_DIR') | ForEach-Object {
         "$_=$([Environment]::GetEnvironmentVariable($_))"
     }
     [IO.File]::WriteAllText((Join-Path $env:FAKE_RECORD 'env.txt'), ($seen -join "`n"), $utf8)
 }
 
-if ($args -contains '--version') {
+if ($argv -contains '--version') {
     $o = [Console]::OpenStandardOutput()
     $b = $utf8.GetBytes("2.1.278 (Claude Code)`n")
     $o.Write($b, 0, $b.Length); $o.Flush()
@@ -52,8 +81,8 @@ if ($env:FAKE_STDERR) {
 if ($env:FAKE_SLEEP) { Start-Sleep -Seconds ([int]$env:FAKE_SLEEP) }
 
 $session = '00000000-0000-4000-8000-000000000000'
-$i = [Array]::IndexOf($args, '--resume')
-if ($i -ge 0 -and $i + 1 -lt $args.Count) { $session = $args[$i + 1] }
+$i = [Array]::IndexOf($argv, '--resume')
+if ($i -ge 0 -and $i + 1 -lt $argv.Count) { $session = $argv[$i + 1] }
 
 if ($env:FAKE_LAND -and (Test-Path -LiteralPath $env:FAKE_LAND)) {
     $rec = [ordered]@{
