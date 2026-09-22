@@ -1051,8 +1051,8 @@ function Get-ChatProjectScope {
 }
 
 function Test-ChatInProject {
-    # Exact, never a prefix. Sibling repos nest - the slug for AS-RadarViewer
-    # is a prefix of the one for AS-RadarViewer-Mobile - so -like or StartsWith
+    # Exact, never a prefix. Sibling repos nest - the slug for D:\src\app is a
+    # prefix of the one for D:\src\app-Mobile - so -like or StartsWith
     # would quietly drag the neighbour in, which is the bug this exists to fix.
     param($Row, $Scope)
     if (-not $Row.Group) { return $false }

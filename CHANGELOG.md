@@ -1,5 +1,72 @@
 # Changelog
 
+## 0.2.0 — chatrm and chatq in one tool: VS-code-chat-manager
+
+The repo was chatq; it is now VS-code-chat-manager, and chatrm 1.3.0 is inside
+it. The chatrm repo stays as it was.
+
+- **One file, one index, one install.** chatrm's proven code is the base and the
+  queue sits on top of it; chatq's copy of chatrm's index, readers, providers
+  and scoping is gone.
+  - Every command keeps its name. `chatqinstall` and `chatquninstall` fold into
+    `chatinstall` and `chatuninstall`.
+  - `chatinstall` replaces a profile line for chatrm or chatq with its own,
+    since they define the same commands.
+- **One Tab for all three.** The completer serves `chatrm`, `chatfind` and
+  `chatq`, and `chatq` gets chatrm's one-line Tab cycling, so a multi-word title
+  needs no opening quote any more. Subagent chats are no longer offered (the
+  search skipped them, so Tab offered what it then could not find), `chatq` is
+  never offered a Copilot chat, and a title that happens to be hex (`add…`,
+  `cafe…`) completes instead of nothing.
+- **Fixes carried from chatq into the chatrm half:** a Hangul Codex thread name
+  is read as UTF-8; a Claude title with a quote in it comes back unescaped; a
+  zero-width cell no longer throws; typographic apostrophes are quoted safely;
+  the whole file is StrictMode-safe at load and in every key handler.
+- **The two halves know each other.**
+  - `chatrm` keeps a chat that has a prompt queued for it, and names the job;
+    `-DropJobs` drops the jobs first, waiting out a running one.
+  - A queued run into a chat still open in a window asks that window to reload,
+    through the extension.
+  - A Copilot title given to `chatq` is refused with the reason, never quietly
+    swapped for another chat.
+- **The extension** is now `phal40lax78.chat-manager-reload` 2.0.0, with
+  `chatManagerReload.*` settings. It watches the new folder and the old chatrm
+  one, says what happened (deleted, archived, a queued run), and never reloads
+  unasked after a queued run.
+- **Delete takes every leftover:** besides the sidecar folder, `file-history`
+  and `session-env`, now `tasks`, `debug`, security state, telemetry, todos, a
+  background job's folder, and the plan file when no other chat in the project
+  shares its slug — after
+  [claude-chats-delete](https://github.com/ataleckij/claude-chats-delete)'s
+  inventory. They go only once the transcript is gone, so a chat a live window
+  holds open keeps them.
+- **Archive and restore.** `chatrm … -Archive` moves a Claude chat and its
+  leftovers into `data/archive/`, or archives a Codex thread through
+  `codex archive`; `chatrestore` lists and brings them back. `chatuninstall
+  -All` will not delete an archive that is the only copy.
+- **Retries that know when to stop.**
+  - A dropped connection is retried after 1, 2 and 5 minutes. The count lives in
+    the job, and chatq's own 4-hour cap is never mistaken for one.
+  - An expired login holds that account's jobs, with one alert.
+  - A job that breaks before any reply `maxRetries` (5) times in a row gives up;
+    one that makes progress each time never does.
+  - An overload past 6 hours sends one reminder.
+- **More ways to hear about it:** a desktop toast (on by default), ntfy as JSON
+  so Hangul survives, and a command of your own with the alert in its
+  environment. The phone stays quiet while you are at the PC.
+- **`chatq -Model`** runs one job on another model, and its probe asks with that
+  model. **`-First`** (and `chatqrun <n> -First`) puts a job at the front, in one
+  queue order the watcher, the list and the board all share.
+- **Usage in `chatqlist`**: how much of Claude's and Codex's windows are used,
+  from their own caches, with how old the figure is.
+- **The watcher picks up an update:** `chatinstall` asks a running one to hand
+  over after its current job. The successor carries on with what it knew —
+  limits, overloads, alerts already sent.
+- **The repo:** README badges, demo frames made by `docs/make-demo.ps1` from the
+  real commands, a comparison with similar tools, CI on Windows PowerShell 5.1
+  and PowerShell 7, a v0.2.0 release, and a mock sponsor badge until one is set
+  up.
+
 ## 0.1.0 — first release
 
 - **Queue a prompt for an existing chat** while the usage limit is hit:

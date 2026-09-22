@@ -1,0 +1,41 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    # Windows-first: Windows PowerShell 5.1 and PowerShell 7 both ship on the
+    # runner. macOS and Linux wait until the Unix branches get a fake CLI of
+    # their own (FUTURE_WORK.md).
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        host: [powershell, pwsh]
+    steps:
+      - uses: actions/checkout@v4
+
+      # 5.1 reads a BOM-less .ps1 in the ANSI code page. The runner is en-US,
+      # where that never shows, so the rule the code depends on is checked here.
+      - name: Scripts are pure ASCII
+        if: matrix.host == 'powershell'
+        shell: pwsh
+        run: |
+          $bad = Get-ChildItem -Recurse -File -Include *.ps1 | Where-Object {
+            [IO.File]::ReadAllBytes($_.FullName) | Where-Object { $_ -gt 127 } | Select-Object -First 1
+          }
+          if ($bad) { $bad.FullName; exit 1 }
+
+      - name: Extension check
+        if: matrix.host == 'powershell'
+        run: node tests/extension-check.js
+
+      - name: Self-test (${{ matrix.host }})
+        shell: pwsh
+        run: |
+          & ${{ matrix.host }} -NoProfile -ExecutionPolicy Bypass -File tests/run-tests.ps1
+          exit $LASTEXITCODE

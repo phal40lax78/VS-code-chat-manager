@@ -468,17 +468,36 @@ Remove-Item env:FAKE_SLEEP
 
 # the quoting rules, checked against what the CLR itself hands Main()
 $echo = Join-Path $sb 'echoargs.exe'
-Add-Type -OutputAssembly $echo -OutputType ConsoleApplication -TypeDefinition @'
+$echoSrc = @'
 public static class EchoArgs {
     public static void Main(string[] a) {
         foreach (var s in a) System.Console.WriteLine(System.Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(s)));
     }
 }
 '@
-$argsIn = @('plain', '', 'with space', 'quote"inside', 'trail\', 'C:\path with\', 'a\\"b', '--tools', '', $titleCard)
-$out = [System.Collections.Generic.List[string]]::new()
-$null = Invoke-ChatqProcess -Exe $echo -ArgList $argsIn -StdIn '' -OnLine { param($l) $out.Add($utf8.GetString([Convert]::FromBase64String($l))) } -TimeoutSec 30
-Check 'argument quoting round-trips' (($out -join '|') -eq ($argsIn -join '|')) ($out -join '|')
+$built = $false
+try { Add-Type -OutputAssembly $echo -OutputType ConsoleApplication -TypeDefinition $echoSrc; $built = $true } catch {}
+if (-not $built) {
+    # pwsh 7's Add-Type builds libraries only. .NET Framework's own compiler,
+    # which every Windows carries, still builds the exe.
+    $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+    if ($env:WINDIR -and (Test-Path -LiteralPath $csc)) {
+        $cs = Join-Path $sb 'echoargs.cs'
+        [System.IO.File]::WriteAllText($cs, $echoSrc, $utf8)
+        & $csc /nologo "/out:$echo" $cs | Out-Null
+        $built = $LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $echo)
+    }
+}
+if ($built) {
+    $argsIn = @('plain', '', 'with space', 'quote"inside', 'trail\', 'C:\path with\', 'a\\"b', '--tools', '', $titleCard)
+    $out = [System.Collections.Generic.List[string]]::new()
+    $null = Invoke-ChatqProcess -Exe $echo -ArgList $argsIn -StdIn '' -OnLine { param($l) $out.Add($utf8.GetString([Convert]::FromBase64String($l))) } -TimeoutSec 30
+    Check 'argument quoting round-trips' (($out -join '|') -eq ($argsIn -join '|')) ($out -join '|')
+}
+else {
+    # said, never counted as a pass
+    Write-Host '  skip  argument quoting round-trips - nothing here can build the echo exe' -ForegroundColor Yellow
+}
 Remove-Item env:FAKE_RECORD
 
 Section 'jobs and the watcher'

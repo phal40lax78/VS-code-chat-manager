@@ -59,10 +59,11 @@ Open questions, from `codex-rs/tui/src/session_queue_commands.rs`:
 
 **Why deferred:** ending an idle chat's process before a run (`liveIdle: stop`)
 should make the next click re-read the transcript. Nobody has watched the panel
-react to it yet, so the default stays `warn`: run, then tell the user to reload
-the window.
+react to it yet, so the default stays `warn`: run, then ask that window to
+reload - by the alert's text, and through the extension's Reload button.
 
-**To close:** spike S4 in TESTING.md.
+**To close:** spike S4 in TESTING.md. If the panel turns out to refresh by
+itself, the reload offer after a run goes too.
 
 ## Approve permission prompts from the phone
 
@@ -77,12 +78,20 @@ ask mid-run.
 
 **Why deferred:** the terminal UI was chosen.
 
-**To close:** a small extension, in the manner of chatrm's `extension/`:
+**To close:** grow `extension/`, which already offers the reload after a
+delete, an archive, or a queued run into a chat that window holds:
 - a status-bar count of queued jobs and the next send time
 - a chat picker fed from the same index
-- it could also run `workbench.action.reloadWindow` after a run into a chat
-  that is open in that window, which would close the stale-panel gap from the
-  outside
+
+## The extension's signal file holds one request
+
+**Why deferred:** `data/reload-request` is one file, and the extension polls it
+every 2 seconds. Two requests inside one poll - a delete right after a queued
+run, say - and the first is overwritten unseen. Rare, and the cost is one
+missed button.
+
+**To close:** make it a short array with ids, and have the extension keep the
+last few ids it has seen instead of one.
 
 ## Copilot Chat
 
@@ -96,18 +105,57 @@ can find Copilot chats, but nothing could deliver a prompt to one.
 **Why deferred:** nothing is registered with the OS, on purpose. After a reboot
 the watcher returns with the next shell.
 
-**To close:** an opt-in `chatqinstall -AtLogon` that writes a Task Scheduler /
+**To close:** an opt-in `chatinstall -AtLogon` that writes a Task Scheduler /
 launchd / systemd user entry and removes it again on uninstall.
 
-## CI on PowerShell 7, macOS and Linux
+## CI on macOS and Linux
 
-**Why deferred:** the build machine has only Windows PowerShell 5.1. The
-cross-platform branches — `nohup`, `caffeinate`, `systemd-inhibit`, `chmod 600`,
-`Process.Kill($true)` — are written but have never run.
+**Why deferred:** CI now runs the self-test on Windows under both 5.1 and
+PowerShell 7. The Unix branches - `nohup`, `caffeinate`, `systemd-inhibit`,
+`chmod 600`, `osascript` and `notify-send` toasts, `ioreg` idle time,
+`Process.Kill($true)` - are written but have never run.
 
-**To close:** a GitHub Actions matrix (windows 5.1 and 7, ubuntu, macos) running
-`tests/run-tests.ps1`. On Unix it needs a `fake-claude` shell wrapper next to
-the `.cmd` one.
+**To close:** add `ubuntu-latest` and `macos-latest` to the matrix. The tests
+need a `fake-claude` shell wrapper next to the `.cmd` one, and the few
+Windows-only checks (DPAPI, the echo exe) a skip on Unix.
+
+## Codex threads archived from Codex's own panel
+
+**Why deferred:** `chatrestore` lists what `chatrm -Archive` archived, from its
+own records, plus any rollout under `~/.codex/archived_sessions/`. Current Codex
+keeps thread state in sqlite as well, and has no command that lists archived
+threads, so one archived from Codex's panel may not show. `chatrestore <id>`
+still hands any id to `codex unarchive`.
+
+**To close:** spike S16 on a real thread. If archived threads live only in
+Codex's databases, read the thread list from its app-server instead.
+
+## Sponsorship
+
+**Why deferred:** there is no sponsor account yet. The README carries a grey
+`sponsor · coming soon` badge pointing here. There is deliberately no
+`.github/FUNDING.yml` - with a placeholder handle GitHub's own Sponsor button
+would open a 404.
+
+The options:
+
+| | fits | costs |
+|---|---|---|
+| GitHub Sponsors | the button sits in the repo header, one-off or monthly | enrolment and payout setup; no fee on personal accounts |
+| Ko-fi | one-off tips, a simple page | no fee on tips; memberships take a cut |
+| Buy Me a Coffee | one-off tips, memberships | a 5% fee |
+| Patreon | monthly memberships | a platform fee; heavy for a one-file tool |
+| thanks.dev | sponsors a project's dependencies at once | little to gain for a tool nobody depends on yet |
+
+**To close:** pick one, add `.github/FUNDING.yml` with its handle, and swap the
+badge for the real link.
+
+## Social preview image
+
+**Why deferred:** GitHub sets a repo's social preview only in the web UI
+(Settings → Social preview); there is no API for it.
+
+**To close:** upload a 1280×640 image made from `docs/demo-list.svg`.
 
 ## Weekly-limit and model-scoped limit handling
 
@@ -124,7 +172,9 @@ Then decide whether a job should wait days, or alert and park.
 ## Overloads on Codex
 
 **Why deferred:** the 529 handling watches status.claude.com, which covers
-Claude only. A Codex server error still fails the job.
+Claude only. A dropped Codex connection ("stream disconnected", "error sending
+request") is retried like Claude's, but a Codex server error worded any other
+way still fails the job.
 
 **To close:** capture a real Codex 5xx/overload event. Then either watch
 status.openai.com the same way, or just retry with the same backoff.
