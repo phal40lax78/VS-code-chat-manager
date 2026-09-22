@@ -21,6 +21,40 @@ with no reload. But two things stand in the way:
 2. Confirm that the message format works from PowerShell.
 3. Confirm that a peer-framed prompt is acted on like a typed one.
 
+## Deliver into a live Codex chat through `codex queue`
+
+**Why deferred:** found after v0.1.0.
+- **The gap today.** chatq never checks whether a Codex thread is open in a
+  VS Code window, and every Codex job goes through `codex exec resume`. An open
+  Codex panel then goes stale, like a Claude one, and nothing says so.
+- **The official way in.** `codex queue --thread <uuid|exact name> --message
+  <text>` is in the bundled codex-cli 0.154.0-alpha. It sends
+  `thread/queue/add` to Codex's shared local app-server daemon, as a user
+  message. It needs no per-session token, and the message is not framed as
+  coming from a peer. Claude's inbox pipe (above) has both problems.
+- **It doesn't replace the wait.** It queues at once, so chatq still holds the
+  prompt until the reset and only then hands it over.
+
+Open questions, from `codex-rs/tui/src/session_queue_commands.rs`:
+- Does the VS Code extension's chat run on that shared daemon? If not, the
+  message lands in a thread nobody is looking at.
+- With no daemon running, it falls back to an embedded app server. Does the
+  turn then run, or is it only recorded?
+- An older daemon answers "does not support thread/queue/add", so the method
+  may still be experimental.
+- There is no `--json` event stream. The outcome would have to be read from the
+  thread's rollout file.
+
+**To close:**
+1. Spike: with a Codex chat open and idle in the panel, run
+   `codex queue --thread <id> --message ok`. Does the panel show it and run it?
+   Repeat with VS Code closed.
+2. Detect a live Codex thread, through the daemon's thread list or the
+   extension's process. Deliver to it with `codex queue`, and use
+   `codex exec resume` otherwise.
+3. Classify the run from the rollout: after the queued message, tail it until
+   the turn completes or errors.
+
 ## `liveIdle` default
 
 **Why deferred:** ending an idle chat's process before a run (`liveIdle: stop`)
