@@ -90,6 +90,9 @@ with openai.chatgpt 26.908 (codex-cli 0.154), on throwaway chats only.
 | S11 | Codex `exec resume --json -c sandbox_mode=… <id> -` | same thread id, appended to the same rollout; `exec resume` also takes `-m` |
 | S14 | `codex queue`, `archive`, `unarchive` | present in codex-cli 0.154 (`--help`); `queue` goes through the shared app-server daemon |
 | S15 | the usage cache | `~/.claude.json` → `cachedUsageUtilization.utilization.limits[]`: `kind` (`session`, `weekly_all`, `weekly_scoped` with a model scope), `percent`, `resets_at`, plus `fetchedAtMs` |
+| S16 | `codex archive` on a real thread | the rollout moves out of `sessions/YYYY/MM/DD/` into a flat `~/.codex/archived_sessions/`, which `chatrestore` lists; `codex unarchive` puts it back under `sessions/`. `codex delete` refuses without a terminal unless given `--force` and a UUID |
+| — | archive → restore of a real Claude chat | the transcript moved into `data/archive/` and back, and the archive folder was gone after |
+| — | the toast, from a shell on 5.1 | shown in-process; the idle clock read 145 s since the last input, so the phone would have stayed quiet |
 
 The end-to-end run on a throwaway chat went probe → run → done through the
 background watcher in 10 s, with a real `claude agents --json`. The merged file
@@ -122,10 +125,10 @@ hold it, in the table above.
   retry, then an `is_error` result with `api_error_status: 529`, the shape
   `overloaded.jsonl` assumes — and the resume once status.claude.com is
   operational.
-- **S16, `codex archive` on a real thread:** where the rollout goes, whether
-  `chatrestore` then lists it, and that `codex unarchive` brings it back into the
-  panel.
-- **S17, the toast from the hidden watcher,** and the phone staying quiet while
-  the keyboard is in use.
+- **After S16:** that a thread archived and unarchived shows in the Codex panel
+  again, and that one archived from the panel itself lands in the same
+  `archived_sessions/`.
+- **S17, the toast from the hidden watcher,** a separate hidden process rather
+  than the shell.
 - **macOS and Linux** are untested; the Unix branches are written but have never
   run.

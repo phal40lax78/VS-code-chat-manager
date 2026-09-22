@@ -122,13 +122,14 @@ Windows-only checks (DPAPI, the echo exe) a skip on Unix.
 ## Codex threads archived from Codex's own panel
 
 **Why deferred:** `chatrestore` lists what `chatrm -Archive` archived, from its
-own records, plus any rollout under `~/.codex/archived_sessions/`. Current Codex
-keeps thread state in sqlite as well, and has no command that lists archived
-threads, so one archived from Codex's panel may not show. `chatrestore <id>`
-still hands any id to `codex unarchive`.
+own records, plus any rollout under `~/.codex/archived_sessions/` - which spike
+S16 showed is where `codex archive` moves one. Whether Codex's panel archives
+the same way, rather than only in its sqlite state, has not been watched.
+`chatrestore <id>` hands any id to `codex unarchive` either way.
 
-**To close:** spike S16 on a real thread. If archived threads live only in
-Codex's databases, read the thread list from its app-server instead.
+**To close:** archive a throwaway thread from the Codex panel and look for it
+under `archived_sessions/`. If it is not there, read the thread list from
+Codex's app-server instead.
 
 ## Sponsorship
 
