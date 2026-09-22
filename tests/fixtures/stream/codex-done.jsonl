@@ -1,0 +1,5 @@
+{"type":"thread.started","thread_id":"{{SESSION}}"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"command_execution","command":"git status","status":"completed"}}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"Done - the build passes."}}
+{"type":"turn.completed","usage":{"input_tokens":10,"cached_input_tokens":0,"output_tokens":5}}

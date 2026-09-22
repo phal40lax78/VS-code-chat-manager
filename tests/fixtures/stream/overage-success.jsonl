@@ -1,0 +1,4 @@
+{"type":"system","subtype":"init","session_id":"{{SESSION}}","model":"claude-fake-1","permissionMode":"auto","claude_code_version":"2.1.278"}
+{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":{{RESETS}},"rateLimitType":"five_hour","overageStatus":"allowed","isUsingOverage":true},"session_id":"{{SESSION}}"}
+{"type":"assistant","message":{"model":"claude-fake-1","role":"assistant","content":[{"type":"text","text":"Done on extra usage."}]}}
+{"is_error":false,"num_turns":2,"subtype":"success","result":"Done on extra usage.","session_id":"{{SESSION}}","permission_denials":[],"type":"result"}

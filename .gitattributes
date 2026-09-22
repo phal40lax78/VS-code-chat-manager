@@ -1,0 +1,9 @@
+# Normalise to LF in the repo. The script is Windows-first and the profile line
+# it writes is read by both PowerShell hosts, so hand Windows checkouts CRLF -
+# without pinning this, a macOS or Linux clone reports the whole file modified.
+* text=auto
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+*.md text eol=lf
+*.jsonl text eol=lf
+LICENSE text eol=lf

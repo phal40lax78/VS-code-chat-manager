@@ -1,0 +1,4 @@
+{"type":"system","subtype":"init","session_id":"{{SESSION}}","model":"claude-fake-1","permissionMode":"auto","claude_code_version":"2.1.278"}
+{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":{{RESETS}},"rateLimitType":"five_hour","overageStatus":"rejected"},"session_id":"{{SESSION}}"}
+{"type":"assistant","message":{"model":"<synthetic>","role":"assistant","content":[{"type":"text","text":"You've hit your session limit · resets 1pm (Asia/Seoul)"}]}}
+{"is_error":true,"num_turns":1,"subtype":"success","result":"You've hit your session limit · resets 1pm (Asia/Seoul)","session_id":"{{SESSION}}","permission_denials":[],"api_error_status":429,"type":"result"}

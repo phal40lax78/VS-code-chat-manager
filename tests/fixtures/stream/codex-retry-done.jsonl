@@ -1,0 +1,5 @@
+{"type":"thread.started","thread_id":"{{SESSION}}"}
+{"type":"turn.started"}
+{"type":"error","message":"Reconnecting... 1/5 (stream disconnected before completion: rate limit on the connection)"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"Recovered and finished."}}
+{"type":"turn.completed","usage":{"input_tokens":10,"cached_input_tokens":0,"output_tokens":5}}

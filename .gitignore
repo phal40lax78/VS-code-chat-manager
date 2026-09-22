@@ -1,0 +1,7 @@
+# Everything chatq writes at runtime: the chat index, the queue (your prompts),
+# run logs, the Join key. chat-index.csv holds absolute paths and every chat
+# title on the box, and queue/ holds prompt text - private by nature, never to
+# be published.
+data/
+# the test harness builds its fake homes here and deletes them afterwards
+tests/.sandbox/
