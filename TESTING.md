@@ -69,9 +69,22 @@ its echo exe with .NET Framework's `csc.exe` instead. Where neither can, it says
 
 ## The demo frames
 
-`docs/make-demo.ps1` draws `docs/demo-queue.svg` and `docs/demo-list.svg`: the
-real commands against a sandbox of made-up chats, captured by a `Write-Host` of
-its own. Run it again after a change to what `chatq` or `chatqlist` print.
+`docs/make-demo.ps1` draws every frame in the README: `docs/demo-queue.svg`,
+`docs/demo-list.svg`, and the `chatrm` walk-through, `docs/demo-1-type.svg` to
+`docs/demo-4-reloaded.svg`.
+- **The terminal is real output:** the real commands against a sandbox of
+  made-up chats, captured by a `Write-Host` of its own, which also reads the
+  colour escapes the walk row carries.
+- **Two steps are rebuilt:** the line Tab leaves, and the line Enter runs, are
+  made with the cycler's own functions, because the PSReadLine buffer they
+  write into exists only at a real prompt.
+- **Two things are made to look like a real shell:** a VS Code window, since
+  the reload advice prints only while one is up, and the ghost watch.
+- **The panel beside the terminal is a sketch:** the sandbox's Claude chats as
+  the index lists them, before and after the delete. VS Code itself is never
+  captured.
+
+Run it again after a change to what `chatq`, `chatqlist` or `chatrm` print.
 
 ## Spikes against the real CLIs
 

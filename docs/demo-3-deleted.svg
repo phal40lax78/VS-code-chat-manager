@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1004" height="206" viewBox="0 0 1004 206" role="img" aria-label="chatrm reporting the chat deleted, and that the panel keeps listing it until the window reloads">
+<defs><clipPath id="win"><rect width="1004" height="206" rx="8"/></clipPath></defs>
+<g clip-path="url(#win)"><rect width="1004" height="206" fill="#1e1e1e"/>
+<rect x="654" width="350" height="206" fill="#252526"/>
+<line x1="654" y1="0" x2="654" y2="206" stroke="#3c3c3c"/>
+</g>
+<g font-family="Segoe UI, -apple-system, BlinkMacSystemFont, Helvetica, Arial, sans-serif">
+<text x="670" y="22" font-size="11" letter-spacing="0.4" fill="#9d9d9d">CHAT</text>
+<text x="714" y="22" font-size="11" letter-spacing="0.4" fill="#9d9d9d">CODEX</text>
+<text x="766" y="22" font-size="11" letter-spacing="0.4" fill="#e7e7e7">CLAUDE CODE</text>
+<rect x="766" y="28" width="76" height="1.5" fill="#e7e7e7"/>
+<rect x="666" y="38" width="326" height="28" rx="4" fill="#1e1e1e" stroke="#3c3c3c"/>
+<text x="678" y="56" font-size="12" fill="#8a8a8a">Search sessions...</text>
+<text x="670" y="94" font-size="13" fill="#cccccc">Parser rewrite and plugin unification</text>
+<text x="988" y="94" font-size="12" text-anchor="end" fill="#8a8a8a">24m</text>
+<text x="670" y="122" font-size="13" fill="#cccccc">Card layout redesign</text>
+<text x="988" y="122" font-size="12" text-anchor="end" fill="#8a8a8a">1h</text>
+<text x="670" y="150" font-size="13" fill="#cccccc">Release notes for 2.4</text>
+<text x="988" y="150" font-size="12" text-anchor="end" fill="#8a8a8a">2h</text>
+<text x="670" y="178" font-size="13" fill="#cccccc">Flaky upload test</text>
+<text x="988" y="178" font-size="12" text-anchor="end" fill="#8a8a8a">1d</text>
+</g>
+<circle cx="18" cy="16" r="6" fill="#ff5f57"/>
+<circle cx="38" cy="16" r="6" fill="#febc2e"/>
+<circle cx="58" cy="16" r="6" fill="#28c840"/>
+<g font-family="Cascadia Mono, Consolas, Menlo, monospace" font-size="14" xml:space="preserve" style="white-space:pre">
+<text x="16" y="38"><tspan fill="#8a8a8a">PS&gt;&#160;</tspan><tspan fill="#e5c07b">chatrm</tspan><tspan fill="#d4d4d4">&#160;</tspan><tspan fill="#56b6c2">&apos;Flaky&#160;upload&#160;test&apos;</tspan></text>
+<text x="16" y="57"><tspan fill="#e5c07b">&#160;&#160;chatrm&#160;</tspan><tspan fill="#56b6c2">&apos;Flaky&#160;upload&#160;test&apos;</tspan><tspan fill="#6a9955">&#160;(1d)&#160;#1/1</tspan></text>
+<text x="16" y="76"><tspan fill="#8a8a8a">&#160;&#160;deleted&#160;&#160;Flaky&#160;upload&#160;test</tspan></text>
+<text x="16" y="95"><tspan fill="#d4d4d4">the&#160;session&#160;list&#160;is&#160;cached&#160;-&#160;reload&#160;to&#160;see&#160;it&#160;go:</tspan></text>
+<text x="16" y="114"><tspan fill="#d4d4d4">&#160;&#160;Ctrl+Shift+P&#160;&gt;&#160;Developer:&#160;Reload&#160;Window</tspan></text>
+<text x="16" y="133"><tspan fill="#8a8a8a">&#160;&#160;the&#160;window&#160;rewrites&#160;it&#160;as&#160;it&#160;reloads;&#160;that&#160;is&#160;watched&#160;for&#160;and&#160;taken&#160;back</tspan></text>
+<text x="16" y="152"><tspan fill="#6ccb5f">&#160;&#160;all&#160;project&#160;chat&#160;is&#160;idle&#160;-&#160;safe&#160;to&#160;reload&#160;now</tspan></text>
+<text x="16" y="171"><tspan fill="#8a8a8a">PS&gt;&#160;</tspan><tspan fill="#aeafad">&#x2588;</tspan></text>
+</g>
+</svg>

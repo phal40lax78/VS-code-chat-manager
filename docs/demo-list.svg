@@ -4,14 +4,15 @@
 <circle cx="38" cy="16" r="6" fill="#febc2e"/>
 <circle cx="58" cy="16" r="6" fill="#28c840"/>
 <g font-family="Cascadia Mono, Consolas, Menlo, monospace" font-size="14" xml:space="preserve" style="white-space:pre">
-<text x="16" y="38"><tspan fill="#8a8a8a">PS&gt;&#160;</tspan><tspan fill="#ffffff">chatqlist</tspan></text>
+<text x="16" y="38"><tspan fill="#8a8a8a">PS&gt;&#160;</tspan><tspan fill="#e5c07b">chatqlist</tspan></text>
 <text x="16" y="57"></text>
-<text x="16" y="76"><tspan fill="#8a8a8a">&#160;chatq&#160;·&#160;2&#160;queued&#160;·&#160;Claude&#160;limited&#160;until&#160;18:31&#160;(five_hour)&#160;·&#160;watcher&#160;running</tspan></text>
-<text x="16" y="95"><tspan fill="#8a8a8a">&#160;&#160;usage&#160;&#160;Claude&#160;5h&#160;100%&#160;·&#160;week&#160;46%&#160;(as&#160;of&#160;16:52)</tspan></text>
+<text x="16" y="76"><tspan fill="#8a8a8a">&#160;chatq&#160;&#xB7;&#160;2&#160;queued&#160;&#xB7;&#160;Claude&#160;limited&#160;until&#160;19:03&#160;(five_hour)&#160;&#xB7;&#160;watcher&#160;running</tspan></text>
+<text x="16" y="95"><tspan fill="#8a8a8a">&#160;&#160;usage&#160;&#160;Claude&#160;5h&#160;100%&#160;&#xB7;&#160;week&#160;46%&#160;(as&#160;of&#160;17:24)</tspan></text>
 <text x="16" y="114"><tspan fill="#8a8a8a">&#160;&#160;#&#160;&#160;&#160;chat&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;prompt&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;sends</tspan></text>
-<text x="16" y="133"><tspan fill="#d4d4d4">&#160;&#160;1&#160;&#160;&#160;</tspan><tspan fill="#4fc1ff">Parser&#160;rewrite&#160;and&#160;plugin...&#160;</tspan><tspan fill="#d4d4d4">Also&#160;update&#160;the&#160;changelog&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;</tspan><tspan fill="#d4d4d4">18:32</tspan></text>
-<text x="16" y="152"><tspan fill="#d4d4d4">&#160;&#160;2&#160;&#160;&#160;</tspan><tspan fill="#4fc1ff">Card&#160;layout&#160;redesign&#160;(1h)&#160;&#160;&#160;&#160;</tspan><tspan fill="#d4d4d4">Assess&#160;this&#160;new&#160;card&#160;idea&#160;before&#160;we...&#160;</tspan><tspan fill="#d4d4d4">18:32</tspan></text>
-<text x="16" y="171"><tspan fill="#8a8a8a">&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;↳&#160;1,234&#160;chars&#160;·&#160;3&#160;lines</tspan></text>
-<text x="16" y="190"><tspan fill="#8a8a8a">&#160;&#160;chatq&#160;&lt;n&gt;&#160;opens&#160;prompt&#160;n&#160;·&#160;chatqlist&#160;-Board&#160;=&#160;live&#160;board&#160;in&#160;VS&#160;Code&#160;·&#160;chatqlog&#160;&lt;n&gt;&#160;=&#160;what&#160;a&#160;run&#160;did</tspan></text>
+<text x="16" y="133"><tspan fill="#d4d4d4">&#160;&#160;1&#160;&#160;&#160;</tspan><tspan fill="#4fc1ff">Parser&#160;rewrite&#160;and&#160;plugin...&#160;</tspan><tspan fill="#d4d4d4">Also&#160;update&#160;the&#160;changelog&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;</tspan><tspan fill="#d4d4d4">19:04</tspan></text>
+<text x="16" y="152"><tspan fill="#d4d4d4">&#160;&#160;2&#160;&#160;&#160;</tspan><tspan fill="#4fc1ff">Card&#160;layout&#160;redesign&#160;(1h)&#160;&#160;&#160;&#160;</tspan><tspan fill="#d4d4d4">Assess&#160;this&#160;new&#160;card&#160;idea&#160;before&#160;we...&#160;</tspan><tspan fill="#d4d4d4">19:04</tspan></text>
+<text x="16" y="171"><tspan fill="#8a8a8a">&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#x21B3;&#160;1,234&#160;chars&#160;&#xB7;&#160;3&#160;lines</tspan></text>
+<text x="16" y="190"><tspan fill="#8a8a8a">&#160;&#160;chatq&#160;&lt;n&gt;&#160;opens&#160;prompt&#160;n&#160;&#xB7;&#160;chatqlist&#160;-Board&#160;=&#160;live&#160;board&#160;in&#160;VS&#160;Code&#160;&#xB7;&#160;chatqlog&#160;&lt;n&gt;&#160;=&#160;what&#160;a&#160;run&#160;did</tspan></text>
 <text x="16" y="209"></text>
-</g></svg>
+</g>
+</svg>

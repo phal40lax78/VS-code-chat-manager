@@ -105,22 +105,22 @@ tool wrote it.
 
 Type any part of a title — no quotes, no id, no exact spelling — then press Tab:
 
-![The prompt reading "chatrm Astr", with the Tab key drawn over the empty terminal below it, beside the VS Code chat panel listing a session named "Astra Haiku Sonnet Claude Opus ChatGPT Fable"](docs/demo-1-type.jpg)
+![The prompt reading "chatrm upload", with the Tab key drawn under it, beside the chat panel's session list, which holds a chat named "Flaky upload test"](docs/demo-1-type.svg)
 
 Tab fills in the whole argument, quoted for you, with the chat's age and which
-match it is: `(7m)` since it was last touched, `#1/1` the only chat that matched.
+match it is: `(1d)` since it was last touched, `#1/1` the only chat that matched.
 Then Enter:
 
-![The same prompt, now reading "chatrm 'Astra Haiku Sonnet Claude Opus ChatGPT Fable' (7m) #1/1", with the Enter key drawn over the empty terminal below it](docs/demo-2-tab.jpg)
+![The same prompt, now reading "chatrm 'Flaky upload test' (1d) #1/1", with the Enter key drawn under it](docs/demo-2-tab.svg)
 
-![The chat reported deleted, followed by a note that the session list is cached and needs a window reload](docs/demo-3-deleted.jpg)
+![The chat reported deleted, followed by a note that the session list is cached and needs a window reload, while the panel still lists the chat](docs/demo-3-deleted.svg)
 
 The panel still lists it until the window reloads — VS Code caches the session
 list (**Ctrl+Shift+P → Developer: Reload Window**, or the
 [extension](#chats-open-in-vs-code-and-the-extension) offers a button). After
 that it is gone there too:
 
-![The VS Code session list after a window reload, no longer listing the deleted chat](docs/demo-4-reloaded.jpg)
+![The panel's session list after a window reload, no longer listing the deleted chat](docs/demo-4-reloaded.svg)
 
 ### Tab
 
