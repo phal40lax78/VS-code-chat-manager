@@ -19,7 +19,7 @@ Codex and GitHub Copilot Chat — from PowerShell.
 - **Waits out `API Error: 529 Overloaded`** by watching status.claude.com, and resumes as soon as Claude Code is back.
 - **Tells you how it went:** a desktop toast, your phone through Join or ntfy, or a command of your own.
 
-One file, no modules, nothing to build. It was two tools — [chatrm](https://github.com/phal40lax78/chatrm) and chatq — and is now one, with one index and one install.
+One file, no modules, nothing to build. It was two tools — chatrm and chatq — and is now one, with one index and one install.
 
 ## Install
 
