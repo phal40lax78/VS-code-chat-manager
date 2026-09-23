@@ -292,6 +292,19 @@ Check 'runner-up is reported' ($null -ne $r.RunnerUp -and $r.RunnerUp.Id -eq $id
 $r = Resolve-ChatqTarget 'zzqx nothing like it'
 Check 'no match: a guess from this project only' ($r.Tier -eq 'nomatch' -and (Test-ChatInProject $r.Row (Get-ChatProjectScope $projA))) "$($r.Rule) $($r.Row.Group)"
 Check 'no match never reaches the nested sibling slug' ($r.Row.Id -ne $idMob)
+# a prompt typed after the title joins the title, and only ever guesses a chat
+$said = (Write-ChatqPromptHint 'zzqx nothing like it read the notes at C:\tmp\p.txt and improve' $r 6>&1 | Out-String)
+Check 'a sentence typed as a title points at -Prompt' ($said -match "-Prompt '<the rest>'") $said
+$said = (Write-ChatqPromptHint 'zzqx nothing like it and a few more words' $r -HasPrompt 6>&1 | Out-String)
+Check 'no hint when the prompt was given' (-not $said.Trim()) $said
+$said = (Write-ChatqPromptHint 'zzqx nothing' $r 6>&1 | Out-String)
+Check 'no hint for a short target' (-not $said.Trim()) $said
+$r2 = Resolve-ChatqTarget 'card redesign'
+$said = (Write-ChatqPromptHint 'card redesign and a few more words here' $r2 6>&1 | Out-String)
+Check 'no hint when a title really matched' (-not $said.Trim()) $said
+# and through chatq itself, the way it was typed - -WhatIf queues nothing
+$said = (chatq zzqx nothing like it read the notes at C:\tmp\p.txt and improve -WhatIf 6>&1 | Out-String)
+Check 'chatq itself says it for a prompt typed where the title goes' ($said -like "*-Prompt '<the rest>'*") $said
 $r = Resolve-ChatqTarget 'Mobile only chat'
 Check 'a title only in another project is found there' ($r.Row.Id -eq $idMob -and $r.Wide) "$($r.Rule) wide=$($r.Wide)"
 $r = Resolve-ChatqTarget '2222222'
@@ -332,6 +345,12 @@ $d = ConvertFrom-ChatqLimitText 'try again at Sep 21st, 2026 8:37 AM.'
 Check 'codex prose reset time parsed' ($d -eq [datetime]'2026-09-21 08:37') $d
 $cut = @(Get-ChatqCutOffChats @())
 Check 'cut-off chats listed' (@($cut | Where-Object { $_.Id -eq $idFw }).Count -eq 1) ($cut | ForEach-Object Title)
+# the chat the limit just stopped is the one most likely to be missing from the
+# index, and a uuid is not what "chatq '<title>' -Continue" below asks for
+Remove-ChatIndexRow $pFw
+$row = @(Get-ChatqCutOffChats @() | Where-Object { $_.Id -eq $idFw })[0]
+Check 'one missing from the index still shows its title' ($row -and $row.Title -eq 'Parser rewrite and plugin unification') "$($row.Title)"
+$null = Sync-ChatIndex
 
 Section 'classifier'
 function Invoke-Scenario([string]$Name, [string]$Mode = 'auto') {
@@ -831,6 +850,10 @@ chatqrun $back.seq -First *> $null
 $q = @(Get-ChatqJobs | Where-Object { $_.state -eq 'queued' })
 Check 'chatqrun <n> -First moves a queued job up' ($q[0].id -eq $back.id) (Read-ChatqPrompt $q[0])
 foreach ($x in @($q | Where-Object { (Read-ChatqPrompt $_) -like '*of the line' })) { chatqrm $x.seq -Force *> $null }
+# a job's own history goes with its file, so the diary is the only account left
+# of one that was removed rather than run
+$diary = [System.IO.File]::ReadAllText((Join-Path $script:ChatqLogDir 'jobs.log'), $utf8)
+Check 'every job event is logged, removals included' ($diary -match "#$($back.seq) queued \(prompt\)" -and $diary -match "#$($back.seq) removed by chatqrm \(was queued\)") (@($diary -split "`n" | Where-Object { $_ -match "#$($back.seq) " }) -join ' / ')
 Remove-Item env:FAKE_RECORD
 
 Section 'watcher handoff'
@@ -888,6 +911,10 @@ $t1 = Get-Date
 $null = Send-ChatqAlert 'test' 'slow hook' 0
 Check 'a command that hangs is stopped' ((@($script:ChatqAlertReport) -join ' ') -like '*stopped after 2 s*' -and ((Get-Date) - $t1).TotalSeconds -lt 15) (@($script:ChatqAlertReport) -join ' ')
 $script:ChatqHookTimeoutSec = $null
+# the Join page shows a whole push URL, and pasting it is the obvious move
+chatqnotify -ApiKey 'https://joinjoaomgcd.appspot.com/_ah/api/messaging/v1/sendPush?apikey=deadbeefcafe1234&deviceId=abc123' *> $null
+$jn = (Get-ChatqConfig).join
+Check 'a pasted Join URL gives up its key and device' ((Unprotect-ChatqSecret $jn.apiKey) -eq 'deadbeefcafe1234' -and $jn.device -eq 'abc123') "$($jn.device)"
 chatqnotify -Off *> $null
 Check 'chatqnotify -Off clears the phone and the command' (-not (Get-ChatqConfig).PSObject.Properties['ntfy'] -and -not (Get-ChatqConfig).PSObject.Properties['command'])
 $script:ChatqIdleSeam = $null
@@ -909,6 +936,26 @@ Check 'Claude''s usage from its own cache, with how old it is' ($ucl -and ($ucl.
 Check 'Codex''s from the newest rollout that has any' ($ucx -and $ucx.Parts[0] -like '5h 100%, resets *' -and $ucx.Parts[1] -eq 'week 12%') "$($ucx.Parts -join ',')"
 $shown = (Write-ChatqList 6>&1 | Out-String)
 Check 'chatqlist shows it' ($shown -like '*usage  Claude 5h 83%*') ''
+# Both caches refresh only when their own tool runs, so the numbers can be
+# older than what the status line above them says - and a lane limited right
+# now cannot be at 83% of a window it has spent.
+$was = Get-ChatqState
+Save-ChatqJson $script:ChatqStatePath ([ordered]@{
+        pid = $PID; blocked = @{ claude = @{ until = (Get-Date).AddHours(1).ToUniversalTime().ToString('o'); type = 'five_hour'; source = 'transcript' } }; outage = @{}
+    })
+$shown = Lock-Queue { Write-ChatqList 6>&1 | Out-String }
+Check 'a limited account reads 5h limited, never a percent from before it' ($shown -like '*Claude 5h limited*' -and $shown -notlike '*5h 83%*') (@($shown -split "`n" | Where-Object { $_ -like '*usage*' }) -join '')
+# and only the window that is blocked: a week gone says nothing about the 5 h
+Save-ChatqJson $script:ChatqStatePath ([ordered]@{
+        pid = $PID; blocked = @{ claude = @{ until = (Get-Date).AddDays(2).ToUniversalTime().ToString('o'); type = 'weekly_all'; source = 'transcript' } }; outage = @{}
+    })
+$shown = Lock-Queue { Write-ChatqList 6>&1 | Out-String }
+Check 'a weekly limit leaves the 5 h figure alone' ($shown -like '*Claude 5h 83%*' -and $shown -like '*week limited*') (@($shown -split "`n" | Where-Object { $_ -like '*usage*' }) -join '')
+Save-ChatqJson $script:ChatqStatePath $was
+[System.IO.File]::WriteAllText((Join-Path $claudeHome '.claude.json'),
+    $cj.Replace("$fetched", [string]([DateTimeOffset]::Now.AddHours(-3).ToUnixTimeMilliseconds())), $utf8)
+$shown = (Write-ChatqList 6>&1 | Out-String)
+Check 'a reading hours old is marked stale' ($shown -match 'as of [^)]+ - stale') (@($shown -split "`n" | Where-Object { $_ -like '*usage*' }) -join '')
 
 Section 'archive and restore'
 chatrm 'Archive me please' -Archive -Force *> $null

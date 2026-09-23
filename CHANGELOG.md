@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.2.1 — what a first day of real use turned up
+
+- **A prompt typed after the title is caught.** `chatq <title> <some words>`
+  reads every word as the title — that is what lets a title be typed without
+  quotes — so the words meant for the chat went looking for one instead, and
+  the pick was a guess. When the pick is a guess and what was typed reads like
+  a prompt (six words or more, or a path or URL in it), `chatq` now says so and
+  shows the `-Prompt` form.
+- **The cut-off list names the chat.** It fell back to the transcript's uuid
+  when the index had no row for that chat yet — which is exactly the state a
+  chat the limit has just stopped is in. The title is read from the transcript
+  instead, so it can go straight into the `-Continue` line printed under it.
+- **The usage line no longer contradicts the status line above it.** `Claude 5h
+  0%` sat next to `Claude limited until 11:50`, because both providers' figures
+  come from caches that refresh only when that tool itself runs. A limited
+  account now reads `5h limited`, and a figure an hour old or more is marked
+  `stale`.
+- **`data/logs/jobs.log`** keeps a line per job event — queued, every state it
+  moves through, and removals. A job's own history goes with its file, so until
+  now a `chatqrm` left no trace at all, and where a job went could only be
+  guessed from the watcher logging an empty queue.
+- **`chatqnotify -ApiKey` takes the whole Join push URL**, quoted, and reads the
+  key and device out of it. Unquoted it never arrives — PowerShell stops at the
+  first `&` — so the help now says to paste the key alone.
+- `chatq`'s cheat sheet said phone alerts went through Join. They also go to a
+  desktop toast and to ntfy.
+
 ## 0.2.0 — chatrm and chatq in one tool: VS-code-chat-manager
 
 The repo was chatq; it is now VS-code-chat-manager, and chatrm 1.3.0 is inside

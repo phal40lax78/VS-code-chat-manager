@@ -219,6 +219,7 @@ FILES   everything in data/ beside this script, nothing anywhere else
     reload-request                         read by the extension in extension/
     queue/<id>.json + "#<n> <title>.md"   one job, its prompt (edit it freely)
     logs/<id>.jsonl                        the raw run
+    logs/jobs.log                          every job event, including removals
     queue.md                               live board - open it, Ctrl+Shift+V
     config.json                            Join key, DPAPI-protected on Windows
 #>
@@ -228,7 +229,7 @@ FILES   everything in data/ beside this script, nothing anywhere else
 # and raw.githubusercontent.com serves a stale copy for minutes after a push, so
 # "updated" vs "unchanged" is the only way to tell a real upgrade from the CDN
 # handing back what you already had.
-$script:ChatVersion = '0.2.0'
+$script:ChatVersion = '0.2.1'
 
 $script:ChatPreview = 3
 $script:ChatClaudeHome = if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { Join-Path $HOME '.claude' }
@@ -3300,6 +3301,20 @@ function Write-ChatqPick {
     elseif ($Res.NoProject) { Write-Host "     project: $($r.Group)" -ForegroundColor DarkGray }
 }
 
+function Write-ChatqPromptHint {
+    # Everything after the command is the title, so a prompt typed bare joins
+    # it, and the words meant for the chat go looking for one instead. What
+    # that looks like is exactly this: a sentence that matched no title, and
+    # the pick a guess. Said only then - a real title never prints it.
+    param([string]$Typed, $Res, [switch]$HasPrompt, [switch]$Continue)
+    if ($HasPrompt -or $Continue -or -not $Res -or $Res.Tier -ne 'nomatch') { return }
+    $words = @($Typed -split '\s+' | Where-Object { $_ }).Count
+    # a path or a URL in there is a prompt however short it is
+    if ($words -lt 6 -and $Typed -notmatch '[\\/]|https?:') { return }
+    Write-Host '     every word of that is the title - a prompt is never read from it' -ForegroundColor Yellow
+    Write-Host "     did you mean:  chatq '<title>' -Prompt '<the rest>'" -ForegroundColor DarkGray
+}
+
 #endregion
 
 #region session metadata ------------------------------------------------------
@@ -3426,7 +3441,15 @@ function Get-ChatqCutOffChats {
             if ($busy[$f.BaseName]) { continue }
             $last = Get-ChatqLastTurn $f.FullName
             if (-not $last -or -not ($last.Limit -or $last.Overloaded)) { continue }
-            $title = if ($rows[$f.FullName]) { $rows[$f.FullName].Title } else { $f.BaseName }
+            # The index is only as fresh as the last search, and a chat the
+            # limit has just cut off is exactly the one that may be missing
+            # from it. Read the title where it lives rather than printing a
+            # uuid, which is not what the -Continue line below asks for.
+            $title = if ($rows[$f.FullName]) { $rows[$f.FullName].Title }
+            else {
+                $rec = try { & $script:ChatProviders['claude'].Describe $f } catch { $null }
+                if ($rec -and $rec.Title -and $rec.Title -ne '(empty)') { $rec.Title } else { $f.BaseName }
+            }
             [pscustomobject]@{
                 Id = $f.BaseName; Title = $title; Group = $d.Name; At = $last.At; ResetsAt = $last.ResetsAt
                 Why = if ($last.Limit) { 'limit' } else { 'overloaded' }
@@ -3518,11 +3541,30 @@ function Save-ChatqJson {
     Save-ChatqText $Path ($Object | ConvertTo-Json -Depth 8)
 }
 
+function Write-ChatqJobLog {
+    # Every move a job makes, in one file that outlives it. A job's own history
+    # goes with its file, so a chatqrm used to leave no trace at all - where a
+    # job went could only be guessed from the watcher logging an empty queue.
+    # Best effort: the watcher and a shell both append, and a line lost to a
+    # collision is better than either of them stopping over a diary.
+    param([string]$Text)
+    try {
+        New-ChatqDir $script:ChatqLogDir
+        $p = Join-Path $script:ChatqLogDir 'jobs.log'
+        if ((Test-Path -LiteralPath $p) -and (Get-Item -LiteralPath $p).Length -gt 1MB) {
+            Move-Item -LiteralPath $p -Destination "$p.1" -Force
+        }
+        [System.IO.File]::AppendAllText($p, "$((Get-Date).ToString('o'))  $Text`n", (New-Object System.Text.UTF8Encoding $false))
+    }
+    catch {}
+}
+
 function Set-ChatqJobState {
     param($Job, [string]$State, [string]$Why)
     $Job.state = $State
     $Job.history = @(@($Job.history) + [pscustomobject]@{ at = (Get-ChatqStamp); state = $State; why = $Why })
     Save-ChatqJob $Job
+    Write-ChatqJobLog "#$($Job.seq) $State$(if ($Why) { " - $Why" }) $($script:ChatqDot) $($Job.title)"
 }
 
 function Find-ChatqJob {
@@ -4858,7 +4900,7 @@ function Get-ChatqUsage {
                     })
                 if ($parts) {
                     $at = [System.DateTimeOffset]::FromUnixTimeMilliseconds([int64]$u.fetchedAtMs).LocalDateTime
-                    $out.Add([pscustomobject]@{ Provider = 'Claude'; Parts = $parts; AsOf = & $label $at })
+                    $out.Add([pscustomobject]@{ Provider = 'Claude'; Parts = $parts; AsOf = & $label $at; AsOfAt = $at })
                 }
             }
         }
@@ -4889,7 +4931,7 @@ function Get-ChatqUsage {
                         $s
                     })
                 $at = Get-ChatqRecordTime $t $i
-                if ($parts) { $out.Add([pscustomobject]@{ Provider = 'Codex'; Parts = $parts; AsOf = if ($at) { & $label $at } else { $null } }) }
+                if ($parts) { $out.Add([pscustomobject]@{ Provider = 'Codex'; Parts = $parts; AsOf = if ($at) { & $label $at } else { $null }; AsOfAt = $at }) }
             }
             break
         }
@@ -4906,9 +4948,27 @@ function Write-ChatqList {
     $width = Get-ChatqWidth
     Write-Host ''
     Write-Host (' ' + (Get-ChatqStatusLine $jobs $blocks)) -ForegroundColor DarkGray
+    # The percentages come from each tool's own cache, which is refreshed only
+    # when that tool runs. Two ways it then misleads, both of them here today:
+    # a lane limited right now cannot be at 0% of its 5 h window - the reading
+    # simply predates the limit - and a reading hours old is not news at all.
     $use = @(Get-ChatqUsage | ForEach-Object {
-            $a = if ($_.AsOf) { " (as of $($_.AsOf))" } else { '' }
-            "$($_.Provider) $($_.Parts -join " $($script:ChatqDot) ")$a"
+            $u = $_
+            $parts = @($u.Parts)
+            # only the window that is actually blocked: a weekly limit says
+            # nothing about the 5 h one, and an overload or a logged-out
+            # account is not a usage limit at all
+            $kinds = @($Blocks.Keys | Where-Object { $_ -like "$($u.Provider.ToLower())|*" -or $_ -eq $u.Provider.ToLower() } |
+                    Where-Object { $Blocks[$_].Until } | ForEach-Object { [string]$Blocks[$_].Type })
+            if (@($kinds | Where-Object { $_ -in 'five_hour', 'session' }).Count) {
+                $parts = @($parts | ForEach-Object { if ($_ -like '5h *') { '5h limited' } else { $_ } })
+            }
+            if (@($kinds | Where-Object { $_ -in 'seven_day', 'weekly', 'weekly_all' }).Count) {
+                $parts = @($parts | ForEach-Object { if ($_ -like 'week *') { 'week limited' } else { $_ } })
+            }
+            $old = $u.AsOfAt -and ((Get-Date) - $u.AsOfAt).TotalHours -ge 1
+            $a = if ($u.AsOf) { " (as of $($u.AsOf)$(if ($old) { ' - stale' }))" } else { '' }
+            "$($u.Provider) $($parts -join " $($script:ChatqDot) ")$a"
         })
     if ($use) { Write-Host ('  usage  ' + ($use -join "  $($script:ChatqDot)  ")) -ForegroundColor DarkGray }
 
@@ -5994,6 +6054,7 @@ function chatq {
     $res = Resolve-ChatqTarget $t $Prompt $Provider -AllProjects:$AllProjects
     if ($res.Error) { Write-Host "  $($res.Error)" -ForegroundColor Yellow; return }
     Write-ChatqPick $res
+    Write-ChatqPromptHint $t $res -HasPrompt:($PSBoundParameters.ContainsKey('Prompt')) -Continue:$Continue
     $info = Get-ChatqJobInfo $res.Row
     if ($info.Error) { Write-Host "     $($info.Error)" -ForegroundColor Yellow; return }
     Write-ChatqJobInfo $info $Mode -Continue:$Continue $res.Row.Provider
@@ -6091,6 +6152,7 @@ function chatq {
         history = @([pscustomobject]@{ at = (Get-ChatqStamp); state = 'queued'; why = 'added' })
     }
     Save-ChatqJob $job
+    Write-ChatqJobLog "#$seq queued ($kind) $($script:ChatqDot) $($row.Title)"
 
     $jobs = @(Get-ChatqJobs)
     # the watcher's own view if it is running - it knows about an overload -
@@ -6160,6 +6222,7 @@ function chatqrm {
         foreach ($p in @((Join-Path $script:ChatqQueueDir "$($j.id).json"), (Get-ChatqPromptPath $j), (Join-Path $script:ChatqLogDir "$($j.id).jsonl"))) {
             if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Force -EA SilentlyContinue }
         }
+        Write-ChatqJobLog "#$($j.seq) removed by chatqrm (was $($j.state)) $($script:ChatqDot) $($j.title)"
         Write-Host "  removed #$($j.seq) '$($j.title)'" -ForegroundColor DarkGray
     }
     Write-ChatqBoard
@@ -6303,6 +6366,10 @@ function chatqnotify {
     group.android, group.all) or a device name. The key is DPAPI-protected on
     Windows. Alerts always go to data/logs/alerts.log as well.
 
+    Paste the key itself rather than the whole push URL that page shows. A URL
+    pasted bare never reaches chatq at all - PowerShell stops at its first & -
+    and one in quotes has its key and device read out of it.
+
     Tasker: every title starts "chatq ", so a profile on the Join plugin's
     event can filter them, or match only "needs input" and "failed".
 
@@ -6342,6 +6409,19 @@ function chatqnotify {
         return
     }
     $changed = $false
+    # The Join page hands you a whole push URL, so pasting that is the obvious
+    # move. Take the key and the device out of it. Unquoted it never gets this
+    # far - PowerShell stops at the & itself, and nothing here can catch that -
+    # so the help says to paste the key alone.
+    if ($ApiKey -match '[?&]apikey=') {
+        $dev = if ($ApiKey -match '[?&]device(?:Id|Names)=([^&\s]+)') { $Matches[1] } else { '' }
+        $key = if ($ApiKey -match '[?&]apikey=([^&\s]+)') { $Matches[1] } else { '' }
+        if ($key) {
+            $ApiKey = $key
+            if (-not $Device -and $dev) { $Device = [uri]::UnescapeDataString($dev) }
+            Write-Host '  took the key out of the URL you pasted' -ForegroundColor DarkGray
+        }
+    }
     if ($ApiKey -or $Device) {
         $j = if ($cfg.join) { $cfg.join } else { [pscustomobject]@{} }
         if ($ApiKey) { Set-ChatqProp $j 'apiKey' ([pscustomobject](Protect-ChatqSecret $ApiKey.Trim())) }
@@ -6395,6 +6475,7 @@ function chatqnotify {
         else {
             Write-Host '  no phone alerts yet - Join or ntfy:' -ForegroundColor DarkGray
             Write-Host '      chatqnotify -ApiKey <key> -Device <device id | group.phone>   (https://joinjoaomgcd.appspot.com, Join API)' -ForegroundColor Cyan
+            Write-Host '        the key itself, not the push URL - PowerShell stops at the & in one unless it is quoted' -ForegroundColor DarkGray
             Write-Host '      chatqnotify -Ntfy <long random topic>                        (https://ntfy.sh, free)' -ForegroundColor Cyan
         }
     }
@@ -6409,7 +6490,7 @@ function Write-ChatqCheatSheet {
     Write-Host '  chatqrm <n> [-Force]        drop a job; -Force cancels a running one' -ForegroundColor Cyan
     Write-Host '  chatqrun [<n>] [-Now]       requeue n / stop waiting and try now' -ForegroundColor Cyan
     Write-Host '  chatqlog <n>                what a run did' -ForegroundColor Cyan
-    Write-Host '  chatqnotify                 phone alerts through Join' -ForegroundColor Cyan
+    Write-Host '  chatqnotify                 alerts: toast here, Join or ntfy on the phone' -ForegroundColor Cyan
     Write-Host ''
     Write-Host '  -WhatIf shows the pick only   -Mode auto|acceptEdits|...   -At 13:00 / -In 2h' -ForegroundColor DarkGray
     Write-Host '  Tab fills in a title from any part of it, like chatrm: chatq card red<Tab>' -ForegroundColor DarkGray

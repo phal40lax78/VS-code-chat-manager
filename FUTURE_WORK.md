@@ -55,6 +55,22 @@ Open questions, from `codex-rs/tui/src/session_queue_commands.rs`:
 3. Classify the run from the rollout: after the queued message, tail it until
    the turn completes or errors.
 
+## Attach an image to a queued prompt
+
+**Why deferred:** a job carries text only. A path named in the prompt still
+works for Claude - it reads PNG, JPG and PDF itself - but an unattended run
+denies anything that would ask, so the file has to sit in that chat's own
+project folder, and it has to still be there hours later when the job sends.
+
+Codex has a real attach: `codex exec resume -i <FILE>`, repeatable (checked
+against the bundled codex-cli 0.154). Claude Code's CLI has none. Its only way
+in is `--input-format stream-json`, whose user message can carry image content
+blocks - a different runner from the byte-exact stdin one.
+
+**To close:** `chatq <title> -Image <path>`, repeatable: `-i` on Codex, and on
+Claude the path written into the prompt until that runner exists. Copy the file
+into `data/queue/` beside the prompt, or a job breaks when the file moves.
+
 ## `liveIdle` default
 
 **Why deferred:** ending an idle chat's process before a run (`liveIdle: stop`)

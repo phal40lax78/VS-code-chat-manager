@@ -277,8 +277,14 @@ if the chat moved on meanwhile; one you asked for is always sent.
 - **`chatqlist`** is one line per job, fitted to the terminal; a long prompt
   shows its first line and a size note. Above them, what everything waits on and
   how much of each window is used — `usage  Claude 5h 83% · week 41% (as of
-  12:10)` — read from Claude's and Codex's own caches, with their age.
+  12:10)` — read from Claude's and Codex's own caches, with their age. Those
+  caches only refresh when the tool itself runs, so a reading over an hour old
+  is marked `stale`, and a limited account shows `5h limited` rather than a
+  percentage from before the limit.
 - **`chatq <n>`** opens the whole prompt; edit it until it is sent.
+- **`data/logs/jobs.log`** keeps a line per job event — queued, every state it
+  moves through, and removals — so a job that left the queue can still be
+  accounted for.
 - **`chatqlist -Board`** opens `data/queue.md`: **Ctrl+Shift+V** there for VS
   Code's preview, which follows every change the watcher writes.
 
