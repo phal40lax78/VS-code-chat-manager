@@ -27,7 +27,7 @@
                 "chatManagerReload.autoReload": {
                     "type": "boolean",
                     "default": false,
-                    "markdownDescription": "Reload without asking after a delete. Off by default: a reload restarts every extension in the window, so one taken mid-answer loses that answer. Never applies to a queued run, which can finish at any hour while another chat in the window is busy."
+                    "markdownDescription": "Reload without asking after a delete. Off by default: a reload restarts every extension in the window, so one taken mid-answer loses that answer. Never applies while a chat in the workspace is still working (a turn, a permission prompt, a workflow or background agent), nor to a queued run, which can finish at any hour while another chat in the window is busy."
                 }
             }
         }

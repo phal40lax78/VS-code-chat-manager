@@ -179,10 +179,24 @@ shells that were not open at the time. `chatclean` sweeps whatever slips past.
 ### Reloading safely
 
 A reload restarts every extension in the window, so one taken mid-answer loses
-that answer. Every delete ends by saying whether now is a safe moment —
+that answer — and every workflow and background agent that chat started dies
+with it. Every delete ends by saying whether now is a safe moment —
 `all project chat is idle - safe to reload now` — and `-WaitForIdle` blocks until
-it is. A session parked on a permission prompt writes nothing, so the last record
-is read as well: an unanswered `tool_use` is a turn still in flight.
+it is. The window's Reload offer says the same (see
+[the extension](#chats-open-in-vs-code-and-the-extension)).
+
+What counts as a chat still working, in this project:
+- **Claude says so.** `claude agents --json` lists every chat open in a window as
+  `busy` or `waiting` (a permission prompt).
+- **Work sent to the background.** The turn that starts a workflow or a
+  background agent ends at once, so the chat can read as finished while the
+  work goes on. Its transcript is searched for a start with no
+  `<task-notification>` after it. Only starts since the chat's process began
+  count, because anything older died with an earlier process. A background
+  shell does not count: it may be a server that never stops.
+- **The transcript itself**, for Codex and for chats Claude does not list.
+  Anything written in the last minute counts. So does an unanswered `tool_use`,
+  because a chat parked on a permission prompt writes nothing.
 
 ## Archive and restore
 
@@ -379,11 +393,19 @@ from inside an extension only. `extension/` is that extension, and is optional:
 Copy-Item -Recurse "$HOME\Tools\VS-code-chat-manager\extension" "$HOME\.vscode\extensions\phal40lax78.chat-manager-reload-2.0.0"
 ```
 
-Reload once and it is live. After a delete, an archive, or a queued run into a
-chat that window still holds, *that* window — matched by its workspace folder —
-offers a **Reload** button. `chatManagerReload.signalFile` points it elsewhere
-if the script does not live in `~/Tools/VS-code-chat-manager`;
-`chatManagerReload.autoReload` skips the question after a delete, never after a
+Reload once and it is live. To update it later, copy the files over the old
+ones: `Copy-Item -Force "$HOME\Tools\VS-code-chat-manager\extension\*"` into
+the same folder. A second `Copy-Item -Recurse` onto a folder that already exists
+would nest a copy inside it.
+
+After a delete, an archive, or a queued run into a chat that window still holds,
+*that* window — matched by its workspace folder — offers a **Reload** button.
+If a chat in the project was still working when the delete ran
+([what counts](#reloading-safely)), it warns instead: *A chat in this workspace
+is still working, and reloading now would cut it off*, with **Reload anyway**.
+`chatManagerReload.signalFile` points it elsewhere if the script does not live
+in `~/Tools/VS-code-chat-manager`; `chatManagerReload.autoReload` skips the
+question after a delete — never while a chat is working, and never after a
 queued run, which can finish at any hour with another chat in the window busy.
 
 ## Codex

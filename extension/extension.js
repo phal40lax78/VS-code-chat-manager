@@ -42,21 +42,32 @@ function isMine(req) {
 }
 
 // What to say, by what happened. A request written before 'kind' existed is a
-// delete - that was the only thing that wrote one.
+// delete - that was the only thing that wrote one. 'busy' is the script's
+// judgement, made as it wrote the request, that a chat in this workspace was
+// still working - a turn in flight, a permission prompt, or a workflow or
+// background agent that has not reported back. A reload now would cut it off.
 function message(req) {
     const what = req.title ? '"' + req.title + '"' : 'a chat';
     if (req.kind === 'ran') {
         return 'A queued prompt ran in ' + what + ', which this window still has open. Reload to show it?';
     }
-    if (req.kind === 'archived') return 'Archived ' + what + '. Reload to refresh the chat list?';
-    return 'Deleted ' + what + '. Reload to refresh the chat list?';
+    const done = (req.kind === 'archived' ? 'Archived ' : 'Deleted ') + what + '.';
+    if (req.busy === true) {
+        return done + ' A chat in this workspace is still working, and reloading now would cut it off - reload once it finishes.';
+    }
+    return done + ' Reload to refresh the chat list?';
+}
+
+// Never automatic for a queued run: it can finish at 3 a.m. with another
+// chat in this window mid-answer, and a reload would lose that answer. Nor
+// while a chat is working, for the same reason.
+function reloadsItself(req, autoReload) {
+    return req.kind !== 'ran' && req.busy !== true && !!autoReload;
 }
 
 async function offer(context, req) {
-    // Never automatic for a queued run: it can finish at 3 a.m. with another
-    // chat in this window mid-answer, and a reload would lose that answer.
-    const auto = req.kind !== 'ran' &&
-        vscode.workspace.getConfiguration('chatManagerReload').get('autoReload');
+    const auto = reloadsItself(req,
+        vscode.workspace.getConfiguration('chatManagerReload').get('autoReload'));
 
     // Marked seen BEFORE reloading: the file is still on disk afterwards, so
     // without this the same request would prompt again on every reload.
@@ -66,8 +77,12 @@ async function offer(context, req) {
         vscode.commands.executeCommand('workbench.action.reloadWindow');
         return;
     }
-    const pick = await vscode.window.showInformationMessage(message(req), 'Reload', 'Not now');
-    if (pick === 'Reload') {
+    const busy = req.busy === true;
+    const go = busy ? 'Reload anyway' : 'Reload';
+    const pick = busy
+        ? await vscode.window.showWarningMessage(message(req), go, 'Not now')
+        : await vscode.window.showInformationMessage(message(req), go, 'Not now');
+    if (pick === go) {
         vscode.commands.executeCommand('workbench.action.reloadWindow');
     }
 }
@@ -98,10 +113,12 @@ function activate(context) {
 
 function deactivate() { }
 
-// The underscored ones are exported so the path matching, the BOM strip and the
-// wording can be driven from a test with the vscode module stubbed out - all of
-// them decide whether, or how, the prompt appears, and fail silently when wrong.
+// The underscored ones are exported so the path matching, the BOM strip, the
+// wording and the auto-reload rule can be driven from a test with the vscode
+// module stubbed out - all of them decide whether, or how, the prompt appears,
+// and fail silently when wrong.
 module.exports = {
     activate, deactivate,
-    _readRequest: readRequest, _isMine: isMine, _signalFiles: signalFiles, _message: message
+    _readRequest: readRequest, _isMine: isMine, _signalFiles: signalFiles, _message: message,
+    _reloadsItself: reloadsItself
 };

@@ -117,6 +117,21 @@ missed button.
 **To close:** make it a short array with ids, and have the extension keep the
 last few ids it has seen instead of one.
 
+## Background shells and "safe to reload"
+
+**Why deferred:** the reload check counts workflows and background agents a
+chat started that have not reported back, but not a Bash command run in the
+background (`backgroundTaskId`). One is as often a dev server or a watcher as a
+build, and a server never reports. Counting them would hold the project
+"active" for as long as it runs, and `-WaitForIdle` would never return. A
+reload still kills a background build with the chat's process.
+
+**To close:** tell the two apart. A shell the model started with a timeout, or
+one that moved to the background after its timeout ran out (`timedOutAfterMs`
+in its result), is meant to end, so it could count. One started with
+`run_in_background` and no end in sight would not. Before relying on that,
+check the CLI keeps those fields stable.
+
 ## Copilot Chat
 
 **Why deferred:** there is no CLI that resumes a Copilot chat headless. chatrm

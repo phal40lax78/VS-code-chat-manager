@@ -230,7 +230,7 @@ FILES   everything in data/ beside this script, nothing anywhere else
 # and raw.githubusercontent.com serves a stale copy for minutes after a push, so
 # "updated" vs "unchanged" is the only way to tell a real upgrade from the CDN
 # handing back what you already had.
-$script:ChatVersion = '0.3.0'
+$script:ChatVersion = '0.3.1'
 
 $script:ChatPreview = 3
 $script:ChatClaudeHome = if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { Join-Path $HOME '.claude' }
@@ -1693,6 +1693,60 @@ function Test-ChatTranscriptBusy {
     return $null
 }
 
+function Get-ChatBackgroundTasks {
+    # The workflows and background agents a Claude chat started that have not
+    # reported back: their task ids. The turn that starts one ends at once, so
+    # the transcript reads as finished and Claude calls the chat idle while the
+    # work goes on - its agents write only under <id>/subagents/. A reload
+    # kills all of it along with the chat's process.
+    #
+    # A start is a tool result whose toolUseResult is 'async_launched', with a
+    # taskId (a workflow) or an agentId (an agent); SendMessage waking a
+    # stopped agent is a resumedAgentId. Every end - completed, failed,
+    # stopped - is a <task-notification> naming the same task id.
+    #
+    # Only starts after $Since count: the work dies with the process that ran
+    # it, so one from before the chat was last opened is gone whether or not
+    # it ever reported. A background shell is left out on purpose - as often a
+    # server that never ends, which would hold the chat busy for good.
+    param([string]$Path, [datetime]$Since = [datetime]::MinValue)
+    $open = [System.Collections.Generic.List[string]]::new()
+    try { $fs = Open-ChatRead $Path } catch { return }   # can vanish mid-scan
+    try {
+        $sr = [System.IO.StreamReader]::new($fs, [System.Text.Encoding]::UTF8)
+        try {
+            while ($null -ne ($line = $sr.ReadLine())) {
+                # a cheap look first: most lines are neither, and parsing each
+                # one would be the whole cost of a long chat
+                if ($line.IndexOf('"async_launched"', [StringComparison]::Ordinal) -ge 0 -or
+                    $line.IndexOf('"resumedAgentId"', [StringComparison]::Ordinal) -ge 0) {
+                    $o = try { $line | ConvertFrom-Json } catch { $null }
+                    $r = if ($o -and $o.PSObject.Properties['toolUseResult']) { $o.toolUseResult } else { $null }
+                    $id = $null
+                    if ($r -and $r.PSObject.Properties['status'] -and $r.status -eq 'async_launched') {
+                        $id = if ($r.PSObject.Properties['taskId'] -and $r.taskId) { $r.taskId }
+                        elseif ($r.PSObject.Properties['agentId']) { $r.agentId }
+                    }
+                    elseif ($r -and $r.PSObject.Properties['resumedAgentId']) { $id = $r.resumedAgentId }
+                    if ($id) {
+                        $at = ConvertTo-ChatqDate $o.timestamp
+                        if ((-not $at -or $at -ge $Since) -and -not $open.Contains([string]$id)) { $open.Add([string]$id) }
+                        continue
+                    }
+                }
+                if ($open.Count -and $line.IndexOf('<task-id>', [StringComparison]::Ordinal) -ge 0) {
+                    foreach ($t in @($open)) {
+                        if ($line.IndexOf("<task-id>$t</task-id>", [StringComparison]::Ordinal) -ge 0) { [void]$open.Remove($t) }
+                    }
+                }
+            }
+        }
+        finally { $sr.Dispose() }
+    }
+    finally { $fs.Dispose() }
+    return $open.ToArray()
+}
+
 function Test-ChatIdle {
     # $true idle, $false active, $null when it cannot be told - and $null stays
     # distinct, because "safe to reload" guessed wrong costs someone an answer.
@@ -1700,11 +1754,30 @@ function Test-ChatIdle {
     $files = @(Get-ChatProjectFiles -AllProjects:$AllProjects -Cwd $Cwd)
     if (-not $files) { return $null }
 
-    # first layer: anything written just now is plainly live
+    # first, what Claude says of the chats it has open: busy is a turn in
+    # flight, waiting a permission prompt. A turn that started a workflow or a
+    # background agent has ended, though, and reads idle there - so those
+    # chats are also searched for work that has not reported back.
+    $byId = @{}
+    foreach ($f in $files) { if ($f.Extension -eq '.jsonl') { $byId[$f.BaseName] = $f } }
+    foreach ($s in @(Get-ChatqLiveSessions $env:CLAUDE_CONFIG_DIR)) {
+        $f = $byId[[string]$s.SessionId]
+        if (-not $f) { continue }
+        if ($s.Status -in 'busy', 'waiting') { return $false }
+        $since = [datetime]::MinValue
+        if ($s.StartedAt) { $since = [DateTimeOffset]::FromUnixTimeMilliseconds([int64]$s.StartedAt).LocalDateTime }
+        else { try { $since = (Get-Process -Id $s.Pid -EA Stop).StartTime } catch {} }
+        # untouched since this process started: it has started nothing
+        if ($f.LastWriteTime -lt $since) { continue }
+        if (@(Get-ChatBackgroundTasks $f.FullName $since).Count) { return $false }
+    }
+
+    # then the transcripts themselves - all there is to go on for Codex, or a
+    # Claude too old to keep that list. Anything written just now is live
     $cut = (Get-Date).AddSeconds(-$Seconds)
     foreach ($f in $files) { if ($f.LastWriteTime -gt $cut) { return $false } }
 
-    # second layer: quiet on disk is not the same as finished. Only a recently
+    # quiet on disk is not the same as finished, though. Only a recently
     # touched transcript can still be live, so the rest are not worth opening.
     $since = (Get-Date).AddHours(-12)
     foreach ($f in $files) {
@@ -1744,7 +1817,10 @@ function Write-ChatReloadRequest {
     # whether the delete was for its own workspace - so the background watcher
     # passes the job's folder, never its own. Kind is 'deleted' for chatrm and
     # 'ran' for a queued prompt that ran into a chat still open in a window.
-    param([string]$Title, [string]$Cwd = (Get-Location).Path, [string]$Kind = 'deleted')
+    # Busy is $true when a chat in the project was still working as the
+    # request went out - the window then warns instead of offering a plain
+    # Reload, and never reloads by itself. $null is "not judged".
+    param([string]$Title, [string]$Cwd = (Get-Location).Path, [string]$Kind = 'deleted', $Busy = $null)
     try {
         $dir = Split-Path $script:ChatReloadPath -Parent
         if (-not (Test-Path -LiteralPath $dir)) {
@@ -1755,6 +1831,7 @@ function Write-ChatReloadRequest {
             kind  = $Kind
             cwd   = $Cwd
             title = $Title
+            busy  = $Busy
             at    = (Get-Date).ToString('o')
         } | ConvertTo-Json -Compress
         # NOT Set-Content -Encoding UTF8: that writes a BOM on 5.1 and
@@ -1772,7 +1849,11 @@ function Write-ChatGhostAdvice {
     param([switch]$WaitForIdle, [switch]$AllProjects, [string]$Title, [string]$Kind = 'deleted')
     $procs = if ($script:ChatIsMac) { @('Electron', 'Code Helper*') } else { @('Code') }
     if (-not @(Get-Process -Name $procs -EA SilentlyContinue).Count) { return }
-    Write-ChatReloadRequest -Title $Title -Kind $Kind
+    # judged before the request goes out, so the window says it too: a bare
+    # Reload button reads as "safe now" to anyone not watching this terminal
+    $idle = Test-ChatIdle -AllProjects:$AllProjects
+    $busy = if ($null -eq $idle) { $null } else { -not $idle }
+    Write-ChatReloadRequest -Title $Title -Kind $Kind -Busy $busy
     Write-Host 'the session list is cached - reload to see it go:'
     Write-Host '  Ctrl+Shift+P > Developer: Reload Window'
     if (Test-ChatGhostWatch) {
@@ -1787,7 +1868,7 @@ function Write-ChatGhostAdvice {
     # command from inside an extension only - so the most this can do is say
     # whether now is a safe moment.
     if ($WaitForIdle) { Wait-ChatIdle -AllProjects:$AllProjects; return }
-    switch (Test-ChatIdle -AllProjects:$AllProjects) {
+    switch ($idle) {
         $true { Write-Host '  all project chat is idle - safe to reload now' -ForegroundColor Green }
         $false {
             Write-Host '  a chat is still active - reload once it finishes' -ForegroundColor Yellow
@@ -4732,7 +4813,7 @@ function Get-ChatqLiveSessions {
             $list = ($buf -join "`n") | ConvertFrom-Json
             if ($null -ne $list) {
                 return @($list | ForEach-Object {
-                        [pscustomobject]@{ SessionId = $_.sessionId; Pid = $_.pid; Status = $_.status; Kind = $_.kind; WaitingFor = $_.waitingFor; ProcStart = $null }
+                        [pscustomobject]@{ SessionId = $_.sessionId; Pid = $_.pid; Status = $_.status; Kind = $_.kind; WaitingFor = $_.waitingFor; ProcStart = $null; StartedAt = $_.startedAt }
                     })
             }
         }
@@ -4747,7 +4828,7 @@ function Get-ChatqLiveSessions {
             if (-not $o -or -not $o.pid) { continue }
             $pr = Get-Process -Id $o.pid -EA SilentlyContinue
             if (-not (Test-ChatqClaudeProcess $pr $o.procStart)) { continue }
-            [pscustomobject]@{ SessionId = $o.sessionId; Pid = $o.pid; Status = $o.status; Kind = $o.kind; WaitingFor = $null; ProcStart = $o.procStart }
+            [pscustomobject]@{ SessionId = $o.sessionId; Pid = $o.pid; Status = $o.status; Kind = $o.kind; WaitingFor = $null; ProcStart = $o.procStart; StartedAt = $o.startedAt }
         })
 }
 

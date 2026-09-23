@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.3.1 — no "safe to reload" while another chat is working
+
+- **A chat running a workflow or a background agent is no longer called
+  idle.** The turn that starts one ends at once, and the work writes only to
+  its own files, so a minute later the check read the chat as finished. The
+  terminal then said `safe to reload now`, and a reload would have killed the
+  work. Now the transcript is searched for a start with no
+  `<task-notification>` after it. Only starts since the chat's process began
+  count: anything older died with an earlier process.
+- **Claude's own word comes first.** A chat that `claude agents` lists as
+  `busy` or `waiting` is active, whatever its transcript looks like.
+- **The window's Reload offer says so too.** The request left for the
+  extension now carries `busy`. While a chat works, the window warns — *A chat
+  in this workspace is still working, and reloading now would cut it off* —
+  with **Reload anyway**, and `autoReload` does not fire. Before, the button
+  appeared the same either way, and the warning was only in the terminal. Copy
+  `extension/` again to get this (see the README for the update line).
+
 ## 0.3.0 — files and screenshots with a queued prompt
 
 - **`chatq <title> -Attach a.png, spec.pdf`** sends files with the prompt —
