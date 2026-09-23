@@ -44,7 +44,8 @@ What it covers:
 | model and order | `-Model` kept apart from the chat's own model, used by the probe and the run (`--model`, and Codex's `-m` before the thread id); `-First` ahead of older jobs, in the list's "sends" too; `chatqrun <n> -First` |
 | watcher | one full loop runs the queue and exits; a second watcher will not start; `-Now` reaches a running watcher; a restart request hands over — lock released, successor started last, state carried — and never in `-Foreground`; a cold start does not carry state |
 | alerts | the toast at the PC and the phone quiet; `-Test` gets through anyway; ntfy's JSON with Hangul, the title's middle dot and priority 5; the ntfy topic never printed whole; the command hook's environment, `&` and `%PATH%` left as text; a hanging hook stopped; a pasted Join push URL gives up its key and device; `-Off`; the idle clock reads without an error |
-| usage | Claude's from its cache with its age, Codex's from the newest rollout that has any, and the `chatqlist` line; a limited account reads `5h limited` rather than the percent cached before the limit, and a figure an hour old is marked `stale` |
+| usage | Claude's from its cache with its age, Codex's from the newest rollout that has any, and the `chatqlist` line; a five-hour limit reads `5h limited` rather than the percent cached before it, a weekly one leaves the 5 h figure alone, and a figure an hour old is marked `stale` |
+| attachments | a missing file queues nothing; `-Continue` with files refused; `-WhatIf` names them and copies none; copies in the order given, a space out of a name, the original changing later changes nothing; `chatqlist` counts them; Claude gets every path under the prompt and `--add-dir` for the job's folder; Codex gets `-i` per image and `--` before the thread id, the rest in the prompt and the image only said to be there; the same file twice goes once; a wildcard brings every match; a file locked after its check queues nothing and leaves no folder; `chatq <n> -Attach` adds to a queued job, not to one already sent, and `-Paste` of text there adds nothing; `-Paste` through a seam — a screenshot as `clip.png` without the caption that came with it, Explorer files but not folders, text as the prompt or under one, an empty clipboard refused; a pasted image beside the prompt moved in and its link rewritten; a file linked twice one copy, a look-alike name its own link; a link to a file elsewhere, `../` into chatq's data and a `\\share` all left as written and untaken; a name with parentheses and a folder named after the prompt taken, the emptied folder removed; `chatqrm` removes the job's folder |
 | jobs.log | a job's queueing and its removal by `chatqrm` both land in `data/logs/jobs.log`, which outlives the job file |
 | find and delete | the index holds all three providers; a Hangul Codex name read as UTF-8; an escaped Claude title unescaped; `chatfind` by title, by prompt, and `-Deep` for text past the previews; `chatrm -Force` removes the transcript and every leftover (sidecars, file-history, session-env, tasks, debug, security, telemetry, todos, a job folder by the id inside it, plan files) and writes a tombstone; a plan another chat shares is kept; a locked transcript keeps its leftovers; a chat with a queued prompt is kept, and `-DropJobs` drops the job then deletes |
 | archive | Claude archive → tombstone and index row gone → restore over the window's stub, leftovers and all, tombstone cleared; never over a chat with messages; not while open in a window; Codex through `codex archive` / `unarchive`; `chatuninstall -All` refuses while the archive holds one |
@@ -107,10 +108,19 @@ with openai.chatgpt 26.908 (codex-cli 0.154), on throwaway chats only.
 | S16 | `codex archive` on a real thread | the rollout moves out of `sessions/YYYY/MM/DD/` into a flat `~/.codex/archived_sessions/`, which `chatrestore` lists; `codex unarchive` puts it back under `sessions/`. `codex delete` refuses without a terminal unless given `--force` and a UUID |
 | — | archive → restore of a real Claude chat | the transcript moved into `data/archive/` and back, and the archive folder was gone after |
 | — | the toast, from a shell on 5.1 | shown in-process; the idle clock read 145 s since the last input, so the phone would have stayed quiet |
+| S18 | files into a resumed chat (Claude Code 2.1.280, codex-cli 0.154) | Claude, `--permission-mode default --permission-prompts none`, two PNGs, a `.txt` and a `.pdf` named in the prompt from **outside** the project: all read, the images seen as pictures, nothing denied — with `--add-dir` and without it. Codex, `-i a.png -i b.png -- <id> -`: both images seen, the text and PDF read from the prompt; it logged one `CreateProcessWithLogonW failed: 267` from its sandbox on a shell command and answered anyway |
 
 The end-to-end run on a throwaway chat went probe → run → done through the
 background watcher in 10 s, with a real `claude agents --json`. The merged file
 indexed this machine's 218 real chats in 15 s and resolved a real title.
+
+Attachments went end to end the same way, through the built code rather than
+the spike's: `chatq <id> -Prompt … -Attach 'otter shot.png', plum.pdf` for a
+throwaway Claude chat and a throwaway Codex thread, each job sent by
+`Invoke-ChatqJob`. Both answered `IMAGE=OTTER 88 PDF=PLUM 3`. The clipboard
+reader read this machine's clipboard the same both ways: in-process from 5.1's
+STA console, and - from a shell started with `-MTA`, which cannot - through the
+`-STA` child Windows PowerShell it starts for that. It left no folder behind.
 
 ## Review
 
@@ -144,5 +154,15 @@ hold it, in the table above.
   `archived_sessions/`.
 - **S17, the toast from the hidden watcher,** a separate hidden process rather
   than the shell.
+- **S19, a screenshot through `-Paste`.** Win+Shift+S, then
+  `chatq '<title>' -Prompt x -Paste -WhatIf` should say `with 1 file (… KB):
+  clip.png`. Not run here: putting an image on the clipboard would have
+  overwritten whatever was on it.
+- **S20, Ctrl+V in the prompt tab.** Paste a screenshot into the tab `chatq
+  '<title>'` opens, save and close it: the job should list `+1 file` and its
+  prompt link `<job id>/image.png`. VS Code decides where the image is saved;
+  chatq takes it from anywhere under `data/queue/` - beside the prompt by
+  default, or in a folder named after it - so only a setting that saves it
+  outside `data/queue/` would leave it behind.
 - **macOS and Linux** are untested; the Unix branches are written but have never
   run.

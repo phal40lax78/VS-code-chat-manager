@@ -218,6 +218,7 @@ FILES   everything in data/ beside this script, nothing anywhere else
     rewritten.txt                          tombstones for the ghost watch
     reload-request                         read by the extension in extension/
     queue/<id>.json + "#<n> <title>.md"   one job, its prompt (edit it freely)
+    queue/<id>/                            that job's files, copied in
     logs/<id>.jsonl                        the raw run
     logs/jobs.log                          every job event, including removals
     queue.md                               live board - open it, Ctrl+Shift+V
@@ -229,7 +230,7 @@ FILES   everything in data/ beside this script, nothing anywhere else
 # and raw.githubusercontent.com serves a stale copy for minutes after a push, so
 # "updated" vs "unchanged" is the only way to tell a real upgrade from the CDN
 # handing back what you already had.
-$script:ChatVersion = '0.2.1'
+$script:ChatVersion = '0.3.0'
 
 $script:ChatPreview = 3
 $script:ChatClaudeHome = if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { Join-Path $HOME '.claude' }
@@ -3006,6 +3007,7 @@ $script:ChatqToastSeam = $null
 $script:ChatqNtfySeam = $null
 $script:ChatqIdleSeam = $null
 $script:ChatqHookTimeoutSec = $null
+$script:ChatqClipboardSeam = $null
 
 #endregion
 
@@ -3608,6 +3610,299 @@ function Get-ChatqSafeName {
     $t = ($Text -replace '[\\/:*?"<>|%^&!\x00-\x1f]', '_' -replace '\s+', ' ').Trim()
     if ($t.Length -gt 50) { $t = $t.Substring(0, 50) }
     return $t.TrimEnd('.', ' ')
+}
+
+#endregion
+
+#region attachments -----------------------------------------------------------
+# A job's files live in data/queue/<job id>/, copied there when it is queued:
+# the original may move or change in the hours before the job sends, and by
+# then the clipboard holds whatever was copied last. What is in that folder
+# when the job sends is what goes - delete a file there to drop it.
+# A link in the prompt is an attachment only when it points into data/queue/,
+# where VS Code saves an image pasted into the prompt tab. A link to any other
+# file names that file where it is, for the chat to open or change there.
+# Neither CLI needs more than a path for most of it. Claude Code opens an
+# image with its own Read tool and sees the picture, and reads text and PDF the
+# same way - named in the prompt, from outside the project, in the strictest
+# unattended mode (spike S18). Codex also takes images properly, with -i.
+
+$script:ChatqImageExt = @('.png', '.jpg', '.jpeg', '.gif', '.webp')
+$script:ChatqAttachWarnCount = 10
+$script:ChatqAttachWarnBytes = 20MB
+
+function Get-ChatqAttachDir {
+    param($Job)
+    Join-Path $script:ChatqQueueDir $Job.id
+}
+
+function Get-ChatqAttachments {
+    # in the order they were added: a copy is created when it is made, whatever
+    # time its original says
+    param($Job)
+    $d = Get-ChatqAttachDir $Job
+    if (-not (Test-Path -LiteralPath $d)) { return @() }
+    return @(Get-ChildItem -LiteralPath $d -File -EA SilentlyContinue | Sort-Object CreationTimeUtc, Name)
+}
+
+function Add-ChatqAttachment {
+    # One file in, under a name nothing else in the folder has, with no space
+    # in it: a markdown link breaks on one. Moved rather than copied when asked
+    # - a file VS Code saved beside the prompt belongs to nobody else.
+    param([string]$Dir, [string]$Source, [switch]$Move)
+    New-ChatqDir $Dir
+    $name = ([System.IO.Path]::GetFileName($Source)) -replace '[^\w.\-]+', '-'
+    if (-not $name.Trim('.', '-')) { $name = 'file' }
+    $base = [System.IO.Path]::GetFileNameWithoutExtension($name)
+    $ext = [System.IO.Path]::GetExtension($name)
+    $dest = Join-Path $Dir $name
+    for ($n = 2; Test-Path -LiteralPath $dest; $n++) { $dest = Join-Path $Dir "$base-$n$ext" }
+    # Stop, so a file gone or locked since it was checked throws: both cmdlets
+    # otherwise only print their error, and the job would go without the file
+    if ($Move) { Move-Item -LiteralPath $Source -Destination $dest -ErrorAction Stop }
+    else { Copy-Item -LiteralPath $Source -Destination $dest -ErrorAction Stop }
+    # a copy keeps its original's times, and the order goes by when it came in
+    $f = Get-Item -LiteralPath $dest -ErrorAction Stop
+    try { $f.CreationTimeUtc = [datetime]::UtcNow } catch {}
+    return $f
+}
+
+function Add-ChatqAttachmentBytes {
+    param([string]$Dir, [string]$Name, [byte[]]$Bytes)
+    New-ChatqDir $Dir
+    $base = [System.IO.Path]::GetFileNameWithoutExtension($Name)
+    $ext = [System.IO.Path]::GetExtension($Name)
+    $dest = Join-Path $Dir $Name
+    for ($n = 2; Test-Path -LiteralPath $dest; $n++) { $dest = Join-Path $Dir "$base-$n$ext" }
+    [System.IO.File]::WriteAllBytes($dest, $Bytes)
+    return (Get-Item -LiteralPath $dest)
+}
+
+function Get-ChatqPromptLinks {
+    # The files a prompt links to inside data/queue/ - ![alt](path) or
+    # [text](path), relative to the prompt file, which is what VS Code writes
+    # when an image is pasted, or a media file dropped, into the prompt tab.
+    # Nothing outside is even looked at. A link to a project file names it
+    # where it is: copied, the chat would read and edit a snapshot instead.
+    # ../config.json would reach chatq's own data, and testing a \\host path
+    # opens an SMB connection to that host.
+    # Every occurrence, with where its target sits in the text, so a rewrite
+    # touches that link and no other - a plain replace of "(image.png" would
+    # also rewrite "(image.png.bak)".
+    param([string]$Text)
+    if (-not $Text) { return @() }
+    $queue = [System.IO.Path]::GetFullPath($script:ChatqQueueDir).TrimEnd('\', '/') + [System.IO.Path]::DirectorySeparatorChar
+    # one level of parentheses inside a target: shot(1).png is a name
+    $rx = '!?\[[^\]\r\n]*\]\(\s*(<[^>\r\n]+>|(?:[^()\s]|\([^()\s]*\))+)(?:\s+"[^"\r\n]*")?\s*\)'
+    return @(foreach ($m in [regex]::Matches($Text, $rx)) {
+            $g = $m.Groups[1]
+            $p = $g.Value.Trim('<', '>').Trim()
+            if ($p -match '^[a-zA-Z]:[\\/]') { $cand = $p }                             # a drive path
+            elseif ($p -match '^[a-zA-Z][\w+.-]*:' -or $p -match '^[\\/]{2}') { continue }   # a URL, file: too, or a share
+            else { $cand = Join-Path $script:ChatqQueueDir ([uri]::UnescapeDataString($p)) }
+            # decided on the string alone, before anything touches a disk; an
+            # anchor like #top simply names no file in there
+            $full = try { [System.IO.Path]::GetFullPath($cand) } catch { continue }
+            if (-not $full.StartsWith($queue, [StringComparison]::OrdinalIgnoreCase)) { continue }
+            if (-not (Test-Path -LiteralPath $full -PathType Leaf)) { continue }
+            [pscustomobject]@{ Index = $g.Index; Length = $g.Length; Path = $full }
+        })
+}
+
+function Sync-ChatqAttachments {
+    # Bring the files the prompt links to in data/queue/ into the job's own
+    # folder, and point each link there. A pasted image belongs to nobody, so
+    # it moves - out of a folder VS Code made for it too, which then goes if
+    # empty. One in another job's folder is that job's, and is copied. Run when
+    # the job is queued and again just before it sends, so an image pasted into
+    # a prompt reopened with chatq <n> counts. Returns the files it could not
+    # bring in.
+    param($Job)
+    $pp = Get-ChatqPromptPath $Job
+    if (-not (Test-Path -LiteralPath $pp)) { return @() }
+    $text = [System.IO.File]::ReadAllText($pp, [System.Text.Encoding]::UTF8)
+    $dir = [System.IO.Path]::GetFullPath((Get-ChatqAttachDir $Job))
+    $queue = [System.IO.Path]::GetFullPath($script:ChatqQueueDir).TrimEnd('\', '/')
+    # read once, before anything moves - a moved file is no longer where its
+    # link says, and would drop out of a second reading
+    $links = @(Get-ChatqPromptLinks $text)
+    $new = @{}
+    $failed = [System.Collections.Generic.List[string]]::new()
+    foreach ($l in $links) {
+        # one copy per file, however many times the prompt links it
+        $key = $l.Path.ToLowerInvariant()
+        if ($new.ContainsKey($key)) { continue }
+        # already the job's own
+        if ($l.Path.StartsWith($dir + [System.IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { continue }
+        $rel = $l.Path.Substring($queue.Length + 1)
+        $top = ($rel -split '[\\/]', 2)[0]
+        $atRoot = $rel -notmatch '[\\/]'
+        # never the queue's own files - a job, its prompt, a cancel
+        if ($atRoot -and [System.IO.Path]::GetExtension($rel) -in '.md', '.json', '.cancel') { continue }
+        $otherJob = -not $atRoot -and (Test-Path -LiteralPath (Join-Path $script:ChatqQueueDir "$top.json"))
+        $f = try { Add-ChatqAttachment $dir $l.Path -Move:(-not $otherJob) } catch { $failed.Add($l.Path); $null }
+        if (-not $f) { continue }
+        $new[$key] = "$($Job.id)/$($f.Name)"
+        if (-not $atRoot -and -not $otherJob) {
+            $from = Split-Path -Parent $l.Path
+            if (-not @(Get-ChildItem -LiteralPath $from -Force -EA SilentlyContinue).Count) { Remove-Item -LiteralPath $from -Force -EA SilentlyContinue }
+        }
+    }
+    if ($new.Count) {
+        # from the end backwards, so each rewrite leaves the earlier positions true
+        $sb = [System.Text.StringBuilder]::new($text)
+        foreach ($l in @($links | Sort-Object Index -Descending)) {
+            $to = $new[$l.Path.ToLowerInvariant()]
+            if ($to) { [void]$sb.Remove($l.Index, $l.Length).Insert($l.Index, $to) }
+        }
+        Save-ChatqText $pp $sb.ToString()
+    }
+    return @($failed)
+}
+
+function Format-ChatqAttachFooter {
+    # The wording both CLIs were seen to act on in spike S18: every file read,
+    # the images looked at
+    param([object[]]$Files)
+    if (-not $Files) { return '' }
+    return "`n`nAttached files - read each one:`n" + (($Files | ForEach-Object { "- $($_.FullName)" }) -join "`n")
+}
+
+function Format-ChatqAttachSummary {
+    param([object[]]$Files)
+    $n = @($Files).Count
+    if (-not $n) { return '' }
+    $bytes = ($Files | Measure-Object -Property Length -Sum).Sum
+    $mb = if ($bytes -ge 1MB) { '{0:N1} MB' -f ($bytes / 1MB) } else { '{0:N0} KB' -f [Math]::Max(1, $bytes / 1KB) }
+    $names = ($Files | Select-Object -First 4 | ForEach-Object { $_.Name }) -join ', '
+    if ($n -gt 4) { $names += ", +$($n - 4) more" }
+    return "$n file$(if ($n -ne 1) { 's' }) ($mb): $names"
+}
+
+function Read-ChatqAttachSources {
+    # -Attach and -Paste, resolved while you are here: the files checked now -
+    # one found missing at 3 a.m. could only fail the job - and the clipboard
+    # read now, since by then it holds whatever was copied last. Nothing is
+    # copied yet. Error set means nothing should be queued.
+    param([string[]]$Attach, [switch]$Paste)
+    $r = [pscustomobject]@{ Error = $null; Files = [System.Collections.Generic.List[string]]::new(); Image = $null; Text = $null }
+    $seen = @{}
+    foreach ($a in @($Attach | Where-Object { $_ })) {
+        $p = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($a)
+        # a name with [ ] in it is a name first; only one that is not a file
+        # is tried as a wildcard - -Attach .\shots\*.png
+        $hits = if (Test-Path -LiteralPath $p -PathType Leaf) { @($p) }
+        elseif ([System.Management.Automation.WildcardPattern]::ContainsWildcardCharacters($a)) {
+            @(Get-ChildItem -Path $a -File -EA SilentlyContinue | Sort-Object Name | ForEach-Object { $_.FullName })
+        }
+        else { @() }
+        if (-not $hits) { $r.Error = "no such file: $a"; return $r }
+        foreach ($h in $hits) {
+            # the same file twice is sent once
+            if (-not $seen.ContainsKey($h.ToLowerInvariant())) { $seen[$h.ToLowerInvariant()] = $true; $r.Files.Add($h) }
+        }
+    }
+    if ($Paste) {
+        $clip = Get-ChatqClipboard
+        if (-not $clip) { $r.Error = 'the clipboard cannot be read here - give the file with -Attach instead'; return $r }
+        foreach ($f in @($clip.Files)) {
+            if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { Write-Host "     skipped $f - only files go, not folders" -ForegroundColor DarkGray; continue }
+            if (-not $seen.ContainsKey($f.ToLowerInvariant())) { $seen[$f.ToLowerInvariant()] = $true; $r.Files.Add($f) }
+        }
+        $r.Image = $clip.Image
+        # text only when nothing else came: a copied image often brings its
+        # caption or HTML along, and that is not what was meant
+        if (-not $r.Image -and -not @($clip.Files).Count -and $clip.Text -and $clip.Text.Trim()) { $r.Text = $clip.Text }
+        if (-not $r.Image -and -not $r.Files.Count -and -not $r.Text) {
+            $r.Error = 'nothing on the clipboard to paste - copy a screenshot, some files or text first'
+        }
+    }
+    return $r
+}
+
+function Save-ChatqAttachSources {
+    # Into the job's folder; throws when one cannot be copied, having taken
+    # back what this call copied - and only that: adding to a queued job, the
+    # folder already holds files of its own.
+    param([string]$Dir, $Got)
+    $added = [System.Collections.Generic.List[string]]::new()
+    try {
+        foreach ($s in $Got.Files) { $added.Add((Add-ChatqAttachment $Dir $s).FullName) }
+        if ($Got.Image) { $added.Add((Add-ChatqAttachmentBytes $Dir 'clip.png' $Got.Image).FullName) }
+        return @($added)
+    }
+    catch {
+        foreach ($a in $added) { Remove-Item -LiteralPath $a -Force -EA SilentlyContinue }
+        if (-not @(Get-ChildItem -LiteralPath $Dir -Force -EA SilentlyContinue).Count) { Remove-Item -LiteralPath $Dir -Force -EA SilentlyContinue }
+        throw
+    }
+}
+
+# What the clipboard holds, read where the clipboard can be read: an STA
+# thread. Windows PowerShell's console is one; where this shell is not, a
+# child Windows PowerShell reads it. Either way it lands as files in a folder
+# of data/ - not JSON: a screenshot in base64 is past the 2 MB that 5.1's
+# ConvertFrom-Json will take. A "PNG" entry first, which keeps transparency
+# and the exact bytes, then the plain bitmap a screenshot puts there. Text is
+# written only when there is nothing else, the one case it is used in. The
+# folder comes in through the environment, never spliced into the code: a
+# path is not code, whatever quotes it holds.
+$script:ChatqClipCode = @'
+$Out = $env:CHATQ_CLIP_OUT
+Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+$cb = [System.Windows.Forms.Clipboard]
+$u8 = New-Object System.Text.UTF8Encoding $false
+$got = $false
+if ($cb::ContainsFileDropList()) {
+    [System.IO.File]::WriteAllLines((Join-Path $Out 'files.txt'), [string[]]@($cb::GetFileDropList()), $u8)
+    $got = $true
+}
+else {
+    $png = $cb::GetData('PNG')
+    if ($png -is [System.IO.MemoryStream]) { [System.IO.File]::WriteAllBytes((Join-Path $Out 'clip.png'), $png.ToArray()); $got = $true }
+    elseif ($cb::ContainsImage()) {
+        $img = $cb::GetImage()
+        $img.Save((Join-Path $Out 'clip.png'), [System.Drawing.Imaging.ImageFormat]::Png)
+        $img.Dispose()
+        $got = $true
+    }
+}
+if (-not $got -and $cb::ContainsText()) { [System.IO.File]::WriteAllText((Join-Path $Out 'clip.txt'), $cb::GetText(), $u8) }
+'@
+
+function Get-ChatqClipboard {
+    # @{ Image = [byte[]]; Files = [string[]]; Text = [string] }, or $null where
+    # it cannot be read
+    if ($script:ChatqClipboardSeam) { return & $script:ChatqClipboardSeam }
+    if (-not $script:ChatqIsWindows) { return $null }
+    # one a killed shell left behind is swept up by the next read
+    Get-ChildItem -LiteralPath $script:ChatqData -Directory -Filter 'clip-*' -EA SilentlyContinue |
+        Where-Object { $_.LastWriteTime -lt (Get-Date).AddHours(-1) } | Remove-Item -Recurse -Force -EA SilentlyContinue
+    $out = Join-Path $script:ChatqData ('clip-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+    try {
+        New-ChatqDir $out
+        if ([System.Threading.Thread]::CurrentThread.GetApartmentState() -eq 'STA') {
+            $was = $env:CHATQ_CLIP_OUT
+            $env:CHATQ_CLIP_OUT = $out
+            try { & ([scriptblock]::Create($script:ChatqClipCode)) } finally { $env:CHATQ_CLIP_OUT = $was }
+        }
+        else {
+            $ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+            $enc = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($script:ChatqClipCode))
+            $null = Invoke-ChatqProcess -Exe $ps -ArgList @('-NoProfile', '-NonInteractive', '-STA', '-EncodedCommand', $enc) -StdIn '' -TimeoutSec 30 `
+                -SetEnv @{ CHATQ_CLIP_OUT = $out }
+        }
+        $img = Join-Path $out 'clip.png'
+        $lst = Join-Path $out 'files.txt'
+        $txt = Join-Path $out 'clip.txt'
+        return [pscustomobject]@{
+            Image = if (Test-Path -LiteralPath $img) { [System.IO.File]::ReadAllBytes($img) } else { $null }
+            Files = if (Test-Path -LiteralPath $lst) { @([System.IO.File]::ReadAllLines($lst, [System.Text.Encoding]::UTF8) | Where-Object { $_ }) } else { @() }
+            Text  = if (Test-Path -LiteralPath $txt) { [System.IO.File]::ReadAllText($txt, [System.Text.Encoding]::UTF8) } else { $null }
+        }
+    }
+    catch { return $null }
+    finally { Remove-Item -LiteralPath $out -Recurse -Force -EA SilentlyContinue }
 }
 
 #endregion
@@ -4360,17 +4655,31 @@ function Get-ChatqRunModel {
 function Invoke-ChatqRun {
     # Deliver one job's prompt into its chat and read what came back. The
     # caller owns the job's state; this only runs and classifies.
-    param($Job, [string]$Prompt, [scriptblock]$OnTick, [scriptblock]$OnStart)
+    param($Job, [string]$Prompt, [scriptblock]$OnTick, [scriptblock]$OnStart, [object[]]$Files)
     $exe = Find-ChatqExe $Job.provider
     if (-not $exe) { return [pscustomobject]@{ kind = 'failed'; reason = "no $($Job.provider) CLI found - install it or set CHATQ_$($Job.provider.ToUpper())" } }
     $log = Join-Path $script:ChatqLogDir "$($Job.id).jsonl"
     $st = New-ChatqRunState
     $mode = if ($Job.mode) { $Job.mode } elseif ($Job.modeAtQueue) { $Job.modeAtQueue } else { 'default' }
+    # Files named under the prompt: all of them for Claude, which opens each
+    # itself; for Codex the ones that are not images, which go with -i instead -
+    # the shape spike S18 saw both act on
+    $Files = @($Files | Where-Object { $_ })
+    $imgs = @($Files | Where-Object { $_.Extension.ToLowerInvariant() -in $script:ChatqImageExt })
+    if ($Job.provider -eq 'codex') {
+        $Prompt += Format-ChatqAttachFooter @($Files | Where-Object { $_.Extension.ToLowerInvariant() -notin $script:ChatqImageExt })
+        if ($imgs) { $Prompt += "`n`n($($imgs.Count) image$(if ($imgs.Count -ne 1) { 's are' } else { ' is' }) attached to this message.)" }
+    }
+    elseif ($Files) { $Prompt += Format-ChatqAttachFooter $Files }
     if ($Job.provider -eq 'codex') {
         $sandbox = if ($Job.sandbox) { $Job.sandbox } else { 'workspace-write' }
         $a = @('exec', 'resume', '--json', '--skip-git-repo-check', '-c', "sandbox_mode=$sandbox")
         if ($Job.network) { $a += @('-c', 'sandbox_workspace_write.network_access=true') }
         if ($Job.runModel) { $a += @('-m', $Job.runModel) }
+        foreach ($f in $imgs) { $a += @('-i', $f.FullName) }
+        # -i can take several values, so -- keeps the thread id from being read
+        # as one more image
+        if ($imgs) { $a += '--' }
         $a += @($Job.sessionId, '-')
         $proc = Invoke-ChatqProcess -Exe $exe -ArgList $a -WorkDir $Job.cwd -StdIn $Prompt -LogPath $log `
             -SetEnv @{ CODEX_HOME = $Job.home } -OnTick $OnTick -OnLine {
@@ -4389,6 +4698,10 @@ function Invoke-ChatqRun {
     # only when -Model asked for one: a resume keeps the chat's own model, and
     # naming it would pin the run to an id that may since have been retired
     if ($Job.runModel) { $a += @('--model', $Job.runModel) }
+    # Claude Code 2.1.280 read files outside the project unasked (spike S18);
+    # naming the job's folder keeps that true under a stricter version or a
+    # settings file that limits reads to the workspace
+    if ($Files) { $a += @('--add-dir', (Get-ChatqAttachDir $Job)) }
     $proc = Invoke-ChatqProcess -Exe $exe -ArgList $a -WorkDir $Job.cwd -StdIn $Prompt -LogPath $log `
         -SetEnv @{ CLAUDE_CONFIG_DIR = $Job.home } -OnTick $OnTick -OnLine {
         param($l)
@@ -5002,8 +5315,13 @@ function Write-ChatqList {
             Write-Host ((Format-ChatCell $ps.First $promptW) + ' ') -NoNewline
             Write-Host $state -ForegroundColor $color
             $pad = ' ' * (2 + $numW + $chatW + 1)
-            if ($ps.Lines -gt 1 -or (Get-ChatCells $ps.First) -gt $promptW) {
-                Write-Host ($pad + [char]0x21B3 + ' ' + ('{0:N0} chars {1} {2} lines' -f $ps.Chars, $script:ChatqDot, $ps.Lines)) -ForegroundColor DarkGray
+            $long = $ps.Lines -gt 1 -or (Get-ChatCells $ps.First) -gt $promptW
+            $nf = @(Get-ChatqAttachments $j).Count
+            if ($long -or $nf) {
+                $bits = @()
+                if ($long) { $bits += '{0:N0} chars {1} {2} lines' -f $ps.Chars, $script:ChatqDot, $ps.Lines }
+                if ($nf) { $bits += "+$nf file$(if ($nf -ne 1) { 's' })" }
+                Write-Host ($pad + [char]0x21B3 + ' ' + ($bits -join " $($script:ChatqDot) ")) -ForegroundColor DarkGray
             }
             if ($j.state -in 'needs-input', 'failed' -and $j.result.reason) {
                 Write-Host ($pad + (Format-ChatCell ([string]$j.result.reason) $promptW -NoPad)) -ForegroundColor DarkGray
@@ -5493,7 +5811,15 @@ function Invoke-ChatqJob {
     }
     elseif ($act.Action -eq 'warn') { $stale = $true }
 
-    $prompt = if ($sendsContinue) { $script:ChatqContinueText } else { Read-ChatqPrompt $Job }
+    # A "continue" goes alone: the files went with the prompt the first time.
+    $files = @()
+    if ($sendsContinue) { $prompt = $script:ChatqContinueText }
+    else {
+        # an image pasted into the prompt since it was queued comes along too
+        foreach ($x in @(Sync-ChatqAttachments $Job)) { Write-ChatqWatchLog "#$($Job.seq) could not take in $x - sent without it" }
+        $prompt = Read-ChatqPrompt $Job
+        $files = @(Get-ChatqAttachments $Job)
+    }
     if (-not $prompt) {
         Complete-ChatqJob $Job 'failed' ([pscustomobject]@{ kind = 'failed'; reason = 'the prompt file is empty or gone' }) 'empty prompt'
         return
@@ -5530,7 +5856,7 @@ function Invoke-ChatqJob {
         if ($what.Length -gt 80) { $what = $what.Substring(0, 80) + $script:ChatqEllipsis }
         [void](Send-ChatqAlert 'started' "$($Job.title) $($script:ChatqDot) $m $($script:ChatqDot) $what" 0)
     }
-    $out = Invoke-ChatqRun $Job $prompt $onTick $onStart
+    $out = Invoke-ChatqRun $Job $prompt $onTick $onStart -Files $files
     $W.current = $null
     $wasCancelled = Test-Path -LiteralPath $cancel
     if ($wasCancelled) { Remove-Item -LiteralPath $cancel -Force -EA SilentlyContinue }
@@ -6015,10 +6341,23 @@ function chatq {
     the chat keeps its own, which is what a resume does anyway.
     .PARAMETER First
     Put the job at the front of the queue instead of the back.
+    .PARAMETER Attach
+    Files to send with the prompt - images, text, code, PDF - comma-separated.
+    They are copied into the job now, so moving or editing the originals
+    changes nothing. Codex gets images as real attachments (-i); everything
+    else, and everything for Claude, is named in the prompt for it to open.
+    .PARAMETER Paste
+    Take what is on the clipboard now: a screenshot, files copied in Explorer,
+    or text. Text becomes the prompt, or is added under the one given. In the
+    editor tab, Ctrl+V pastes an image into the prompt too.
     .EXAMPLE
     chatq 'Parser rewrite and plugin unification' -Prompt 'Also update the changelog'
     .EXAMPLE
     chatq card redesign -WhatIf
+    .EXAMPLE
+    chatq 'Card layout redesign' -Prompt 'Match these two mock-ups' -Attach .\a.png, .\b.png
+    .EXAMPLE
+    chatq 'Card layout redesign' -Prompt 'What is wrong in this screenshot?' -Paste
     #>
     param(
         [Parameter(Position = 0, ValueFromRemainingArguments)][string[]]$Target,
@@ -6031,7 +6370,9 @@ function chatq {
         [switch]$AllProjects,
         [switch]$WhatIf,
         [string]$Model,
-        [switch]$First
+        [switch]$First,
+        [string[]]$Attach,
+        [switch]$Paste
     )
     Set-StrictMode -Off
     $t = (@($Target) -join ' ').Trim()
@@ -6040,25 +6381,72 @@ function chatq {
     # chatq 3 - open queued prompt 3
     if ($t -match '^#?\d{1,4}$' -and -not $PSBoundParameters.ContainsKey('Prompt') -and -not $Continue) {
         $job = Find-ChatqJob $t
+        # chatq 3 -Attach / -Paste - add to it: the screenshot that was
+        # forgotten. Only while it waits, and only files - text belongs in the
+        # prompt, which chatq 3 opens.
+        if ($job -and ($Attach -or $Paste)) {
+            if ($job.state -ne 'queued') { Write-Host "  #$($job.seq) is $($job.state) - files added now would go nowhere" -ForegroundColor Yellow; return }
+            if ($job.kind -eq 'continue') { Write-Host "  #$($job.seq) sends ""continue"" and nothing else - files would go nowhere" -ForegroundColor Yellow; return }
+            $got = Read-ChatqAttachSources $Attach -Paste:$Paste
+            if ($got.Error) { Write-Host "  $($got.Error) - nothing added" -ForegroundColor Yellow; return }
+            if ($got.Text) { Write-Host "  the clipboard holds text, not files - chatq $($job.seq) opens the prompt to paste it in" -ForegroundColor Yellow; return }
+            $new = try { @(Save-ChatqAttachSources (Get-ChatqAttachDir $job) $got) } catch { Write-Host "  a file could not be copied - nothing added: $($_.Exception.Message)" -ForegroundColor Yellow; return }
+            Write-ChatqJobLog "#$($job.seq) +$($new.Count) file$(if ($new.Count -ne 1) { 's' }) $($script:ChatqDot) $($job.title)"
+            Write-Host "  #$($job.seq) '$($job.title)' now has $(Format-ChatqAttachSummary @(Get-ChatqAttachments $job))" -ForegroundColor Green
+            Write-ChatqBoard
+            return
+        }
         if ($job) {
             $p = Get-ChatqPromptPath $job
             Write-Host "  #$($job.seq) '$($job.title)' $($script:ChatqDot) $($job.state) $($script:ChatqDot) $p" -ForegroundColor DarkGray
             if ($job.state -ne 'queued') { Write-Host '  already sent - editing it changes nothing now' -ForegroundColor DarkGray }
             elseif ($job.kind -eq 'continue') { Write-Host '  a -Continue job always sends "continue" - the file is only for show' -ForegroundColor DarkGray }
+            $af = @(Get-ChatqAttachments $job)
+            if ($af) { Write-Host "  $(Format-ChatqAttachSummary $af) $($script:ChatqDot) $(Get-ChatqAttachDir $job)" -ForegroundColor DarkGray }
             if (Test-Path -LiteralPath $p) { Invoke-ChatqEditor $p -NoWait }
             return
         }
     }
     try { $notBefore = ConvertFrom-ChatqWhen $At $In } catch { Write-Host "  $($_.Exception.Message)" -ForegroundColor Yellow; return }
 
-    $res = Resolve-ChatqTarget $t $Prompt $Provider -AllProjects:$AllProjects
+    # The files and the clipboard before the pick: text pasted as the prompt
+    # should weigh in on which chat it is for, as a typed one does.
+    if (($Attach -or $Paste) -and $Continue) {
+        Write-Host '  -Continue sends "continue" and nothing else - give the files with -Prompt instead' -ForegroundColor Yellow
+        return
+    }
+    $got = $null
+    if ($Attach -or $Paste) {
+        $got = Read-ChatqAttachSources $Attach -Paste:$Paste
+        if ($got.Error) { Write-Host "  $($got.Error) - nothing queued" -ForegroundColor Yellow; return }
+    }
+    $given = $PSBoundParameters.ContainsKey('Prompt')
+    $textNote = $null
+    if ($got -and $got.Text) {
+        if ($given) { $Prompt = $Prompt.TrimEnd() + "`n`n" + $got.Text; $textNote = "the clipboard's text goes under the prompt" }
+        else { $Prompt = $got.Text; $given = $true; $textNote = "the clipboard's text is the prompt" }
+    }
+
+    $res = Resolve-ChatqTarget $t $(if ($given) { $Prompt } else { '' }) $Provider -AllProjects:$AllProjects
     if ($res.Error) { Write-Host "  $($res.Error)" -ForegroundColor Yellow; return }
     Write-ChatqPick $res
-    Write-ChatqPromptHint $t $res -HasPrompt:($PSBoundParameters.ContainsKey('Prompt')) -Continue:$Continue
+    Write-ChatqPromptHint $t $res -HasPrompt:$given -Continue:$Continue
     $info = Get-ChatqJobInfo $res.Row
     if ($info.Error) { Write-Host "     $($info.Error)" -ForegroundColor Yellow; return }
     Write-ChatqJobInfo $info $Mode -Continue:$Continue $res.Row.Provider
     if ($Model) { Write-Host "     model $Model for this run (the chat's own: $(if ($info.Model) { $info.Model } else { 'unknown' }))" -ForegroundColor DarkGray }
+    if ($textNote) { Write-Host "     $textNote" -ForegroundColor DarkGray }
+    if ($got) {
+        $pending = @(foreach ($s in $got.Files) { Get-Item -LiteralPath $s })
+        if ($got.Image) { $pending += [pscustomobject]@{ Name = 'clip.png'; Length = $got.Image.Length } }
+        if ($pending) {
+            Write-Host "     with $(Format-ChatqAttachSummary $pending)" -ForegroundColor DarkGray
+            $bytes = ($pending | Measure-Object -Property Length -Sum).Sum
+            if ($pending.Count -gt $script:ChatqAttachWarnCount -or $bytes -gt $script:ChatqAttachWarnBytes) {
+                Write-Host '     that is a lot for one run - every file costs context, and usage' -ForegroundColor Yellow
+            }
+        }
+    }
     if ($WhatIf) { Write-Host '     -WhatIf: nothing queued' -ForegroundColor DarkGray; return }
 
     New-ChatqDir $script:ChatqQueueDir
@@ -6069,20 +6457,35 @@ function chatq {
     $file = "#$seq $(Get-ChatqSafeName $res.Row.Title).md"
     $path = Join-Path $script:ChatqQueueDir $file
     $kind = if ($Continue) { 'continue' } else { 'prompt' }
+    $jobId = '{0}-{1}' -f (Get-Date).ToString('yyyyMMdd-HHmmss'), $res.Row.Id.Substring(0, [Math]::Min(4, $res.Row.Id.Length))
+    $dir = Join-Path $script:ChatqQueueDir $jobId
+    # The files go in before any prompt is written: a copy that fails - one
+    # moved or locked since it was checked - then stops the job before a word
+    # of it has been typed into the editor, rather than after.
+    if ($got) {
+        try { $null = Save-ChatqAttachSources $dir $got }
+        catch { Write-Host "  a file could not be copied - nothing queued: $($_.Exception.Message)" -ForegroundColor Yellow; return }
+    }
     if ($Continue) {
         Save-ChatqText $path ($header + $script:ChatqContinueText)
     }
-    elseif ($PSBoundParameters.ContainsKey('Prompt')) {
-        if (-not $Prompt.Trim()) { Write-Host '  empty prompt - nothing queued' -ForegroundColor Yellow; return }
+    elseif ($given) {
+        if (-not $Prompt.Trim()) {
+            Remove-Item -LiteralPath $dir -Recurse -Force -EA SilentlyContinue
+            Write-Host '  empty prompt - nothing queued' -ForegroundColor Yellow
+            return
+        }
         Save-ChatqText $path ($header + $Prompt)
     }
     else {
         Save-ChatqText $path $header
         Write-Host '     write the prompt in the editor tab, then save and close it (empty = cancel)' -ForegroundColor DarkGray
+        Write-Host '     Ctrl+V there pastes a screenshot into it, and it goes with the prompt' -ForegroundColor DarkGray
         Invoke-ChatqEditor $path
         $text = Remove-ChatqPromptHeader ([System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8))
         if (-not $text) {
             Remove-Item -LiteralPath $path -Force -EA SilentlyContinue
+            Remove-Item -LiteralPath $dir -Recurse -Force -EA SilentlyContinue
             Write-Host '  cancelled - nothing queued' -ForegroundColor DarkGray
             return
         }
@@ -6107,7 +6510,9 @@ function chatq {
     $row = $res.Row
     $job = [pscustomobject][ordered]@{
         v = 1
-        id = '{0}-{1}' -f (Get-Date).ToString('yyyyMMdd-HHmmss'), $row.Id.Substring(0, [Math]::Min(4, $row.Id.Length))
+        # set before the prompt, when the files went in - the chat a re-pick
+        # lands on does not rename the folder they are in
+        id = $jobId
         seq = $seq
         provider = $row.Provider
         sessionId = $row.Id
@@ -6152,7 +6557,10 @@ function chatq {
         history = @([pscustomobject]@{ at = (Get-ChatqStamp); state = 'queued'; why = 'added' })
     }
     Save-ChatqJob $job
-    Write-ChatqJobLog "#$seq queued ($kind) $($script:ChatqDot) $($row.Title)"
+    # and what the prompt links to in data/queue: an image pasted in the tab
+    foreach ($x in @(Sync-ChatqAttachments $job)) { Write-Host "     could not take in $x - it goes without it" -ForegroundColor Yellow }
+    $files = @(Get-ChatqAttachments $job)
+    Write-ChatqJobLog "#$seq queued ($kind$(if ($files) { ", $($files.Count) file$(if ($files.Count -ne 1) { 's' })" })) $($script:ChatqDot) $($row.Title)"
 
     $jobs = @(Get-ChatqJobs)
     # the watcher's own view if it is running - it knows about an overload -
@@ -6164,6 +6572,7 @@ function chatq {
     elseif ($b -and $b.Until) { " ($($b.Type) limit resets $($b.Until.ToString('HH:mm')))" }
     else { ' (not limited right now)' }
     Write-Host "  queued #$seq  sends $eta$why" -ForegroundColor Green
+    if ($files) { Write-Host "     $(Format-ChatqAttachSummary $files)" -ForegroundColor DarkGray }
     if (-not (Start-ChatqWatcher)) {
         Write-Host '  the watcher did not start - chatqrun to try again, chatqrun -Foreground to see why' -ForegroundColor Yellow
     }
@@ -6222,6 +6631,9 @@ function chatqrm {
         foreach ($p in @((Join-Path $script:ChatqQueueDir "$($j.id).json"), (Get-ChatqPromptPath $j), (Join-Path $script:ChatqLogDir "$($j.id).jsonl"))) {
             if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Force -EA SilentlyContinue }
         }
+        # its files, which are copies - the originals were never touched
+        $ad = Get-ChatqAttachDir $j
+        if (Test-Path -LiteralPath $ad) { Remove-Item -LiteralPath $ad -Recurse -Force -EA SilentlyContinue }
         Write-ChatqJobLog "#$($j.seq) removed by chatqrm (was $($j.state)) $($script:ChatqDot) $($j.title)"
         Write-Host "  removed #$($j.seq) '$($j.title)'" -ForegroundColor DarkGray
     }
@@ -6493,6 +6905,7 @@ function Write-ChatqCheatSheet {
     Write-Host '  chatqnotify                 alerts: toast here, Join or ntfy on the phone' -ForegroundColor Cyan
     Write-Host ''
     Write-Host '  -WhatIf shows the pick only   -Mode auto|acceptEdits|...   -At 13:00 / -In 2h' -ForegroundColor DarkGray
+    Write-Host '  -Attach a.png, spec.pdf / -Paste   send files, a screenshot or the clipboard with it' -ForegroundColor DarkGray
     Write-Host '  Tab fills in a title from any part of it, like chatrm: chatq card red<Tab>' -ForegroundColor DarkGray
     Write-Host '  chat = every command, find and delete included' -ForegroundColor DarkGray
     Write-Host "  VS-code-chat-manager $script:ChatVersion $($script:ChatqDot) $script:ChatqScriptPath" -ForegroundColor DarkGray

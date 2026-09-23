@@ -76,6 +76,7 @@ copy after its current job.
 | `chatclean` | delete ghost chats left behind by the VS Code list |
 | `chatq <title\|id> [-Prompt s]` | queue a prompt for that chat; without `-Prompt` an editor tab opens |
 | `chatq <title> -Continue` | queue *"Continue from where you left off."* for a chat the limit cut off |
+| `chatq <title> -Attach a.png, b.pdf` / `-Paste` | send files, a screenshot or the clipboard with the prompt |
 | `chatq <n>` | open queued prompt *n* in the editor — edits count until it is sent |
 | `chatqlist [-Board] [-All]` | what is queued, when it sends, what ran, the usage |
 | `chatqrm <n> [-Force]` | drop a job; `-Force` cancels a running one |
@@ -90,7 +91,7 @@ copy after its current job.
 `-Provider claude|copilot|codex`. `chatfind` adds `-Deep` and `-All`.
 `chatq` flags: `-WhatIf` (show the pick only), `-Mode auto|acceptEdits|…`,
 `-Model <name>`, `-First`, `-At 13:00` / `-In 2h`, `-AllProjects`,
-`-Provider claude|codex`.
+`-Provider claude|codex`, `-Attach <files>`, `-Paste`.
 
 ```powershell
 chatfind commit | Select-Object Provider, Title, Id, Age
@@ -220,6 +221,36 @@ PS> chatq 'Parser rewrite and plugin unification' -Prompt 'Also update the chang
   queued #1  sends 13:01 (five_hour limit resets 13:00)
 ```
 
+### Long prompts, files and screenshots
+
+- **Long text, quotes, anything:** leave `-Prompt` off. An editor tab opens on
+  the prompt file; paste anything into it — quotes, newlines, `$`, Hangul — then
+  save and close it. `chatq <n>` reopens it, and edits count until it sends.
+- **Files:** `-Attach a.png, spec.pdf, notes.txt`, with commas — after a space
+  the next name would be read as part of the title — or `-Attach .\shots\*.png`.
+  They are copied into the job (`data/queue/<id>/`) at once, so the originals
+  can move or change; one missing or locked queues nothing.
+- **The clipboard:** `-Paste` takes what is on it now — a screenshot, files
+  copied in Explorer, or text, which becomes the prompt or goes under the one
+  given. Windows only.
+- **In the editor tab,** Ctrl+V pastes a screenshot into the prompt. VS Code
+  saves it beside the prompt file, in `data/queue/`, and chatq moves it into the
+  job. A link to any other file is left as it is: it names that file where it
+  is, for the chat to open — or change — there, not a copy of it.
+- **Forgot one?** `chatq <n> -Attach shot.png` (or `-Paste`) adds to job *n*
+  while it waits.
+
+| | images (png, jpg, gif, webp) | other files |
+|---|---|---|
+| Claude | named under the prompt; Claude Code opens each with its Read tool and sees the picture | named under the prompt; it reads text, code and PDF |
+| Codex | attached with `-i`, as if pasted into the chat | named under the prompt |
+
+What goes under the prompt reads `Attached files - read each one:`, then the
+paths. A "continue" sends none — they went with the prompt. `chatqlist` counts
+them (`+2 files`); delete one from the job's folder to drop it, and `chatqrm`
+removes them with the job. Over 10 files or 20 MB draws a warning: each one
+costs context, and usage.
+
 ### How it picks the chat
 
 It picks when you queue, not when it sends — you are at the keyboard now and gone
@@ -279,8 +310,8 @@ if the chat moved on meanwhile; one you asked for is always sent.
   how much of each window is used — `usage  Claude 5h 83% · week 41% (as of
   12:10)` — read from Claude's and Codex's own caches, with their age. Those
   caches only refresh when the tool itself runs, so a reading over an hour old
-  is marked `stale`, and a limited account shows `5h limited` rather than a
-  percentage from before the limit.
+  is marked `stale`, and the window that is blocked reads `limited`
+  (`5h limited`) rather than a percentage from before the limit.
 - **`chatq <n>`** opens the whole prompt; edit it until it is sent.
 - **`data/logs/jobs.log`** keeps a line per job event — queued, every state it
   moves through, and removals — so a job that left the queue can still be

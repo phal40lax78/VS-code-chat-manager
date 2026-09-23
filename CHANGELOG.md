@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.3.0 — files and screenshots with a queued prompt
+
+- **`chatq <title> -Attach a.png, spec.pdf`** sends files with the prompt —
+  images, text, code, PDF, as many as you like, a wildcard too
+  (`.\shots\*.png`). They are copied into the job, `data/queue/<id>/`, before
+  the prompt is written, so the originals can move or change in the hours
+  before it sends. A file missing, or one that cannot be copied, queues
+  nothing; the same file twice goes once.
+- **`chatq <title> -Paste`** takes the clipboard as it is now: a screenshot, files
+  copied in Explorer, or text — which becomes the prompt, or goes under the one
+  given, quotes and all, and helps pick the chat as a typed prompt does.
+  Windows only.
+- **Ctrl+V in the editor tab.** VS Code saves a pasted image beside the prompt
+  file, in `data/queue/`, and links it; chatq moves it into the job and points
+  the link there. Checked again just before the job sends, so an image pasted
+  into a prompt reopened with `chatq <n>` counts too. A link to any file
+  outside `data/queue/` is left exactly as written and never opened by chatq:
+  it names a file where it is, for the chat to open or change there — a copy
+  would have it edit a snapshot, `../config.json` would reach chatq's own data,
+  and a `\\host` path would open a connection to that host.
+- **`chatq <n> -Attach` / `-Paste`** adds files to a job while it waits.
+- **How each chat gets them.** Claude gets every path under the prompt,
+  `Attached files - read each one:`, and opens them with its own Read tool — it
+  sees an image as a picture and reads PDF — with `--add-dir` for the job's
+  folder. Codex gets images properly, one `-i` each and a `--` so the thread id
+  is never read as another image, and the other files under the prompt. A
+  "continue" sends no files; they went with the prompt.
+- `chatqlist` counts a job's files (`+2 files`), `chatq <n>` names them,
+  `chatqrm` removes them with the job, and more than 10 files or 20 MB draws a
+  warning.
+
 ## 0.2.1 — what a first day of real use turned up
 
 - **A prompt typed after the title is caught.** `chatq <title> <some words>`
@@ -12,11 +43,12 @@
   when the index had no row for that chat yet — which is exactly the state a
   chat the limit has just stopped is in. The title is read from the transcript
   instead, so it can go straight into the `-Continue` line printed under it.
-- **The usage line no longer contradicts the status line above it.** `Claude 5h
-  0%` sat next to `Claude limited until 11:50`, because both providers' figures
-  come from caches that refresh only when that tool itself runs. A limited
-  account now reads `5h limited`, and a figure an hour old or more is marked
-  `stale`.
+- **The usage line no longer contradicts the status line above it.**
+  `Claude 5h 0%` sat next to `Claude limited until 11:50`, because both
+  providers' figures come from caches that refresh only when that tool itself
+  runs. The window that is blocked now reads `limited` — `5h limited` for the
+  five-hour one, `week limited` for a weekly one, a 529 neither — and a figure
+  an hour old or more is marked `stale`.
 - **`data/logs/jobs.log`** keeps a line per job event — queued, every state it
   moves through, and removals. A job's own history goes with its file, so until
   now a `chatqrm` left no trace at all, and where a job went could only be

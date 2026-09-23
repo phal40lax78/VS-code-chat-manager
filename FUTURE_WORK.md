@@ -55,21 +55,29 @@ Open questions, from `codex-rs/tui/src/session_queue_commands.rs`:
 3. Classify the run from the rollout: after the queued message, tail it until
    the turn completes or errors.
 
-## Attach an image to a queued prompt
+## Attachments: what 0.3.0 left out
 
-**Why deferred:** a job carries text only. A path named in the prompt still
-works for Claude - it reads PNG, JPG and PDF itself - but an unattended run
-denies anything that would ask, so the file has to sit in that chat's own
-project folder, and it has to still be there hours later when the job sends.
+`-Attach` and `-Paste` shipped in 0.3.0. What they do not cover yet:
 
-Codex has a real attach: `codex exec resume -i <FILE>`, repeatable (checked
-against the bundled codex-cli 0.154). Claude Code's CLI has none. Its only way
-in is `--input-format stream-json`, whose user message can carry image content
-blocks - a different runner from the byte-exact stdin one.
-
-**To close:** `chatq <title> -Image <path>`, repeatable: `-i` on Codex, and on
-Claude the path written into the prompt until that runner exists. Copy the file
-into `data/queue/` beside the prompt, or a job breaks when the file moves.
+- **`-Paste` off Windows.** The clipboard is read through Windows Forms.
+  **Why deferred:** nothing here runs macOS or Linux (see the CI entry below).
+  **To close:** `osascript` on macOS (`the clipboard as «class PNGf»`), and
+  `wl-paste` / `xclip -selection clipboard -t image/png -o` on Linux, each
+  writing the same `clip.png`.
+- **A Claude image as a real attachment** rather than a path Claude Code opens
+  with its Read tool. **Why deferred:** spike S18 showed the path route works —
+  the model sees the picture — so there is nothing to fix yet. The one way in
+  would be `--input-format stream-json`, whose user message can carry image
+  blocks: a different runner from the byte-exact stdin one every test holds.
+  **To close:** only if a run is ever seen to miss an image the path named.
+- **Office files.** Neither CLI reads `.docx` or `.xlsx` natively; each would
+  need a script to. **To close:** convert them at queue time (to PDF or text)
+  if that turns out to be wanted.
+- **An image pasted into a prompt tab that is then cancelled** stays in
+  `data/queue/`. **Why deferred:** removing what appeared while the tab was
+  open would also remove an image pasted at that moment into another shell's
+  open tab. **To close:** sweep files in `data/queue/` that no prompt links to
+  once they are a day old.
 
 ## `liveIdle` default
 
