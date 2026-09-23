@@ -33,9 +33,8 @@ check('the window whose folder it is', ext._isMine({ cwd: path.resolve('/work/pr
 check('a folder inside it', ext._isMine({ cwd: path.resolve('/work/projA/src') }));
 check('not the sibling -Mobile folder', !ext._isMine({ cwd: path.resolve('/work/projA-Mobile') }));
 const files = ext._signalFiles();
-check('by default the new folder and the old chatrm one', files.length === 2 &&
-    files[0].endsWith(path.join('VS-code-chat-manager', 'data', 'reload-request')) &&
-    files[1].endsWith(path.join('chatrm', 'data', 'reload-request')));
+check('by default only this tool\'s own folder', files.length === 1 &&
+    files[0].endsWith(path.join('VS-code-chat-manager', 'data', 'reload-request')));
 console.log('');
 console.log('  ' + (7 - failed) + ' passed, ' + failed + ' failed');
 process.exit(failed);

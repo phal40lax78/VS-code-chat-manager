@@ -22,7 +22,7 @@
                 "chatManagerReload.signalFile": {
                     "type": "string",
                     "default": "",
-                    "markdownDescription": "Path to the tool's `data/reload-request`. Empty means `~/Tools/VS-code-chat-manager/data/reload-request` (and the old `~/Tools/chatrm/data/reload-request`, while that exists). Set this if `VS-code-chat-manager.ps1` lives somewhere else - `data/` follows the script, so the path moves with it. `chatinstall` prints the line to paste when it is not the default."
+                    "markdownDescription": "Path to the tool's `data/reload-request`. Empty means `~/Tools/VS-code-chat-manager/data/reload-request`. Set this if `VS-code-chat-manager.ps1` lives somewhere else - `data/` follows the script, so the path moves with it. `chatinstall` prints the line to paste when it is not the default."
                 },
                 "chatManagerReload.autoReload": {
                     "type": "boolean",

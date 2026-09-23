@@ -12,12 +12,9 @@ const SEEN_KEY = 'chatManagerReload.lastSeenId';
 function signalFiles() {
     const set = vscode.workspace.getConfiguration('chatManagerReload').get('signalFile');
     if (set && String(set).trim()) return [String(set).trim()];
-    const tools = path.join(os.homedir(), 'Tools');
-    // the old chatrm folder too: a shell still running chatrm writes there
-    return [
-        path.join(tools, 'VS-code-chat-manager', 'data', 'reload-request'),
-        path.join(tools, 'chatrm', 'data', 'reload-request')
-    ];
+    // only this tool's own folder: standalone chatrm is retired, so nothing
+    // writes to ~/Tools/chatrm any more
+    return [path.join(os.homedir(), 'Tools', 'VS-code-chat-manager', 'data', 'reload-request')];
 }
 
 function readRequest(file) {
