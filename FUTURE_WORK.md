@@ -5,21 +5,55 @@ it would take.
 
 ## Deliver into a live chat instead of beside it
 
-**Why deferred:** Claude Code's cross-session messaging can put text into a live
-session through its inbox pipe (`messagingSocketPath` in
-`~/.claude/sessions/<pid>.json`). That would make the open panel show the run
-with no reload. But two things stand in the way:
+**Why deferred:** a chat open in a VS Code window shows a chatq run only after
+a reload (since 0.5.0 one the window takes by itself when you are away).
+Delivering the prompt into the open chat would show it running, live, with no
+reload at all. Claude Code's cross-session messaging can do that; what its
+documentation (code.claude.com/docs/en/cross-session-messaging, read
+2026-09-23) settles, and what is left to try:
 
-- It needs a per-session token that only that session's own hooks and Bash
-  receive.
-- The text arrives labelled as coming from another session, not from you, and
-  it runs with less authority.
+- **On by default** from Claude Code 2.1.234 on native Windows; every session
+  binds an inbox (a named pipe on Windows). The page never mentions VS Code,
+  but panel sessions here export `CLAUDE_CODE_MESSAGING_SOCKET`, so they have
+  one too.
+- **No token needs handling.** A `claude -p` session can send with the
+  `SendMessage` tool by the target's name, and with `crossSessionInbound`
+  unset, a receiver in any prompting mode (default, auto, `acceptEdits`)
+  delivers a message from a sender that does not bypass permissions. The
+  raw pipe, and its `CLAUDE_CODE_MESSAGING_TOKEN`, is documented only for a
+  session's own child processes, so a SessionStart hook copying tokens into
+  `data/` is not needed and is not the way.
+- **An idle receiver starts a turn** with the message; a busy one reads it
+  between tool calls, which chatq's busy check already keeps it from.
+- **It arrives as from another session, not from you.** It cannot answer a
+  permission prompt, and the receiving Claude is told never to change
+  settings, `CLAUDE.md` or other configuration because another session asked
+  — so a queued prompt that edits `CLAUDE.md` could be turned down where the
+  headless run does it.
+- **Permission prompts wait for you** in the panel, where the headless run
+  denies and parks the job.
+
+Spike S28 in TESTING.md (2026-09-24) settled the rest: the relay finds a panel
+chat by the `name` its `~/.claude/sessions/<pid>.json` entry carries beside
+its `sessionId`, the idle chat starts the turn within seconds, live, and does
+ordinary work asked this way — but a message has to say to do it *here*, or
+it is read as a request to answer the sender. A `CLAUDE.md` edit is declined
+in the chat, as the framing says.
 
 **To close:**
-1. Add a user-level SessionStart hook that records each session's socket and
-   token into `data/`, with the security trade-off stated.
-2. Confirm that the message format works from PowerShell.
-3. Confirm that a peer-framed prompt is acted on like a typed one.
+1. Send: the target's name from its registry entry; a relay `claude -p
+   --safe-mode --tools SendMessage` with the prompt on stdin, never as an
+   argument (`--allowedTools` takes a list and swallows a prompt placed after
+   it); the message opening with what chatq is and that the work is to be done
+   in this chat, not answered to the sender.
+2. Detect the turn's end for the `done` alert and the queue: the receiving
+   transcript's own records after the delivered message (`origin.kind` is
+   `peer`, with its `msg_id`), since `claude agents` does not list VS Code
+   sessions. A limit or a 529 in that turn requeues a continue as it does now.
+3. A prompt that edits `CLAUDE.md`, settings or other configuration is
+   declined there; say so in the alert, or send those headless.
+4. Deliver this way only into a chat live and idle in a window; everything
+   else stays the headless run it is now.
 
 ## Deliver into a live Codex chat through `codex queue`
 
@@ -84,10 +118,31 @@ Open questions, from `codex-rs/tui/src/session_queue_commands.rs`:
 **Why deferred:** ending an idle chat's process before a run (`liveIdle: stop`)
 should make the next click re-read the transcript. Nobody has watched the panel
 react to it yet, so the default stays `warn`: run, then ask that window to
-reload - by the alert's text, and through the extension's Reload button.
+reload - by the alert's text, and through the extension's Reload button, which
+since 0.5.0 it presses by itself when nobody is at the PC.
 
 **To close:** spike S4 in TESTING.md. If the panel turns out to refresh by
 itself, the reload offer after a run goes too.
+
+## A chat typed into while chatq runs it
+
+**Why deferred:** found on 2026-09-23, after the fix it would need was already
+under way. An open panel does not follow a chatq run: a window reloaded
+mid-run shows the chat as it stood at that moment, stopped halfway, and
+`continue` typed there starts a second agent on the same session while
+chatq's is still working. Both edit the same files at once. The panel's agent
+knows nothing of what chatq's did after the fork, only the files. chatq checks
+for a busy chat before a job starts, and never while it runs. The `started`
+alert says nothing about keeping out of the chat.
+
+**To close:**
+1. Say so up front: when the chat is open in a window, the `started` alert
+   says not to type in it until `done`.
+2. Watch during the run. A record from another entrypoint (`claude-vscode`)
+   whose parent is outside the run's own chain is a second writer: alert at
+   once, naming the chat.
+3. Decide whether chatq then stops its own run or lets both finish. Stopping
+   loses less when the two are editing the same files.
 
 ## Approve permission prompts from the phone
 
@@ -98,9 +153,51 @@ alert and waits for the answer with a timeout. Join would reach it through
 Tasker, or ntfy through a reply topic. This is Claude only; `codex exec` cannot
 ask mid-run.
 
+## The console: what 0.5.0 left out
+
+- **A console on macOS.** **Why deferred:** the Mac panel has never run
+  (S24), and a Cocoa window with text entry, drag and drop and a pasteboard
+  in untested JXA would only add to that. **To close:** after S24, an
+  `NSWindow` from the same host, or the console as a small local web page
+  the pwsh host serves on 127.0.0.1.
+- **New Codex chats.** + New chat starts Claude chats only. **Why deferred:**
+  a new Codex thread's id comes back in `thread.started` rather than being
+  given up front, so a retry after a limit could start a second thread.
+  **To close:** capture the id from `thread.started` as the run begins, save
+  it on the job, and resume it from then on.
+- **`chatq -New <folder>` in a shell.** **Why deferred:** the console was
+  the ask; `New-ChatqJob -Kind new` does the work already. **To close:** a
+  parameter set on `chatq` that calls it, with `-Name`.
+- **Changing a waiting job's mode or model** from the console. **Why
+  deferred:** only the prompt is editable in place; Remove and send again
+  covers the rest. **To close:** the same chips in the details pane, written
+  through `Set-ChatqProp`.
+- **Answering a permission prompt from the console.** A run that asks is
+  parked as needs-input. **Why deferred:** the same as for the phone, above.
+  **To close:** the same `--permission-prompt-tool` bridge, answered from
+  the console's details pane.
+- **Opening the chat in VS Code** from the console. **Why deferred:**
+  nothing outside VS Code can open a chat in its panel. **To close:** a
+  command in `extension/` that a request file names, as the reload already
+  works.
+- **The reply as it streams.** The console shows a run's reply once the run
+  ends. **Why deferred:** reading a log the watcher holds open works now
+  (`Get-ChatqLogEntries` shares with the writer), but redrawing the details
+  pane every pass costs the window's thread while a long run writes
+  megabytes. **To close:** read only what the log grew by since the last
+  pass, and append it to the pane rather than redrawing it.
+- **Every argument hardened for `claude.cmd`.** An npm install's
+  `claude.cmd` runs through cmd.exe, which does not read `\"` as an escape.
+  A new chat's `--name` has `"%!&|<>^` taken out for it. **Why deferred:**
+  the other arguments are chatq's own - a session id, a mode, the tool's
+  data folder - apart from `chatq -Model`, which you type yourself.
+  **To close:** in `ConvertTo-ChatqArgLine`, quote any argument holding
+  `&|<>^()` when the executable is a `.cmd` or `.bat`, and refuse one
+  holding `"` or `%`.
+
 ## A VS Code front end
 
-**Why deferred:** the terminal UI was chosen.
+**Why deferred:** the terminal UI was chosen, and then the overlay's console.
 
 **To close:** grow `extension/`, which already offers the reload after a
 delete, an archive, or a queued run into a chat that window holds:

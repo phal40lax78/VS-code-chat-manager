@@ -7,6 +7,10 @@
 #   FAKE_STDERR    bytes of noise to write to stderr first (pipe-deadlock test)
 #   FAKE_SLEEP     seconds to hang before answering (timeout test)
 #   FAKE_AGENTS    what `claude agents --json` prints (live chats)
+#   FAKE_NEW_CHAT  with --session-id, write the new chat's transcript where
+#                  Claude Code would, as a real first run does - under
+#                  CLAUDE_CODE_PROJECT_DIR_NAME when set - and refuse an id
+#                  already on disk
 #   FAKE_ARCHIVE_FAIL  make `codex archive` / `unarchive` fail
 # Output goes out as raw UTF-8 bytes: Write-Output would encode it in the
 # console code page, which is exactly the bug class these tests exist for.
@@ -83,6 +87,38 @@ if ($env:FAKE_SLEEP) { Start-Sleep -Seconds ([int]$env:FAKE_SLEEP) }
 $session = '00000000-0000-4000-8000-000000000000'
 $i = [Array]::IndexOf($argv, '--resume')
 if ($i -ge 0 -and $i + 1 -lt $argv.Count) { $session = $argv[$i + 1] }
+# a new chat: claude -p --session-id <id> --name <name> makes it, as spike S25
+# saw - its transcript under the config dir, in the folder named after the
+# working directory, the name first and then the prompt
+$i = [Array]::IndexOf($argv, '--session-id')
+if ($i -ge 0 -and $i + 1 -lt $argv.Count) {
+    $session = $argv[$i + 1]
+    if ($env:FAKE_NEW_CHAT) {
+        # an id already on disk is refused, as claude.exe 2.1.281 does
+        $taken = @(Get-ChildItem -Path (Join-Path (Join-Path $env:CLAUDE_CONFIG_DIR 'projects') '*') -Filter "$session.jsonl" -File -EA SilentlyContinue)
+        if ($taken) {
+            $e = [Console]::OpenStandardError()
+            $b = $utf8.GetBytes("Error: Session ID $session is already in use.`n")
+            $e.Write($b, 0, $b.Length); $e.Flush()
+            exit 1
+        }
+        $cwd = (Get-Location).Path
+        # CLAUDE_CODE_PROJECT_DIR_NAME names the folder outright, as a path
+        # over 200 characters gets a cut, hashed name: not the slug either way
+        $folder = if ($env:CLAUDE_CODE_PROJECT_DIR_NAME) { $env:CLAUDE_CODE_PROJECT_DIR_NAME } else { $cwd.TrimEnd('\', '/') -replace '[^A-Za-z0-9]', '-' }
+        $pdir = Join-Path (Join-Path $env:CLAUDE_CONFIG_DIR 'projects') $folder
+        New-Item -ItemType Directory -Path $pdir -Force | Out-Null
+        $n = [Array]::IndexOf($argv, '--name')
+        $recs = @()
+        if ($n -ge 0 -and $n + 1 -lt $argv.Count) { $recs += ([ordered]@{ type = 'custom-title'; customTitle = $argv[$n + 1]; sessionId = $session } | ConvertTo-Json -Compress) }
+        $recs += ([ordered]@{
+                type = 'user'; message = @{ role = 'user'; content = $prompt }; uuid = [guid]::NewGuid().ToString()
+                timestamp = (Get-Date).ToUniversalTime().ToString('o'); sessionId = $session; cwd = $cwd; permissionMode = 'default'; entrypoint = 'sdk-cli'
+            } | ConvertTo-Json -Compress -Depth 5)
+        $env:FAKE_NEW_TRANSCRIPT = Join-Path $pdir "$session.jsonl"
+        [IO.File]::WriteAllText($env:FAKE_NEW_TRANSCRIPT, ($recs -join "`n") + "`n", $utf8)
+    }
+}
 
 if ($env:FAKE_LAND -and (Test-Path -LiteralPath $env:FAKE_LAND)) {
     $rec = [ordered]@{
@@ -109,4 +145,10 @@ foreach ($l in $lines) {
     $out.Write($b, 0, $b.Length)
 }
 $out.Flush()
+# and a new chat that got its answer keeps it, as the real one would
+if ($env:FAKE_NEW_TRANSCRIPT -and -not $env:FAKE_SCENARIO) {
+    $a = [ordered]@{ type = 'assistant'; uuid = [guid]::NewGuid().ToString(); timestamp = (Get-Date).ToUniversalTime().ToString('o'); sessionId = $session
+        message = [ordered]@{ model = 'claude-fake-1'; role = 'assistant'; content = @([ordered]@{ type = 'text'; text = 'ok' }); stop_reason = 'end_turn' } } | ConvertTo-Json -Compress -Depth 6
+    [IO.File]::AppendAllText($env:FAKE_NEW_TRANSCRIPT, $a + "`n", $utf8)
+}
 exit 0

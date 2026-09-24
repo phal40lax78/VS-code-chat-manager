@@ -75,6 +75,8 @@ COMMANDS
     chatqlog <n> [-Raw]            what a run did
     chatqnotify -ApiKey k -Device d  phone alerts through Join; -Test sends one
     chatoverlay [-Stop] [-Print]   every running chat, and usage, always on top
+    chatconsole                    chatq in a window: write, send now, queue,
+                                   continue, new chats (Windows)
     chatinstall / chatuninstall    add to, or drop from, your profile
     chat                           cheat sheet
 
@@ -234,7 +236,7 @@ FILES   everything in data/ beside this script, nothing anywhere else
 # and raw.githubusercontent.com serves a stale copy for minutes after a push, so
 # "updated" vs "unchanged" is the only way to tell a real upgrade from the CDN
 # handing back what you already had.
-$script:ChatVersion = '0.4.0'
+$script:ChatVersion = '0.5.0'
 
 $script:ChatPreview = 3
 $script:ChatClaudeHome = if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { Join-Path $HOME '.claude' }
@@ -289,33 +291,46 @@ $script:ChatNoGhostWatch = $false
 
 $script:ChatIndexSep = [char]0x1F   # unit separator: never appears in prompt text
 
+# The index's rows from its CSV. Self-contained - it names nothing else in
+# this file - because the overlay's console runs it in a runspace of its own,
+# off the window's thread (Start-ChatConsoleIndexRead).
+$script:ChatIndexRead = {
+    param([string]$Path, [string]$Sep)
+    @(Import-Csv -LiteralPath $Path | ForEach-Object {
+            [pscustomobject]@{
+                Provider = $_.Provider
+                Path     = $_.Path
+                Size     = [int64]$_.Size
+                Mtime    = [int64]$_.Mtime
+                Id       = $_.Id
+                Title    = $_.Title
+                Titled   = $_.Titled
+                Group    = $_.Group
+                Hidden   = $_.Hidden -eq 'True'
+                When     = $_.When
+                First    = @($_.First -split $Sep | Where-Object { $_ })
+                Last     = @($_.Last -split $Sep | Where-Object { $_ })
+            }
+        })
+}
+
+function Get-ChatIndexStamp {
+    # the index file's version: its time and length, or $null
+    try {
+        $fi = [System.IO.FileInfo]::new($script:ChatIndexPath)
+        if ($fi.Exists) { "$($fi.LastWriteTimeUtc.Ticks):$($fi.Length)" } else { $null }
+    }
+    catch { $null }
+}
+
 function Get-ChatIndex {
     # CSV, not JSON: ConvertTo-Json on a few thousand rows costs tens of seconds.
     # Kept in memory too, so repeated Tab presses re-parse nothing.
     if (-not (Test-Path -LiteralPath $script:ChatIndexPath)) { return @() }
-    $stamp = try {
-        $fi = [System.IO.FileInfo]::new($script:ChatIndexPath)
-        "$($fi.LastWriteTimeUtc.Ticks):$($fi.Length)"
-    }
-    catch { $null }
+    $stamp = Get-ChatIndexStamp
     if ($stamp -and $stamp -eq $script:ChatIndexStamp) { return $script:ChatIndexCache }
     try {
-        $rows = @(Import-Csv -LiteralPath $script:ChatIndexPath | ForEach-Object {
-                [pscustomobject]@{
-                    Provider = $_.Provider
-                    Path     = $_.Path
-                    Size     = [int64]$_.Size
-                    Mtime    = [int64]$_.Mtime
-                    Id       = $_.Id
-                    Title    = $_.Title
-                    Titled   = $_.Titled
-                    Group    = $_.Group
-                    Hidden   = $_.Hidden -eq 'True'
-                    When     = $_.When
-                    First    = @($_.First -split $script:ChatIndexSep | Where-Object { $_ })
-                    Last     = @($_.Last -split $script:ChatIndexSep | Where-Object { $_ })
-                }
-            })
+        $rows = @(& $script:ChatIndexRead $script:ChatIndexPath $script:ChatIndexSep)
         $script:ChatIndexCache = $rows
         $script:ChatIndexStamp = $stamp
         return $rows
@@ -324,10 +339,14 @@ function Get-ChatIndex {
 }
 
 function Save-ChatIndex {
+    # Written beside the index and swapped in whole: the overlay's console
+    # reads it while a shell - or its own background sync - writes it, and
+    # half a CSV parses as a shorter list without complaint.
     param([object[]]$Rows)
     try {
         $dir = Split-Path $script:ChatIndexPath -Parent
         if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+        $tmp = "$($script:ChatIndexPath).tmp"
         $Rows | ForEach-Object {
             [pscustomobject]@{
                 Provider = $_.Provider; Path = $_.Path; Size = $_.Size; Mtime = $_.Mtime
@@ -336,7 +355,11 @@ function Save-ChatIndex {
                 First = (@($_.First) -join $script:ChatIndexSep)
                 Last = (@($_.Last) -join $script:ChatIndexSep)
             }
-        } | Export-Csv -LiteralPath $script:ChatIndexPath -NoTypeInformation -Encoding UTF8
+        } | Export-Csv -LiteralPath $tmp -NoTypeInformation -Encoding UTF8
+        # [NullString], not $null: PowerShell hands .NET an empty string for
+        # $null, and an empty backup path throws
+        if (Test-Path -LiteralPath $script:ChatIndexPath) { [System.IO.File]::Replace($tmp, $script:ChatIndexPath, [NullString]::Value) }
+        else { [System.IO.File]::Move($tmp, $script:ChatIndexPath) }
     }
     catch {}
 }
@@ -464,9 +487,12 @@ function Format-ChatMessages {
 
 function Get-ChatSlug {
     # Claude's name for a project folder: the whole path, with every character
-    # that is not a letter or digit turned into a dash
+    # that is not a letter or digit turned into a dash. A drive's root keeps
+    # its slash: Claude calls C:\ C--, and C: alone is another folder.
     param([string]$Path)
-    return ($Path.TrimEnd('\', '/') -replace '[^A-Za-z0-9]', '-')
+    $p = $Path.TrimEnd('\', '/')
+    if ($p -eq '' -or $p -match '^[A-Za-z]:$') { $p = $Path }
+    return ($p -replace '[^A-Za-z0-9]', '-')
 }
 
 function Format-ChatTitle {
@@ -1777,7 +1803,13 @@ function Get-ChatBackgroundTasks {
 function Test-ChatIdle {
     # $true idle, $false active, $null when it cannot be told - and $null stays
     # distinct, because "safe to reload" guessed wrong costs someone an answer.
-    param([int]$Seconds = $script:ChatIdleSeconds, [switch]$AllProjects, [string]$Cwd = $PWD.Path)
+    # -Except leaves one transcript out of what the files alone say: the chat a
+    # queued run just wrote to, which would read as live for the next minute.
+    # What Claude says of that chat's own open process still counts - after
+    # the run it can only be a window's, and that may be busy. -ConfigDir is
+    # the Claude home whose open sessions to ask, a job's own when it has one.
+    param([int]$Seconds = $script:ChatIdleSeconds, [switch]$AllProjects, [string]$Cwd = $PWD.Path, [string]$Except,
+        [string]$ConfigDir = $env:CLAUDE_CONFIG_DIR)
     $files = @(Get-ChatProjectFiles -AllProjects:$AllProjects -Cwd $Cwd)
     if (-not $files) { return $null }
 
@@ -1787,7 +1819,7 @@ function Test-ChatIdle {
     # chats are also searched for work that has not reported back.
     $byId = @{}
     foreach ($f in $files) { if ($f.Extension -eq '.jsonl') { $byId[$f.BaseName] = $f } }
-    foreach ($s in @(Get-ChatqLiveSessions $env:CLAUDE_CONFIG_DIR)) {
+    foreach ($s in @(Get-ChatqLiveSessions $ConfigDir)) {
         $f = $byId[[string]$s.SessionId]
         if (-not $f) { continue }
         if ($s.Status -in 'busy', 'waiting') { return $false }
@@ -1801,6 +1833,7 @@ function Test-ChatIdle {
 
     # then the transcripts themselves - all there is to go on for Codex, or a
     # Claude too old to keep that list. Anything written just now is live
+    if ($Except) { $files = @($files | Where-Object { $_.FullName -ne $Except }) }
     $cut = (Get-Date).AddSeconds(-$Seconds)
     foreach ($f in $files) { if ($f.LastWriteTime -gt $cut) { return $false } }
 
@@ -1846,8 +1879,10 @@ function Write-ChatReloadRequest {
     # 'ran' for a queued prompt that ran into a chat still open in a window.
     # Busy is $true when a chat in the project was still working as the
     # request went out - the window then warns instead of offering a plain
-    # Reload, and never reloads by itself. $null is "not judged".
-    param([string]$Title, [string]$Cwd = (Get-Location).Path, [string]$Kind = 'deleted', $Busy = $null)
+    # Reload, and never reloads by itself. Away is $true when nobody had used
+    # the PC for a while: after a queued run, only then may the window reload
+    # without asking. $null is "not judged", for both.
+    param([string]$Title, [string]$Cwd = (Get-Location).Path, [string]$Kind = 'deleted', $Busy = $null, $Away = $null)
     try {
         $dir = Split-Path $script:ChatReloadPath -Parent
         if (-not (Test-Path -LiteralPath $dir)) {
@@ -1859,6 +1894,7 @@ function Write-ChatReloadRequest {
             cwd   = $Cwd
             title = $Title
             busy  = $Busy
+            away  = $Away
             at    = (Get-Date).ToString('o')
         } | ConvertTo-Json -Compress
         # NOT Set-Content -Encoding UTF8: that writes a BOM on 5.1 and
@@ -2574,6 +2610,7 @@ function chat {
     Write-Host '  chatoverlay -Print     the same, once, in this console' -ForegroundColor Cyan
     Write-Host '  chatoverlay -Theme     dark, light or system; -Opacity 85' -ForegroundColor Cyan
     Write-Host '  chatoverlay -UsageView lines, or bars with reset countdowns' -ForegroundColor Cyan
+    Write-Host '  chatconsole            write, queue and continue chats in a window' -ForegroundColor Cyan
     Write-Host ''
     Write-Host '  chatinstall            load these in every new shell (once)' -ForegroundColor DarkGray
     Write-Host '  chatuninstall [-All]   undo that; -All removes the folder too' -ForegroundColor DarkGray
@@ -3488,9 +3525,15 @@ function Get-ChatqLastTurn {
             if ($o.quotaLimits -and $o.quotaLimits.resetsAt) {
                 $resets = [System.DateTimeOffset]::FromUnixTimeSeconds([int64]$o.quotaLimits.resetsAt).LocalDateTime
             }
+            # where it ran: this record's own, else the last one the tail names
+            $cwd = if ($o.PSObject.Properties['cwd'] -and $o.cwd) { [string]$o.cwd }
+            else {
+                $cm = [regex]::Matches($t, '"cwd":"((?:[^"\\]|\\.)*)"')
+                if ($cm.Count) { Convert-ChatJsonEscaped $cm[$cm.Count - 1].Groups[1].Value } else { $null }
+            }
             return [pscustomobject]@{
                 Uuid = $o.uuid; Type = $o.type; Limit = [bool]$limit; Overloaded = [bool]$over; ResetsAt = $resets
-                At = ConvertTo-ChatqDate $o.timestamp; Text = $text; StopReason = $o.message.stop_reason
+                At = ConvertTo-ChatqDate $o.timestamp; Text = $text; StopReason = $o.message.stop_reason; Cwd = $cwd
             }
         }
         if ($size -ge $len) { break }
@@ -3547,39 +3590,67 @@ function Get-ChatqCodexMeta {
     return $meta
 }
 
+# tests: how many transcripts the cut-off scan has read
+$script:ChatqCutOffReads = 0
+
 function Get-ChatqCutOffChats {
     # Chats the limit - or a 529 Overloaded - stopped mid-task that nothing is
     # queued for: the ones you would otherwise walk round typing "continue"
     # into, one at a time. Only transcripts touched in the last $Hours count.
-    param([object[]]$Jobs, [int]$Hours = 12)
+    # -Cache: the overlay asks every minute, so a transcript is read again
+    # only once its length or time moved; the hashtable keeps what it said.
+    # -Skip: session ids working right now - they are not cut off, and a
+    # working chat's transcript moves all the time, so reading it would miss
+    # the cache every minute.
+    param([object[]]$Jobs, [int]$Hours = 12, [hashtable]$Cache, [string[]]$Skip)
     $root = Join-Path $script:ChatClaudeHome 'projects'
     if (-not (Test-Path -LiteralPath $root)) { return @() }
-    $since = (Get-Date).AddHours(-$Hours)
+    $since = (Get-Date).AddHours(-$Hours).ToUniversalTime()
     $busy = @{}
-    foreach ($j in $Jobs) { if ($j.state -in 'queued', 'running') { $busy[$j.sessionId] = $true } }
-    $rows = @{}
-    foreach ($r in @(Get-ChatIndex)) { $rows[$r.Path] = $r }
-    $out = foreach ($d in @(Get-ChildItem -LiteralPath $root -Directory -EA SilentlyContinue)) {
-        foreach ($f in @(Get-ChildItem -LiteralPath $d.FullName -Filter *.jsonl -File -EA SilentlyContinue |
-                    Where-Object { $_.LastWriteTime -gt $since -and $_.BaseName -match '^[0-9a-fA-F-]{36}$' })) {
+    # a job with no session - none should have one, but $null is no key
+    foreach ($j in $Jobs) { if ($j.state -in 'queued', 'running' -and $j.sessionId) { $busy[[string]$j.sessionId] = $true } }
+    foreach ($s in @($Skip)) { if ($s) { $busy[$s] = $true } }
+    $rows = $null
+    $seen = @{}
+    $dirs = try { @([System.IO.DirectoryInfo]::new($root).EnumerateDirectories()) } catch { @() }
+    $out = foreach ($d in $dirs) {
+        # a folder gone since the list was taken, or a broken junction, is
+        # one folder less - not the whole scan
+        $files = try { @($d.EnumerateFiles('*.jsonl')) } catch { @() }
+        foreach ($f in $files) {
+            if ($f.LastWriteTimeUtc -le $since -or $f.Name.Length -ne 42 -or $f.BaseName -notmatch '^[0-9a-fA-F-]{36}$') { continue }
             if ($busy[$f.BaseName]) { continue }
+            $sig = "$($f.Length)|$($f.LastWriteTimeUtc.Ticks)"
+            $seen[$f.FullName] = $true
+            if ($Cache -and $Cache.ContainsKey($f.FullName) -and $Cache[$f.FullName].Sig -eq $sig) {
+                if ($Cache[$f.FullName].Row) { $Cache[$f.FullName].Row }
+                continue
+            }
+            $script:ChatqCutOffReads++
             $last = Get-ChatqLastTurn $f.FullName
-            if (-not $last -or -not ($last.Limit -or $last.Overloaded)) { continue }
-            # The index is only as fresh as the last search, and a chat the
-            # limit has just cut off is exactly the one that may be missing
-            # from it. Read the title where it lives rather than printing a
-            # uuid, which is not what the -Continue line below asks for.
-            $title = if ($rows[$f.FullName]) { $rows[$f.FullName].Title }
-            else {
-                $rec = try { & $script:ChatProviders['claude'].Describe $f } catch { $null }
-                if ($rec -and $rec.Title -and $rec.Title -ne '(empty)') { $rec.Title } else { $f.BaseName }
+            $row = $null
+            if ($last -and ($last.Limit -or $last.Overloaded)) {
+                # The index is only as fresh as the last search, and a chat the
+                # limit has just cut off is exactly the one that may be missing
+                # from it. Read the title where it lives rather than printing a
+                # uuid, which is not what the -Continue line below asks for.
+                if ($null -eq $rows) { $rows = @{}; foreach ($r in @(Get-ChatIndex)) { $rows[$r.Path] = $r } }
+                $title = if ($rows[$f.FullName]) { $rows[$f.FullName].Title }
+                else {
+                    $rec = try { & $script:ChatProviders['claude'].Describe $f } catch { $null }
+                    if ($rec -and $rec.Title -and $rec.Title -ne '(empty)') { $rec.Title } else { $f.BaseName }
+                }
+                $row = [pscustomobject]@{
+                    Id = $f.BaseName; Title = $title; Group = $d.Name; At = $last.At; ResetsAt = $last.ResetsAt
+                    Why = if ($last.Limit) { 'limit' } else { 'overloaded' }; Path = $f.FullName; Cwd = $last.Cwd
+                }
             }
-            [pscustomobject]@{
-                Id = $f.BaseName; Title = $title; Group = $d.Name; At = $last.At; ResetsAt = $last.ResetsAt
-                Why = if ($last.Limit) { 'limit' } else { 'overloaded' }
-            }
+            if ($Cache) { $Cache[$f.FullName] = @{ Sig = $sig; Row = $row } }
+            if ($row) { $row }
         }
     }
+    # what fell out of the window, or went, is forgotten
+    if ($Cache) { foreach ($k in @($Cache.Keys)) { if (-not $seen[$k]) { $Cache.Remove($k) } } }
     return @($out | Sort-Object At -Descending)
 }
 
@@ -3697,6 +3768,10 @@ function Find-ChatqJob {
     if (-not $Jobs) { $Jobs = @(Get-ChatqJobs) }
     $r = $Ref.Trim().TrimStart('#')
     if ($r -match '^\d+$') { return @($Jobs | Where-Object { [int]$_.seq -eq [int]$r }) | Select-Object -First 1 }
+    # the whole id first: a job queued for the same chat in the same second
+    # is that id with -2 after it, and would make the prefix ambiguous
+    $exact = @($Jobs | Where-Object { $_.id -eq $r })
+    if ($exact.Count -eq 1) { return $exact[0] }
     $hit = @($Jobs | Where-Object { $_.id -like "$r*" })
     if ($hit.Count -eq 1) { return $hit[0] }
     return $null
@@ -3905,9 +3980,10 @@ function Read-ChatqAttachSources {
     # -Attach and -Paste, resolved while you are here: the files checked now -
     # one found missing at 3 a.m. could only fail the job - and the clipboard
     # read now, since by then it holds whatever was copied last. Nothing is
-    # copied yet. Error set means nothing should be queued.
+    # copied yet. Error set means nothing should be queued. Skipped: folders
+    # the clipboard held, for the caller to mention.
     param([string[]]$Attach, [switch]$Paste)
-    $r = [pscustomobject]@{ Error = $null; Files = [System.Collections.Generic.List[string]]::new(); Image = $null; Text = $null }
+    $r = [pscustomobject]@{ Error = $null; Files = [System.Collections.Generic.List[string]]::new(); Image = $null; Text = $null; Skipped = [System.Collections.Generic.List[string]]::new() }
     $seen = @{}
     foreach ($a in @($Attach | Where-Object { $_ })) {
         $p = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($a)
@@ -3928,7 +4004,7 @@ function Read-ChatqAttachSources {
         $clip = Get-ChatqClipboard
         if (-not $clip) { $r.Error = 'the clipboard cannot be read here - give the file with -Attach instead'; return $r }
         foreach ($f in @($clip.Files)) {
-            if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { Write-Host "     skipped $f - only files go, not folders" -ForegroundColor DarkGray; continue }
+            if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { $r.Skipped.Add($f); continue }
             if (-not $seen.ContainsKey($f.ToLowerInvariant())) { $seen[$f.ToLowerInvariant()] = $true; $r.Files.Add($f) }
         }
         $r.Image = $clip.Image
@@ -3945,16 +4021,23 @@ function Read-ChatqAttachSources {
 function Save-ChatqAttachSources {
     # Into the job's folder; throws when one cannot be copied, having taken
     # back what this call copied - and only that: adding to a queued job, the
-    # folder already holds files of its own.
-    param([string]$Dir, $Got)
-    $added = [System.Collections.Generic.List[string]]::new()
+    # folder already holds files of its own. -Move: the files are the
+    # console's own staged copies, so they move in, and move back on a
+    # failure. Images: more than one pasted image, as @{ Name; Bytes }.
+    param([string]$Dir, $Got, [switch]$Move)
+    $added = [System.Collections.Generic.List[object]]::new()
     try {
-        foreach ($s in $Got.Files) { $added.Add((Add-ChatqAttachment $Dir $s).FullName) }
-        if ($Got.Image) { $added.Add((Add-ChatqAttachmentBytes $Dir 'clip.png' $Got.Image).FullName) }
-        return @($added)
+        foreach ($s in @($Got.Files)) { if ($s) { $added.Add(@{ To = (Add-ChatqAttachment $Dir $s -Move:$Move).FullName; From = $(if ($Move) { $s }) }) } }
+        if ($Got.Image) { $added.Add(@{ To = (Add-ChatqAttachmentBytes $Dir 'clip.png' $Got.Image).FullName }) }
+        $more = if ($Got -is [hashtable]) { $Got['Images'] } elseif ($Got.PSObject.Properties['Images']) { $Got.Images } else { $null }
+        foreach ($im in @($more)) { if ($im) { $added.Add(@{ To = (Add-ChatqAttachmentBytes $Dir ([string]$im.Name) ([byte[]]$im.Bytes)).FullName }) } }
+        return @($added | ForEach-Object { $_.To })
     }
     catch {
-        foreach ($a in $added) { Remove-Item -LiteralPath $a -Force -EA SilentlyContinue }
+        foreach ($a in $added) {
+            if ($a.From) { Move-Item -LiteralPath $a.To -Destination $a.From -Force -EA SilentlyContinue }
+            else { Remove-Item -LiteralPath $a.To -Force -EA SilentlyContinue }
+        }
         if (-not @(Get-ChildItem -LiteralPath $Dir -Force -EA SilentlyContinue).Count) { Remove-Item -LiteralPath $Dir -Force -EA SilentlyContinue }
         throw
     }
@@ -4266,8 +4349,9 @@ $script:ChatqLimitRx = '(?i)hit your (session |usage |weekly |opus |sonnet )?lim
 # the 529 as Claude Code prints it; the other 5xx it reports are the same kind
 # of trouble - on Anthropic's side, and over when the status page says so.
 $script:ChatqOverloadRx = '(?i)API Error:\s*5\d\d|\boverloaded(_error)?\b'
-# A dropped connection is worth another try; an expired login is not - every
-# retry would fail the same way until someone logs in again. Both are only
+# A dropped connection is worth another try; a refused login is not - every
+# retry would fail the same way until someone logs in again, or renews the
+# subscription, which is refused with the same 401 or 403. Both are only
 # ever matched against error text, never against a reply.
 $script:ChatqNetworkRx = '(?i)ECONNRESET|ETIMEDOUT|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|socket hang up|Connection error|fetch failed|network error|stream disconnected|error sending request|Premature close|connection reset'
 $script:ChatqAuthRx = '(?i)OAuth token (has )?expired|invalid (api key|x-api-key|bearer token)|authentication_error|not logged in|please (run )?/login|401 Unauthorized|403 Forbidden'
@@ -4340,6 +4424,41 @@ function Get-ChatqExcerpt {
     return $out
 }
 
+function Get-ChatqAuthWords {
+    # What the CLI said when it turned the login down: the API's own message
+    # when the error carries one, else the text itself, cut short. An expired
+    # login and a subscription that ended are both refused with a 401 or 403,
+    # and only these words tell which it was. Error text only - never a reply.
+    param([string]$Text, $Status)
+    $t = ($Text -replace '\s+', ' ').Trim()
+    $msg = $null
+    if ($t -match '"message"\s*:\s*("(?:[^"\\]|\\.)*")') {
+        $msg = try { [string]($Matches[1] | ConvertFrom-Json) } catch { $null }
+    }
+    if ($msg) {
+        # Claude prints "API Error: 401", Codex "unexpected status 401"
+        $code = if ($Status) { [string]$Status } elseif ($t -match '(?i)(?:API Error|status):?\s*(\d{3})\b') { $Matches[1] } else { $null }
+        if ($code) { $msg = "$msg ($code)" }
+    }
+    else {
+        # log noise ahead of the refusal would crowd it out of the cut below
+        $m = [regex]::Match($t, $script:ChatqAuthRx)
+        $msg = if ($m.Success -and $m.Index + $m.Length -gt 159) { $script:ChatqEllipsis + $t.Substring($m.Index) } else { $t }
+    }
+    if (-not $msg) { $msg = if ($Status) { "API Error $Status" } else { 'no reason given' } }
+    if ($msg.Length -gt 160) { $msg = $msg.Substring(0, 159) + $script:ChatqEllipsis }
+    return $msg
+}
+
+function Get-ChatqAuthDetail {
+    # the error text whole, on one line, for the watcher log: the message alone
+    # drops the error's type, and a new way of being refused is read from this
+    param([string]$Text)
+    $t = ($Text -replace '\s+', ' ').Trim()
+    if ($t.Length -gt 1000) { $t = $t.Substring(0, 999) + $script:ChatqEllipsis }
+    return $t
+}
+
 function Test-ChatqAsks {
     # a reply ending on a question - the alert says so, but it is not treated
     # as needs-input: most replies end on an offer ("want me to also ...?")
@@ -4361,7 +4480,7 @@ function Get-ChatqClaudeOutcome {
         denied = @($St.Denied | Select-Object -Unique); turns = $res.num_turns; durationMs = $res.duration_ms
         costUsd = $res.total_cost_usd; model = $St.Model; resetsAt = $null; limitType = $null
         # replies before it broke: a run that got nowhere counts toward the cap
-        assistant = $St.Assistant
+        assistant = $St.Assistant; detail = $null
     }
     # A turn that ended well is not limited, whatever was said on the way: a
     # 'rejected' rate_limit_event also goes out when extra usage carries the
@@ -4393,7 +4512,10 @@ function Get-ChatqClaudeOutcome {
     if ($broke -and -not $Proc.Stopped) {
         $err = "$text $($Proc.StdErr)"
         if (($status -and [int]$status -in 401, 403) -or $err -match $script:ChatqAuthRx) {
-            $o.kind = 'auth'; $o.reason = 'not logged in - run claude and /login'
+            # $text may be the last reply, which is no part of the refusal
+            $said = "$(if ($res -and $res.is_error) { [string]$res.result }) $($Proc.StdErr)"
+            $o.kind = 'auth'; $o.reason = "login refused: $(Get-ChatqAuthWords $said $status)"
+            $o.detail = Get-ChatqAuthDetail $said
             return [pscustomobject]$o
         }
         if ($err -match $script:ChatqNetworkRx) {
@@ -4481,7 +4603,7 @@ function Get-ChatqCodexOutcome {
     $o = [ordered]@{
         kind = $null; reason = $null; excerpt = (Get-ChatqExcerpt $St.LastText); asks = $false
         denied = @(); turns = $null; durationMs = $null; costUsd = $null; model = $null; resetsAt = $null; limitType = $null
-        assistant = $St.Assistant
+        assistant = $St.Assistant; detail = $null
     }
     # a turn that completed is done, whatever retry notices came before it
     if ($St.TurnDone -and -not $St.TurnFailed -and -not $Proc.Stopped) {
@@ -4497,7 +4619,10 @@ function Get-ChatqCodexOutcome {
         return [pscustomobject]$o
     }
     if (-not $Proc.Stopped) {
-        if ($fail -match $script:ChatqAuthRx) { $o.kind = 'auth'; $o.reason = 'not logged in - run codex login'; return [pscustomobject]$o }
+        if ($fail -match $script:ChatqAuthRx) {
+            $o.kind = 'auth'; $o.reason = "login refused: $(Get-ChatqAuthWords $fail)"; $o.detail = Get-ChatqAuthDetail $fail
+            return [pscustomobject]$o
+        }
         if ($fail -match $script:ChatqNetworkRx) { $o.kind = 'network'; $o.reason = "network: $($Matches[0])"; return [pscustomobject]$o }
     }
     if ($Proc.Stopped) { $o.kind = 'failed'; $o.reason = $Proc.Stopped; return [pscustomobject]$o }
@@ -4719,7 +4844,7 @@ function Invoke-ChatqProbe {
     #>
     param([string]$Provider, $Job, [switch]$NoModel)
     $exe = Find-ChatqExe $Provider
-    if (-not $exe) { return [pscustomobject]@{ Allowed = $false; Limited = $false; Overloaded = $false; Auth = $false; Error = "no $Provider CLI found"; Until = $null; Type = $null } }
+    if (-not $exe) { return [pscustomobject]@{ Allowed = $false; Limited = $false; Overloaded = $false; Auth = $false; Error = "no $Provider CLI found"; Until = $null; Type = $null; Detail = $null } }
     $dir = if ($Job.cwd -and (Test-Path -LiteralPath $Job.cwd)) { $Job.cwd } else { $script:ChatqData }
     $st = New-ChatqRunState
     # the model the run will use: one given with -Model, else the chat's own
@@ -4759,6 +4884,7 @@ function Invoke-ChatqProbe {
         Until      = $until
         Type       = $out.limitType
         Error      = if (-not $ok -and $out.kind -notin 'limited', 'overloaded') { $(if ($out.reason) { $out.reason } else { $out.kind }) } else { $null }
+        Detail     = $out.detail
     }
 }
 
@@ -4773,6 +4899,30 @@ function Get-ChatqRunModel {
 #endregion
 
 #region running one job -------------------------------------------------------
+
+function Test-ChatqFreshChat {
+    # a new chat's job whose chat does not exist yet: nothing to resume, no
+    # transcript to check, and no window can have it open
+    param($Job)
+    return [bool]($Job.kind -eq 'new' -and -not ($Job.path -and (Test-Path -LiteralPath $Job.path)))
+}
+
+function Update-ChatqNewChatPath {
+    # A new chat's transcript is where its folder's slug says, unless Claude
+    # named that folder otherwise: a path over 200 characters is cut and
+    # hashed, and CLAUDE_CODE_PROJECT_DIR_NAME names it outright. Looked for
+    # by its id in every project, and kept on the job once found - else every
+    # retry would pass --session-id again, which Claude refuses once the
+    # session exists.
+    param($Job)
+    if ($Job.kind -ne 'new' -or $Job.provider -ne 'claude' -or -not $Job.sessionId) { return }
+    if ($Job.path -and (Test-Path -LiteralPath $Job.path)) { return }
+    $base = if ($Job.home) { [string]$Job.home } else { $script:ChatClaudeHome }
+    $p = Find-ChatOverlayTranscript $base $null ([string]$Job.sessionId)
+    if (-not $p) { return }
+    Set-ChatqProp $Job 'path' $p
+    Set-ChatqProp $Job 'group' (Split-Path (Split-Path $p -Parent) -Leaf)
+}
 
 function Invoke-ChatqRun {
     # Deliver one job's prompt into its chat and read what came back. The
@@ -4815,7 +4965,18 @@ function Invoke-ChatqRun {
     if ($v -and ((Compare-ChatVersion $v $script:ChatqClaudeMin) -eq -1)) {
         return [pscustomobject]@{ kind = 'failed'; reason = "Claude Code $v is too old for unattended runs - needs $($script:ChatqClaudeMin)+" }
     }
-    $a = @('-p', '--resume', $Job.sessionId, '--output-format', 'stream-json', '--verbose',
+    # A new chat's first run: the session id it was given when queued, and its
+    # name as the title the chat list shows (spike S25). Once its transcript
+    # exists - the prompt got that far before a limit or a dropped
+    # connection - it is resumed like any other, never started twice.
+    # A claude.cmd from npm runs through cmd.exe, which reads \" as no escape
+    # at all: a quote in the title would end the argument there and hand the
+    # rest - an & and what follows - to cmd as a command of its own. The
+    # title shows in a list, and loses nothing it needs without these.
+    $name = [string]$Job.title
+    if ($exe -match '\.(cmd|bat)$') { $name = (($name -replace '["%!&|<>^]', ' ') -replace '\s+', ' ').Trim() }
+    $start = if (Test-ChatqFreshChat $Job) { @('--session-id', $Job.sessionId, '--name', $name) } else { @('--resume', $Job.sessionId) }
+    $a = @('-p') + $start + @('--output-format', 'stream-json', '--verbose',
         '--permission-mode', $mode, '--permission-prompts', 'none')
     # only when -Model asked for one: a resume keeps the chat's own model, and
     # naming it would pin the run to an id that may since have been retired
@@ -5220,11 +5381,31 @@ public static class ChatqIdle {
 function Test-ChatqUserPresent {
     # at the PC now? config quietMinutes (default 5); 0 turns the check off
     param($Cfg)
-    $m = 5
-    if ($Cfg -and $Cfg.PSObject.Properties['quietMinutes']) { $m = [double]$Cfg.quietMinutes }
+    $m = Get-ChatqQuietMinutes $Cfg
     if ($m -le 0) { return $false }
     $s = Get-ChatqIdleSeconds
     return ($null -ne $s -and $s -lt $m * 60)
+}
+
+function Get-ChatqQuietMinutes {
+    # config quietMinutes, 5 when unset; 0 turns presence off
+    param($Cfg)
+    if ($Cfg -and $Cfg.PSObject.Properties['quietMinutes']) { return [double]$Cfg.quietMinutes }
+    return 5
+}
+
+function Test-ChatqUserAway {
+    # Nobody at the PC for quietMinutes - known, not assumed. The reverse of
+    # present for the phone's sake, except where it counts: an idle clock that
+    # cannot be read, or quietMinutes 0, never reads as away, because away is
+    # what lets a window reload under someone's hands. Only this PC's own
+    # keyboard and mouse count - a chat driven from the phone is caught by the
+    # transcripts instead (see Invoke-ChatqJob).
+    param($Cfg)
+    $m = Get-ChatqQuietMinutes $Cfg
+    if ($m -le 0) { return $false }
+    $s = Get-ChatqIdleSeconds
+    return ($null -ne $s -and $s -ge $m * 60)
 }
 
 #endregion
@@ -5356,7 +5537,12 @@ function Get-ChatqStatusLine {
             continue
         }
         if (-not $b.Until) { continue }
-        if ($b.Type -eq 'login needed') { $parts += "$name logged out - log in, chatq looks again every 15 min"; continue }
+        if ($b.Type -eq 'login needed') {
+            # what the CLI said; a watcher from before it was kept says 'probe'
+            $said = if ($b.Source -and $b.Source -ne 'probe') { $b.Source } else { 'login refused' }
+            $parts += "$name $said - log in or check the subscription, chatq looks again every 15 min"
+            continue
+        }
         $u = $b.Until
         $fmt = if ($u.Date -eq (Get-Date).Date) { 'HH:mm' } else { 'ddd HH:mm' }
         $parts += "$name limited until $($u.ToString($fmt, [System.Globalization.CultureInfo]::InvariantCulture)) ($($b.Type))"
@@ -5853,7 +6039,7 @@ function Confirm-ChatqAllowed {
         return $true
     }
     if ($r.Overloaded) { Enter-ChatqOutage $W $Job 'the probe got 529 Overloaded'; return $false }
-    if ($r.Auth) { Block-ChatqLogin $W $Job; return $false }
+    if ($r.Auth) { Block-ChatqLogin $W $Job $r.Error $r.Detail; return $false }
     if ($r.Limited) {
         $until = $r.Until
         if (-not $until) {
@@ -5879,16 +6065,20 @@ function Confirm-ChatqAllowed {
 function Block-ChatqLogin {
     # A login that expired fails every job in that account the same way, so it
     # is the account that waits, not each job: one alert, the jobs stay queued,
-    # and it is looked at again every 15 minutes until someone logs in.
-    param($W, $Job)
+    # and it is looked at again every 15 minutes until someone logs in. A
+    # subscription that ran out is refused the same way, so the alert passes on
+    # what the CLI said instead of guessing "logged out".
+    param($W, $Job, [string]$Reason, [string]$Detail)
     $lane = Get-ChatqLane $Job
-    $W.blocked[$lane] = [pscustomobject]@{ Until = (Get-Date).AddMinutes(15); Type = 'login needed'; Source = 'probe' }
+    $said = if ($Reason) { $Reason } else { 'login refused' }
+    $W.blocked[$lane] = [pscustomobject]@{ Until = (Get-Date).AddMinutes(15); Type = 'login needed'; Source = $said }
     $W.lastAllowed[$lane] = $null
-    Write-ChatqWatchLog "$lane needs a login"
+    Write-ChatqWatchLog "$lane $said"
+    if ($Detail) { Write-ChatqWatchLog "$lane error text: $Detail" }
     if (-not $W.authAlerted[$lane]) {
         $W.authAlerted[$lane] = $true
         $how = if ($Job.provider -eq 'codex') { 'codex login' } else { 'claude, then /login' }
-        [void](Send-ChatqAlert 'failed' "$(Format-ChatqLane $lane) is logged out $($script:ChatqDot) run $how $($script:ChatqDot) queued prompts wait for it" 2)
+        [void](Send-ChatqAlert 'failed' "$(Format-ChatqLane $lane) $said $($script:ChatqDot) run $how, or check the subscription $($script:ChatqDot) queued prompts wait for it" 2)
     }
 }
 
@@ -5946,9 +6136,15 @@ function Invoke-ChatqJob {
     if (-not $Job -or $Job.state -ne 'queued') { return }
     $lane = Get-ChatqLane $Job
     $sendsContinue = $Job.kind -eq 'continue' -or $Job.retryAs -eq 'continue'
-    # the chat as it is now, not as it was when queued
-    if ($Job.provider -eq 'claude') {
-        $meta = Get-ChatqClaudeMeta $Job.path $Job.group
+    Update-ChatqNewChatPath $Job
+    # a new chat not started yet: none of the chat checks below apply
+    $fresh = Test-ChatqFreshChat $Job
+    # the chat as it is now, not as it was when queued. A new chat whose
+    # prompt landed and which is to be continued has had its transcript
+    # deleted since: starting it afresh would make a chat that says only
+    # "continue".
+    if ($Job.provider -eq 'claude' -and (-not $fresh -or $sendsContinue)) {
+        $meta = if ($fresh) { [pscustomobject]@{ Exists = $false } } else { Get-ChatqClaudeMeta $Job.path $Job.group }
         if (-not $meta.Exists) {
             Complete-ChatqJob $Job 'failed' ([pscustomobject]@{ kind = 'failed'; reason = 'the chat is gone - its transcript was deleted' }) 'chat gone'
             [void](Send-ChatqAlert 'failed' "$($Job.title) $($script:ChatqDot) chat is gone" 2)
@@ -5971,7 +6167,7 @@ function Invoke-ChatqJob {
         return
     }
 
-    $live = if ($Job.provider -eq 'claude') { @(Get-ChatqLiveSessions $Job.home) } else { @() }
+    $live = if ($Job.provider -eq 'claude' -and -not $fresh) { @(Get-ChatqLiveSessions $Job.home) } else { @() }
     $act = Resolve-ChatqLiveAction $Job $live
     if ($act.Action -eq 'defer') {
         if (-not $Job.deferredSince) { Set-ChatqProp $Job 'deferredSince' (Get-ChatqStamp) }
@@ -5986,7 +6182,9 @@ function Invoke-ChatqJob {
             Set-ChatqProp $Job 'busyAlerted' $true
             [void](Send-ChatqAlert 'waiting' "$($Job.title) $($script:ChatqDot) has been busy for 2 h - chatq waits until it is idle" 0)
         }
-        Set-ChatqProp $Job 'deferUntil' $now.AddMinutes(5).ToUniversalTime().ToString('o')
+        # sent "now" from the console: looked at again soon, not in 5 minutes
+        $back = if ($Job.PSObject.Properties['sendNow'] -and $Job.sendNow) { 30 } else { 300 }
+        Set-ChatqProp $Job 'deferUntil' $now.AddSeconds($back).ToUniversalTime().ToString('o')
         Save-ChatqJob $Job
         Write-ChatqWatchLog "#$($Job.seq) deferred: chat is in use"
         return
@@ -6052,12 +6250,32 @@ function Invoke-ChatqJob {
     if ($wasCancelled) { Remove-Item -LiteralPath $cancel -Force -EA SilentlyContinue }
     Set-ChatqProp $Job 'runnerPid' $null
     if ($stale) { Set-ChatqProp $out 'stale' $true }
+    # the new chat's transcript, if this run made it where the slug did not say
+    Update-ChatqNewChatPath $Job
     # The window still holding this chat shows none of the run until it
     # reloads. The extension in extension/ offers that reload, in that window
     # only - the job's folder is what it matches on, never this process's own.
     # Not for a run that goes back in the queue: it is not finished yet.
+    # Judged here, as the run ends: the window reloads by itself only when
+    # nobody is at the PC to be typing in it and no other chat in the folder
+    # is working - otherwise it asks, as it always did. "Working" reaches back
+    # quietMinutes here, not one: a chat written that recently is someone's,
+    # at this PC or driving it from the phone, which the idle clock never sees.
     if ($stale -and -not $wasCancelled -and $out.kind -notin 'limited', 'overloaded') {
-        Write-ChatReloadRequest -Title $Job.title -Cwd $Job.cwd -Kind 'ran'
+        $cfg = Get-ChatqConfig
+        $recent = [int][Math]::Max(60, (Get-ChatqQuietMinutes $cfg) * 60)
+        $idle = Test-ChatIdle -Cwd $Job.cwd -Except $Job.path -Seconds $recent -ConfigDir $Job.home
+        $busy = if ($null -eq $idle) { $null } else { -not $idle }
+        Write-ChatReloadRequest -Title $Job.title -Cwd $Job.cwd -Kind 'ran' -Busy $busy -Away (Test-ChatqUserAway $cfg)
+    }
+    # A new chat is on disk now, and the chat list of a window on its folder
+    # shows it only after a reload - the same offer, in words of its own. On
+    # the first run that finishes rather than the first run: one the limit
+    # cut goes back in the queue, and its continue is no longer fresh.
+    elseif ($Job.kind -eq 'new' -and -not ($Job.PSObject.Properties['newOffered'] -and $Job.newOffered) -and -not $wasCancelled -and
+        $out.kind -notin 'limited', 'overloaded', 'network', 'auth' -and $Job.path -and (Test-Path -LiteralPath $Job.path)) {
+        Write-ChatReloadRequest -Title $Job.title -Cwd $Job.cwd -Kind 'new'
+        Set-ChatqProp $Job 'newOffered' $true
     }
 
     $dur = ''
@@ -6114,8 +6332,8 @@ function Invoke-ChatqJob {
         }
         'auth' {
             if ($wasCancelled) { Complete-ChatqJob $Job 'failed' $out 'cancelled'; break }
-            Block-ChatqLogin $W $Job
-            Set-ChatqJobState $Job 'queued' 'waiting for a login'
+            Block-ChatqLogin $W $Job $out.reason $out.detail
+            Set-ChatqJobState $Job 'queued' 'waiting for the login to work again'
         }
         'overloaded' {
             if ($wasCancelled) { Complete-ChatqJob $Job 'failed' $out 'cancelled'; break }
@@ -6407,8 +6625,11 @@ function Start-ChatqWatcherProcess {
 #region commands --------------------------------------------------------------
 
 function New-ChatqSeq {
+    # -Jobs: a list already read, as the console has one every pass
+    param([object[]]$Jobs)
+    if (-not $Jobs) { $Jobs = @(Get-ChatqJobs) }
     $max = 0
-    foreach ($j in @(Get-ChatqJobs)) { if ([int]$j.seq -gt $max) { $max = [int]$j.seq } }
+    foreach ($j in $Jobs) { if ([int]$j.seq -gt $max) { $max = [int]$j.seq } }
     return $max + 1
 }
 
@@ -6500,6 +6721,359 @@ function Write-ChatqJobInfo {
     }
 }
 
+#region the job core ------------------------------------------------------------
+# What chatq, chatqrm, chatqrun and chatqlog do to jobs, apart from what they
+# print: the overlay's console does the same things from a window, where
+# there is no console to print to and no editor to wait on. Nothing here
+# writes to the host or starts the watcher.
+
+function New-ChatqJobSlot {
+    # A new job's number, id and file names. An id is the time to the second
+    # and the chat's first four hex digits; one already taken - two jobs for
+    # one chat inside a second, which the console can make - gets -2, -3.
+    param($Row, [string]$Title, [object[]]$Jobs)
+    New-ChatqDir $script:ChatqQueueDir
+    $seq = New-ChatqSeq -Jobs $Jobs
+    $name = if ($Title) { $Title } else { [string]$Row.Title }
+    $hex = if ($Row.Id) { ([string]$Row.Id).Substring(0, [Math]::Min(4, ([string]$Row.Id).Length)) } else { [guid]::NewGuid().ToString('N').Substring(0, 4) }
+    $base = '{0}-{1}' -f (Get-Date).ToString('yyyyMMdd-HHmmss'), $hex
+    $id = $base
+    for ($n = 2; (Test-Path -LiteralPath (Join-Path $script:ChatqQueueDir "$id.json")) -or (Test-Path -LiteralPath (Join-Path $script:ChatqQueueDir $id)); $n++) { $id = "$base-$n" }
+    # no run of dashes survives into the comment, so no title can close it early
+    $safe = $name -replace '-{2,}', '-'
+    $file = "#$seq $(Get-ChatqSafeName $name).md"
+    [pscustomobject]@{
+        Seq = $seq; Id = $id; File = $file; Path = (Join-Path $script:ChatqQueueDir $file); Dir = (Join-Path $script:ChatqQueueDir $id)
+        Header = "<!-- chatq: prompt for '$safe' ($($Row.Provider)). Everything after this comment is sent as it is when the limit resets. Save and close the tab to queue it; leave it empty to cancel. -->`n`n"
+    }
+}
+
+function New-ChatqJobRecord {
+    # The job as data/queue/<id>.json holds it. Pure: nothing is written.
+    # -Resolve: how Resolve-ChatqTarget picked the chat, when it did.
+    param($Slot, $Row, $Info, [string]$Kind = 'prompt', [string]$Mode, [string]$Model, $NotBefore,
+        [switch]$First, [switch]$SendNow, [string]$Typed, $Resolve, [string]$Rule, [string]$Title)
+    [pscustomobject][ordered]@{
+        v = 1
+        # set before the prompt, when the files went in - the chat a re-pick
+        # lands on does not rename the folder they are in
+        id = $Slot.Id
+        seq = $Slot.Seq
+        provider = $Row.Provider
+        sessionId = $(if ($Row.Id) { $Row.Id } else { $null })
+        title = $(if ($Title) { $Title } else { $Row.Title })
+        group = $Row.Group
+        path = $(if ($Row.Path) { $Row.Path } else { $null })
+        cwd = $Info.Cwd
+        # only when the user set one: pointing CLAUDE_CONFIG_DIR at the default
+        # makes Claude look for .claude.json inside it, where it never lives
+        home = if ($Row.Provider -eq 'codex') { $env:CODEX_HOME } else { $env:CLAUDE_CONFIG_DIR }
+        chatWhen = $Row.When
+        typed = $(if ($Typed) { $Typed } else { $null })
+        rule = $(if ($Resolve) { $Resolve.Rule } elseif ($Rule) { $Rule } else { $null })
+        score = $(if ($Resolve) { $Resolve.Score } else { $null })
+        runnerUp = if ($Resolve -and $Resolve.RunnerUp) { $Resolve.RunnerUp.Title } else { $null }
+        kind = $Kind
+        promptFile = $Slot.File
+        mode = if ($Mode) { $Mode } else { $null }
+        modeAtQueue = $Info.Mode
+        # the chat's own model - what the probe asks with - and, apart from it,
+        # the one -Model asked this run to use
+        model = $Info.Model
+        runModel = if ($Model) { $Model.Trim() } else { $null }
+        first = if ($First) { Get-ChatqStamp } else { $null }
+        sandbox = $Info.Sandbox
+        network = $Info.Network
+        notBefore = if ($NotBefore) { ([datetime]$NotBefore).ToUniversalTime().ToString('o') } else { $null }
+        state = 'queued'
+        attempts = 0
+        retryAs = 'full'
+        # set when the watcher itself turned the job into a "continue" (limit or
+        # 529 mid-run); only then is it dropped if the chat moved on meanwhile
+        autoContinue = $false
+        deferUntil = $null
+        deferredSince = $null
+        busyAlerted = $false
+        createdAt = Get-ChatqStamp
+        startedAt = $null
+        endedAt = $null
+        runnerPid = $null
+        result = $null
+        history = @([pscustomobject]@{ at = (Get-ChatqStamp); state = 'queued'; why = 'added' })
+        # "send now" from the console: a chat busy in VS Code is looked at
+        # again every 30 s rather than every 5 minutes
+        sendNow = [bool]$SendNow
+    }
+}
+
+function Register-ChatqJob {
+    # Saved, with what the prompt links to in data/queue - an image pasted in
+    # the editor tab - brought into its folder, and a line in jobs.log.
+    # Returns the files it has and those it could not take in.
+    param($Job)
+    Save-ChatqJob $Job
+    $missed = @(Sync-ChatqAttachments $Job)
+    $files = @(Get-ChatqAttachments $Job)
+    Write-ChatqJobLog "#$($Job.seq) queued ($($Job.kind)$(if ($files) { ", $($files.Count) file$(if ($files.Count -ne 1) { 's' })" })) $($script:ChatqDot) $($Job.title)"
+    return [pscustomobject]@{ Files = $files; Missed = $missed }
+}
+
+function New-ChatqJob {
+    <#
+    A job from a chat already picked, a prompt and files, in one call and
+    without a word to the host - what chatq does once it knows the chat,
+    and what the console does on Send. Returns @{ Error; Code; Job; Files;
+    Missed }: Error is the line chatq prints, and nothing is left behind.
+    Code: provider, kind, empty, info, copy. The watcher is not started.
+    -Sources: what Read-ChatqAttachSources gives, or @{ Files; Images }.
+    -MoveSources: those files are the console's staged copies; they move in.
+    -Kind new, with -Cwd and no -Row: a brand-new Claude chat in that
+    folder. Its session id is chosen now and handed to claude --session-id
+    on the first run (spike S25), so its transcript's path is known from the
+    start; -Title names it, or the prompt's first line does.
+    #>
+    param($Row, [string]$Prompt, [ValidateSet('prompt', 'continue', 'new')][string]$Kind = 'prompt', $Info,
+        [string]$Mode, [string]$Model, $NotBefore, [switch]$First, [switch]$SendNow, $Sources, [switch]$MoveSources,
+        [string]$Typed, $Resolve, [string]$Rule, [string]$Title, [object[]]$Jobs, [string]$Cwd)
+    $fail = { param($c, $t) [pscustomobject]@{ Error = $t; Code = $c; Job = $null; Files = @(); Missed = @() } }
+    if ($Kind -eq 'new') {
+        $dir = if ($Cwd) { try { [System.IO.Path]::GetFullPath($Cwd) } catch { $null } } else { $null }
+        # C:\ stays C:\ - as a working folder C: is wherever that drive last was
+        if ($dir -and $dir -ne [System.IO.Path]::GetPathRoot($dir)) { $dir = $dir.TrimEnd('\', '/') }
+        if (-not $dir -or -not (Test-Path -LiteralPath $dir -PathType Container)) { return & $fail 'info' "no such folder: $Cwd" }
+        if (-not ([string]$Prompt).Trim()) { return & $fail 'empty' 'empty prompt - nothing queued' }
+        $sid = [guid]::NewGuid().ToString()
+        $slug = Get-ChatSlug $dir
+        if (-not $Title) { $Title = Format-ChatTitle ((Get-ChatqPromptStats $Prompt).First) 60 }
+        $Row = [pscustomobject]@{
+            Provider = 'claude'; Id = $sid; Title = $Title; Group = $slug; When = $null
+            Path = (Join-Path (Join-Path (Join-Path $script:ChatClaudeHome 'projects') $slug) "$sid.jsonl")
+        }
+        $Info = @{ Cwd = $dir; Mode = 'default'; Model = $null; CutOff = $false; Sandbox = $null; Network = $false; Error = $null }
+        if (-not $Rule) { $Rule = 'new' }
+    }
+    if (-not $Row -or $Row.Provider -notin 'claude', 'codex') {
+        return & $fail 'provider' "only a Claude or Codex chat can take a prompt - nothing can resume a $(if ($Row) { $Row.Provider } else { 'missing' }) chat"
+    }
+    $hasFiles = $Sources -and (@($Sources.Files | Where-Object { $_ }).Count -or $Sources.Image -or ($Sources -is [hashtable] -and @($Sources['Images']).Count))
+    if ($Kind -eq 'continue' -and $hasFiles) { return & $fail 'kind' '-Continue sends "continue" and nothing else - give the files with -Prompt instead' }
+    if ($Kind -ne 'continue' -and -not ([string]$Prompt).Trim()) { return & $fail 'empty' 'empty prompt - nothing queued' }
+    if (-not $Info) { $Info = Get-ChatqJobInfo $Row }
+    if ($Info.Error) { return & $fail 'info' $Info.Error }
+    $slot = New-ChatqJobSlot $Row $Title $Jobs
+    # the files before the prompt: one that cannot be copied stops the job
+    # before anything of it is written
+    if ($hasFiles) {
+        try { $null = Save-ChatqAttachSources $slot.Dir $Sources -Move:$MoveSources }
+        catch { return & $fail 'copy' "a file could not be copied - nothing queued: $($_.Exception.Message)" }
+    }
+    Save-ChatqText $slot.Path ($slot.Header + $(if ($Kind -eq 'continue') { $script:ChatqContinueText } else { $Prompt }))
+    $job = New-ChatqJobRecord $slot $Row $Info -Kind $Kind -Mode $Mode -Model $Model -NotBefore $NotBefore -First:$First -SendNow:$SendNow -Typed $Typed -Resolve $Resolve -Rule $Rule -Title $Title
+    $reg = Register-ChatqJob $job
+    return [pscustomobject]@{ Error = $null; Code = $null; Job = $job; Files = $reg.Files; Missed = $reg.Missed }
+}
+
+function Get-ChatqRowById {
+    <#
+    The index's row for a chat known by its id: the console picks chats from
+    lists, so nothing fuzzy, and no Sync-ChatIndex on the window's thread.
+    A Claude chat not in the index yet - one the limit has just cut off often
+    is not - is described from its transcript: -Path, or found by -Cwd and
+    id. Hidden (sidechain) chats are not rows.
+    #>
+    param([string]$Id, [string]$Provider, [string]$Path, [string]$Cwd)
+    if (-not $Id) { return $null }
+    foreach ($r in @(Get-ChatIndex)) {
+        if ($r.Id -and $r.Id -eq $Id -and (-not $Provider -or $r.Provider -eq $Provider)) {
+            if ($r.Hidden) { return $null }
+            return $r
+        }
+    }
+    if ($Provider -and $Provider -ne 'claude') { return $null }
+    $p = if ($Path -and (Test-Path -LiteralPath $Path)) { $Path } else { Find-ChatOverlayTranscript $script:ChatClaudeHome $Cwd $Id }
+    if (-not $p) { return $null }
+    $f = Get-Item -LiteralPath $p -EA SilentlyContinue
+    if (-not $f) { return $null }
+    $rec = try { & $script:ChatProviders['claude'].Describe $f } catch { $null }
+    if (-not $rec -or $rec.Hidden) { return $null }
+    [pscustomobject]@{
+        Provider = 'claude'; Path = $f.FullName; Size = $f.Length; Mtime = $f.LastWriteTimeUtc.Ticks
+        Id = $rec.Id; Title = $rec.Title; Titled = $rec.TitleSource; Group = $rec.Group; Hidden = $false
+        When = $(if ($rec.When) { $rec.When.ToString('o') } else { $null }); First = @($rec.First); Last = @($rec.Last)
+    }
+}
+
+function Remove-ChatqJob {
+    # A job and everything it has: its file, prompt, log, and the copies of
+    # its files - the originals were never touched. Not a running one.
+    param($Job, [string]$By = 'chatqrm')
+    if ($Job.state -eq 'running') { return $false }
+    foreach ($p in @((Join-Path $script:ChatqQueueDir "$($Job.id).json"), (Get-ChatqPromptPath $Job), (Join-Path $script:ChatqLogDir "$($Job.id).jsonl"))) {
+        if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Force -EA SilentlyContinue }
+    }
+    $ad = Get-ChatqAttachDir $Job
+    if (Test-Path -LiteralPath $ad) { Remove-Item -LiteralPath $ad -Recurse -Force -EA SilentlyContinue }
+    Write-ChatqJobLog "#$($Job.seq) removed by $By (was $($Job.state)) $($script:ChatqDot) $($Job.title)"
+    return $true
+}
+
+function Stop-ChatqJobRun {
+    # A running job stopped: 'cancelling' - a cancel file its watcher reads
+    # within seconds - or 'failed', when no watcher is alive to read one:
+    # the job was left running by one that died, and there is nothing to stop.
+    # 'not running': it ended before the click, and what it ended with stands.
+    param($Job)
+    if ($Job.state -ne 'running') { return 'not running' }
+    if (Test-ChatqWatcherAlive) {
+        Save-ChatqText (Join-Path $script:ChatqQueueDir "$($Job.id).cancel") 'cancel'
+        return 'cancelling'
+    }
+    Complete-ChatqJob $Job 'failed' ([pscustomobject]@{ kind = 'failed'; reason = 'cancelled - its watcher was already gone' }) 'cancelled'
+    return 'failed'
+}
+
+function Set-ChatqJobFirst {
+    # to the front of its lane: the latest one put first goes ahead
+    param($Job)
+    Set-ChatqProp $Job 'first' (Get-ChatqStamp)
+    Save-ChatqJob $Job
+}
+
+function Reset-ChatqJob {
+    # A finished job queued again, as chatqrun <n> does. One whose prompt
+    # already reached the chat goes as "continue", never the prompt twice.
+    # Returns @{ Error; Landed }.
+    param($Job, [string]$Mode)
+    if ($Job.state -notin 'failed', 'needs-input', 'done', 'skipped') { return [pscustomobject]@{ Error = "#$($Job.seq) is $($Job.state) - nothing to requeue"; Landed = $false } }
+    if ($Mode) { Set-ChatqProp $Job 'mode' $Mode }
+    $landed = $Job.state -in 'needs-input', 'done' -or $Job.retryAs -eq 'continue' -or
+    (Test-ChatqPromptLanded $Job.path ([string](Read-ChatqPrompt $Job)) $Job.startedAt $Job.provider)
+    Set-ChatqProp $Job 'retryAs' $(if ($landed) { 'continue' } else { 'full' })
+    # asked for by you: sent even if the chat has moved on since
+    Set-ChatqProp $Job 'autoContinue' $false
+    Set-ChatqProp $Job 'deferUntil' $null
+    Set-ChatqProp $Job 'deferredSince' $null
+    # asked for by hand: the retry counts start over
+    Set-ChatqProp $Job 'retryAt' $null
+    Set-ChatqProp $Job 'noProgress' 0
+    Set-ChatqProp $Job 'netRetries' 0
+    Set-ChatqJobState $Job 'queued' 'requeued'
+    return [pscustomobject]@{ Error = $null; Landed = [bool]$landed }
+}
+
+function Get-ChatqJobFilesRefusal {
+    # why a job can take no more files, or $null
+    param($Job)
+    if ($Job.state -ne 'queued') { return "#$($Job.seq) is $($Job.state) - files added now would go nowhere" }
+    if ($Job.kind -eq 'continue') { return "#$($Job.seq) sends ""continue"" and nothing else - files would go nowhere" }
+    return $null
+}
+
+function Add-ChatqJobFiles {
+    # more files for a job still waiting - the screenshot that was forgotten.
+    # Returns @{ Error; Files }.
+    param($Job, $Sources, [switch]$Move)
+    $no = Get-ChatqJobFilesRefusal $Job
+    if ($no) { return [pscustomobject]@{ Error = $no; Files = @() } }
+    $new = try { @(Save-ChatqAttachSources (Get-ChatqAttachDir $Job) $Sources -Move:$Move) }
+    catch { return [pscustomobject]@{ Error = "a file could not be copied - nothing added: $($_.Exception.Message)"; Files = @() } }
+    Write-ChatqJobLog "#$($Job.seq) +$($new.Count) file$(if ($new.Count -ne 1) { 's' }) $($script:ChatqDot) $($Job.title)"
+    return [pscustomobject]@{ Error = $null; Files = $new }
+}
+
+function Get-ChatqLogEntries {
+    <#
+    What a run did, from data/logs/<id>.jsonl, as @{ Type; Text } in order:
+    init, denied, text (a reply), tool, result, error. -MaxBytes reads only
+    the log's tail - a long run's stream runs to megabytes, and the console
+    reads it on the window's thread. The user's own lines are skipped: they
+    are the prompt, and tool output fed back.
+    #>
+    param($Job, [int]$MaxBytes = 0)
+    $log = Join-Path $script:ChatqLogDir "$($Job.id).jsonl"
+    if (-not (Test-Path -LiteralPath $log)) { return @() }
+    $lines = if ($MaxBytes -gt 0 -and (Get-Item -LiteralPath $log).Length -gt $MaxBytes) {
+        # the first line of a tail is cut in two
+        @((Read-ChatqTail $log $MaxBytes) -split "`n" | Select-Object -Skip 1)
+    }
+    # not File.ReadLines: it shares only Read, and a running job's log is held
+    # open for writing
+    else { try { @((Read-ChatAllText $log) -split '\r?\n') } catch { @() } }
+    $d = $script:ChatqDot
+    $out = [System.Collections.Generic.List[object]]::new()
+    $add = { param($t, $x) $out.Add([pscustomobject]@{ Type = $t; Text = [string]$x }) }
+    foreach ($line in $lines) {
+        if (-not $line -or $line.Length -gt 1048576) { continue }
+        if ($line.StartsWith('{"type":"user"')) { continue }
+        $o = try { $line | ConvertFrom-Json } catch { continue }
+        switch ($o.type) {
+            'system' {
+                if ($o.subtype -eq 'init') { & $add 'init' "session $($o.session_id) $d $($o.model) $d $($o.permissionMode) $d Claude Code $($o.claude_code_version)" }
+                elseif ($o.subtype -eq 'permission_denied') { & $add 'denied' $o.tool_name }
+            }
+            'assistant' {
+                foreach ($c in @($o.message.content)) {
+                    if ($c.type -eq 'text' -and $c.text) { & $add 'text' $c.text }
+                    elseif ($c.type -eq 'tool_use') {
+                        $arg = if ($c.input.command) { $c.input.command } elseif ($c.input.file_path) { $c.input.file_path } elseif ($c.input.pattern) { $c.input.pattern } else { '' }
+                        & $add 'tool' "$($c.name) $(([string]$arg -split "`n")[0])"
+                    }
+                }
+            }
+            'result' {
+                $t = if ($o.duration_ms) { [TimeSpan]::FromMilliseconds($o.duration_ms).ToString('hh\:mm\:ss') } else { '' }
+                & $add 'result' "$($o.subtype) $d $($o.num_turns) turns $d $t"
+            }
+            'item.completed' {
+                if ($o.item.type -eq 'agent_message') { & $add 'text' $o.item.text }
+                elseif ($o.item.type -eq 'command_execution') { & $add 'tool' $o.item.command }
+            }
+            'turn.failed' { & $add 'error' $o.error.message }
+            'error' { & $add 'error' $o.message }
+        }
+    }
+    return $out.ToArray()
+}
+
+function Request-ChatqWatcher {
+    <#
+    Start-ChatqWatcher for a window's thread, which it must never put to
+    sleep. The wake goes first - 'poke' (look again) or 'now' (stop waiting),
+    one write, as Start-ChatqWatcher does - and a process is started only
+    when none holds the lock. Whether one came up is for
+    Test-ChatqWatcherRequest to say, on a later tick.
+    #>
+    param([ValidateSet('poke', 'now')][string]$Wake = 'poke')
+    $alive = [bool](Test-ChatqWatcherAlive)
+    Send-ChatqWake $Wake
+    $spawned = if ($alive) { $false } else { [bool](Start-ChatqWatcherProcess) }
+    return [pscustomobject]@{ Alive = $alive; Spawned = $spawned; Respawned = $false; At = (Get-Date) }
+}
+
+function Test-ChatqWatcherRequest {
+    <#
+    What came of a Request-ChatqWatcher: 'up' once a watcher holds the lock,
+    'waiting' for up to 10 s, then 'failed'. A watcher running when poked may
+    have been on its way out - it had found the queue empty and not yet let
+    go - so one gone with jobs still queued is started again, once. With
+    nothing queued a watcher ends at once, so not seeing it is no failure.
+    #>
+    param($Request, [bool]$Queued)
+    if (-not $Request) { return 'none' }
+    if (Test-ChatqWatcherAlive) { return 'up' }
+    if (-not $Queued) { return 'up' }
+    if ($Request.Alive -and -not $Request.Respawned) {
+        $Request.Respawned = $true
+        $Request.Spawned = [bool](Start-ChatqWatcherProcess)
+        $Request.At = Get-Date
+        return 'waiting'
+    }
+    if (((Get-Date) - $Request.At).TotalSeconds -lt 10) { return 'waiting' }
+    return 'failed'
+}
+
+#endregion
+
 function chatq {
     <#
     .SYNOPSIS
@@ -6575,13 +7149,14 @@ function chatq {
         # forgotten. Only while it waits, and only files - text belongs in the
         # prompt, which chatq 3 opens.
         if ($job -and ($Attach -or $Paste)) {
-            if ($job.state -ne 'queued') { Write-Host "  #$($job.seq) is $($job.state) - files added now would go nowhere" -ForegroundColor Yellow; return }
-            if ($job.kind -eq 'continue') { Write-Host "  #$($job.seq) sends ""continue"" and nothing else - files would go nowhere" -ForegroundColor Yellow; return }
+            $no = Get-ChatqJobFilesRefusal $job
+            if ($no) { Write-Host "  $no" -ForegroundColor Yellow; return }
             $got = Read-ChatqAttachSources $Attach -Paste:$Paste
+            foreach ($s in @($got.Skipped)) { Write-Host "     skipped $s - only files go, not folders" -ForegroundColor DarkGray }
             if ($got.Error) { Write-Host "  $($got.Error) - nothing added" -ForegroundColor Yellow; return }
             if ($got.Text) { Write-Host "  the clipboard holds text, not files - chatq $($job.seq) opens the prompt to paste it in" -ForegroundColor Yellow; return }
-            $new = try { @(Save-ChatqAttachSources (Get-ChatqAttachDir $job) $got) } catch { Write-Host "  a file could not be copied - nothing added: $($_.Exception.Message)" -ForegroundColor Yellow; return }
-            Write-ChatqJobLog "#$($job.seq) +$($new.Count) file$(if ($new.Count -ne 1) { 's' }) $($script:ChatqDot) $($job.title)"
+            $add = Add-ChatqJobFiles $job $got
+            if ($add.Error) { Write-Host "  $($add.Error)" -ForegroundColor Yellow; return }
             Write-Host "  #$($job.seq) '$($job.title)' now has $(Format-ChatqAttachSummary @(Get-ChatqAttachments $job))" -ForegroundColor Green
             Write-ChatqBoard
             return
@@ -6608,6 +7183,7 @@ function chatq {
     $got = $null
     if ($Attach -or $Paste) {
         $got = Read-ChatqAttachSources $Attach -Paste:$Paste
+        foreach ($s in @($got.Skipped)) { Write-Host "     skipped $s - only files go, not folders" -ForegroundColor DarkGray }
         if ($got.Error) { Write-Host "  $($got.Error) - nothing queued" -ForegroundColor Yellow; return }
     }
     $given = $PSBoundParameters.ContainsKey('Prompt')
@@ -6639,43 +7215,30 @@ function chatq {
     }
     if ($WhatIf) { Write-Host '     -WhatIf: nothing queued' -ForegroundColor DarkGray; return }
 
-    New-ChatqDir $script:ChatqQueueDir
-    $seq = New-ChatqSeq
-    # no run of dashes survives into the comment, so no title can close it early
-    $safeTitle = ([string]$res.Row.Title) -replace '-{2,}', '-'
-    $header = "<!-- chatq: prompt for '$safeTitle' ($($res.Row.Provider)). Everything after this comment is sent as it is when the limit resets. Save and close the tab to queue it; leave it empty to cancel. -->`n`n"
-    $file = "#$seq $(Get-ChatqSafeName $res.Row.Title).md"
-    $path = Join-Path $script:ChatqQueueDir $file
-    $kind = if ($Continue) { 'continue' } else { 'prompt' }
-    $jobId = '{0}-{1}' -f (Get-Date).ToString('yyyyMMdd-HHmmss'), $res.Row.Id.Substring(0, [Math]::Min(4, $res.Row.Id.Length))
-    $dir = Join-Path $script:ChatqQueueDir $jobId
-    # The files go in before any prompt is written: a copy that fails - one
-    # moved or locked since it was checked - then stops the job before a word
-    # of it has been typed into the editor, rather than after.
-    if ($got) {
-        try { $null = Save-ChatqAttachSources $dir $got }
-        catch { Write-Host "  a file could not be copied - nothing queued: $($_.Exception.Message)" -ForegroundColor Yellow; return }
-    }
-    if ($Continue) {
-        Save-ChatqText $path ($header + $script:ChatqContinueText)
-    }
-    elseif ($given) {
-        if (-not $Prompt.Trim()) {
-            Remove-Item -LiteralPath $dir -Recurse -Force -EA SilentlyContinue
-            Write-Host '  empty prompt - nothing queued' -ForegroundColor Yellow
-            return
-        }
-        Save-ChatqText $path ($header + $Prompt)
+    $how = @{ Mode = $Mode; Model = $Model; NotBefore = $notBefore; First = $First; Typed = $t }
+    if ($Continue -or $given) {
+        $made = New-ChatqJob -Row $res.Row -Prompt $Prompt -Kind $(if ($Continue) { 'continue' } else { 'prompt' }) -Info $info -Sources $got -Resolve $res @how
+        if ($made.Error) { Write-Host "  $($made.Error)" -ForegroundColor Yellow; return }
+        $job = $made.Job
+        $missed = $made.Missed
     }
     else {
-        Save-ChatqText $path $header
+        # The editor. The files go in before the tab opens: a copy that fails -
+        # one moved or locked since it was checked - then stops the job before
+        # a word of it has been typed, rather than after.
+        $slot = New-ChatqJobSlot $res.Row
+        if ($got) {
+            try { $null = Save-ChatqAttachSources $slot.Dir $got }
+            catch { Write-Host "  a file could not be copied - nothing queued: $($_.Exception.Message)" -ForegroundColor Yellow; return }
+        }
+        Save-ChatqText $slot.Path $slot.Header
         Write-Host '     write the prompt in the editor tab, then save and close it (empty = cancel)' -ForegroundColor DarkGray
         Write-Host '     Ctrl+V there pastes a screenshot into it, and it goes with the prompt' -ForegroundColor DarkGray
-        Invoke-ChatqEditor $path
-        $text = Remove-ChatqPromptHeader ([System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8))
+        Invoke-ChatqEditor $slot.Path
+        $text = Remove-ChatqPromptHeader ([System.IO.File]::ReadAllText($slot.Path, [System.Text.Encoding]::UTF8))
         if (-not $text) {
-            Remove-Item -LiteralPath $path -Force -EA SilentlyContinue
-            Remove-Item -LiteralPath $dir -Recurse -Force -EA SilentlyContinue
+            Remove-Item -LiteralPath $slot.Path -Force -EA SilentlyContinue
+            Remove-Item -LiteralPath $slot.Dir -Recurse -Force -EA SilentlyContinue
             Write-Host '  cancelled - nothing queued' -ForegroundColor DarkGray
             return
         }
@@ -6688,69 +7251,20 @@ function chatq {
                     Write-ChatqPick $res2 '  re-picked with the prompt ->'
                     Write-ChatqJobInfo $info2 $Mode -Continue:$Continue $res2.Row.Provider
                     $res = $res2; $info = $info2
-                    $file = "#$seq $(Get-ChatqSafeName $res.Row.Title).md"
-                    $new = Join-Path $script:ChatqQueueDir $file
-                    Move-Item -LiteralPath $path -Destination $new -Force
-                    $path = $new
+                    $slot.File = "#$($slot.Seq) $(Get-ChatqSafeName $res.Row.Title).md"
+                    $new = Join-Path $script:ChatqQueueDir $slot.File
+                    Move-Item -LiteralPath $slot.Path -Destination $new -Force
+                    $slot.Path = $new
                 }
             }
         }
+        $job = New-ChatqJobRecord $slot $res.Row $info -Kind 'prompt' -Resolve $res @how
+        $missed = (Register-ChatqJob $job).Missed
     }
-
-    $row = $res.Row
-    $job = [pscustomobject][ordered]@{
-        v = 1
-        # set before the prompt, when the files went in - the chat a re-pick
-        # lands on does not rename the folder they are in
-        id = $jobId
-        seq = $seq
-        provider = $row.Provider
-        sessionId = $row.Id
-        title = $row.Title
-        group = $row.Group
-        path = $row.Path
-        cwd = $info.Cwd
-        # only when the user set one: pointing CLAUDE_CONFIG_DIR at the default
-        # makes Claude look for .claude.json inside it, where it never lives
-        home = if ($row.Provider -eq 'codex') { $env:CODEX_HOME } else { $env:CLAUDE_CONFIG_DIR }
-        chatWhen = $row.When
-        typed = $t
-        rule = $res.Rule
-        score = $res.Score
-        runnerUp = if ($res.RunnerUp) { $res.RunnerUp.Title } else { $null }
-        kind = $kind
-        promptFile = $file
-        mode = if ($Mode) { $Mode } else { $null }
-        modeAtQueue = $info.Mode
-        # the chat's own model - what the probe asks with - and, apart from it,
-        # the one -Model asked this run to use
-        model = $info.Model
-        runModel = if ($Model) { $Model.Trim() } else { $null }
-        first = if ($First) { Get-ChatqStamp } else { $null }
-        sandbox = $info.Sandbox
-        network = $info.Network
-        notBefore = if ($notBefore) { $notBefore.ToUniversalTime().ToString('o') } else { $null }
-        state = 'queued'
-        attempts = 0
-        retryAs = 'full'
-        # set when the watcher itself turned the job into a "continue" (limit or
-        # 529 mid-run); only then is it dropped if the chat moved on meanwhile
-        autoContinue = $false
-        deferUntil = $null
-        deferredSince = $null
-        busyAlerted = $false
-        createdAt = Get-ChatqStamp
-        startedAt = $null
-        endedAt = $null
-        runnerPid = $null
-        result = $null
-        history = @([pscustomobject]@{ at = (Get-ChatqStamp); state = 'queued'; why = 'added' })
-    }
-    Save-ChatqJob $job
-    # and what the prompt links to in data/queue: an image pasted in the tab
-    foreach ($x in @(Sync-ChatqAttachments $job)) { Write-Host "     could not take in $x - it goes without it" -ForegroundColor Yellow }
+    $seq = $job.seq
+    # what the prompt links to in data/queue: an image pasted in the tab
+    foreach ($x in @($missed)) { Write-Host "     could not take in $x - it goes without it" -ForegroundColor Yellow }
     $files = @(Get-ChatqAttachments $job)
-    Write-ChatqJobLog "#$seq queued ($kind$(if ($files) { ", $($files.Count) file$(if ($files.Count -ne 1) { 's' })" })) $($script:ChatqDot) $($row.Title)"
 
     $jobs = @(Get-ChatqJobs)
     # the watcher's own view if it is running - it knows about an overload -
@@ -6806,25 +7320,17 @@ function chatqrm {
     foreach ($j in $targets) {
         if ($j.state -eq 'running') {
             if (-not $Force) { Write-Host "  #$($j.seq) is running - chatqrm $($j.seq) -Force cancels it" -ForegroundColor Yellow; continue }
-            # only a live watcher reads a cancel file; a 'running' job with none
-            # is left over from one that died - there is nothing to stop
-            if (Test-ChatqWatcherAlive) {
-                Save-ChatqText (Join-Path $script:ChatqQueueDir "$($j.id).cancel") 'cancel'
+            $stop = Stop-ChatqJobRun $j
+            if ($stop -eq 'cancelling') {
                 Write-Host "  #$($j.seq) cancelling - stopped within a few seconds" -ForegroundColor DarkGray
                 continue
             }
-            Complete-ChatqJob $j 'failed' ([pscustomobject]@{ kind = 'failed'; reason = 'cancelled - its watcher was already gone' }) 'cancelled'
+            if ($stop -eq 'not running') { Write-Host "  #$($j.seq) had already ended - chatqrm $($j.seq) removes it" -ForegroundColor DarkGray; continue }
             Write-Host "  #$($j.seq) was left running by a watcher that stopped - marked failed" -ForegroundColor DarkGray
             Write-Host "    chatqrm $($j.seq) removes it, chatqrun $($j.seq) sends it again" -ForegroundColor DarkGray
             continue
         }
-        foreach ($p in @((Join-Path $script:ChatqQueueDir "$($j.id).json"), (Get-ChatqPromptPath $j), (Join-Path $script:ChatqLogDir "$($j.id).jsonl"))) {
-            if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Force -EA SilentlyContinue }
-        }
-        # its files, which are copies - the originals were never touched
-        $ad = Get-ChatqAttachDir $j
-        if (Test-Path -LiteralPath $ad) { Remove-Item -LiteralPath $ad -Recurse -Force -EA SilentlyContinue }
-        Write-ChatqJobLog "#$($j.seq) removed by chatqrm (was $($j.state)) $($script:ChatqDot) $($j.title)"
+        $null = Remove-ChatqJob $j
         Write-Host "  removed #$($j.seq) '$($j.title)'" -ForegroundColor DarkGray
     }
     Write-ChatqBoard
@@ -6865,29 +7371,18 @@ function chatqrun {
     if ($Ref) {
         $j = Find-ChatqJob $Ref
         if (-not $j) { Write-Host "  no job $Ref" -ForegroundColor Yellow; return }
-        if ($First) { Set-ChatqProp $j 'first' (Get-ChatqStamp) }
         if ($First -and $j.state -eq 'queued') {
-            Save-ChatqJob $j
+            Set-ChatqJobFirst $j
             Write-Host "  #$($j.seq) moved to the front" -ForegroundColor Green
             Write-ChatqBoard
             Write-ChatqList
             return
         }
-        if ($j.state -notin 'failed', 'needs-input', 'done', 'skipped') { Write-Host "  #$($j.seq) is $($j.state) - nothing to requeue" -ForegroundColor DarkGray; return }
-        if ($Mode) { Set-ChatqProp $j 'mode' $Mode }
-        $landed = $j.state -in 'needs-input', 'done' -or $j.retryAs -eq 'continue' -or
-        (Test-ChatqPromptLanded $j.path ([string](Read-ChatqPrompt $j)) $j.startedAt $j.provider)
-        Set-ChatqProp $j 'retryAs' $(if ($landed) { 'continue' } else { 'full' })
-        # asked for by you: sent even if the chat has moved on since
-        Set-ChatqProp $j 'autoContinue' $false
-        Set-ChatqProp $j 'deferUntil' $null
-        Set-ChatqProp $j 'deferredSince' $null
-        # asked for by hand: the retry counts start over
-        Set-ChatqProp $j 'retryAt' $null
-        Set-ChatqProp $j 'noProgress' 0
-        Set-ChatqProp $j 'netRetries' 0
-        Set-ChatqJobState $j 'queued' 'requeued'
-        $how = if ($landed) { 'as "continue" - the prompt already reached the chat' } else { 'with its prompt' }
+        # a finished one put first is requeued there
+        if ($First -and $j.state -in 'failed', 'needs-input', 'done', 'skipped') { Set-ChatqProp $j 'first' (Get-ChatqStamp) }
+        $again = Reset-ChatqJob $j $Mode
+        if ($again.Error) { Write-Host "  $($again.Error)" -ForegroundColor DarkGray; return }
+        $how = if ($again.Landed) { 'as "continue" - the prompt already reached the chat' } else { 'with its prompt' }
         Write-Host "  #$($j.seq) queued again, $how" -ForegroundColor Green
     }
     if ($Foreground) {
@@ -6923,36 +7418,14 @@ function chatqlog {
     if (-not (Test-Path -LiteralPath $log)) { Write-Host '  no run yet'; Write-Host ''; return }
     if ($Raw) { Get-Content -LiteralPath $log -Encoding UTF8; return }
     Write-Host ''
-    foreach ($line in [System.IO.File]::ReadLines($log, [System.Text.Encoding]::UTF8)) {
-        if ($line.Length -gt 1048576) { continue }
-        if ($line.StartsWith('{"type":"user"')) { continue }
-        $o = try { $line | ConvertFrom-Json } catch { continue }
-        switch ($o.type) {
-            'system' {
-                if ($o.subtype -eq 'init') { Write-Host "  session $($o.session_id) $($script:ChatqDot) $($o.model) $($script:ChatqDot) $($o.permissionMode) $($script:ChatqDot) Claude Code $($o.claude_code_version)" -ForegroundColor DarkGray }
-                elseif ($o.subtype -eq 'permission_denied') { Write-Host "  ! denied $($o.tool_name)" -ForegroundColor Yellow }
-            }
-            'assistant' {
-                foreach ($c in @($o.message.content)) {
-                    if ($c.type -eq 'text' -and $c.text) { Write-Host ''; Write-Host $c.text }
-                    elseif ($c.type -eq 'tool_use') {
-                        $arg = if ($c.input.command) { $c.input.command } elseif ($c.input.file_path) { $c.input.file_path } elseif ($c.input.pattern) { $c.input.pattern } else { '' }
-                        $arg = ([string]$arg -split "`n")[0]
-                        Write-Host "  > $($c.name) $arg" -ForegroundColor DarkGray
-                    }
-                }
-            }
-            'result' {
-                $d = if ($o.duration_ms) { [TimeSpan]::FromMilliseconds($o.duration_ms).ToString('hh\:mm\:ss') } else { '' }
-                Write-Host ''
-                Write-Host "  = $($o.subtype) $($script:ChatqDot) $($o.num_turns) turns $($script:ChatqDot) $d" -ForegroundColor DarkGray
-            }
-            'item.completed' {
-                if ($o.item.type -eq 'agent_message') { Write-Host ''; Write-Host $o.item.text }
-                elseif ($o.item.type -eq 'command_execution') { Write-Host "  > $($o.item.command)" -ForegroundColor DarkGray }
-            }
-            'turn.failed' { Write-Host "  ! $($o.error.message)" -ForegroundColor Yellow }
-            'error' { Write-Host "  ! $($o.message)" -ForegroundColor Yellow }
+    foreach ($e in @(Get-ChatqLogEntries $j)) {
+        switch ($e.Type) {
+            'init' { Write-Host "  $($e.Text)" -ForegroundColor DarkGray }
+            'denied' { Write-Host "  ! denied $($e.Text)" -ForegroundColor Yellow }
+            'text' { Write-Host ''; Write-Host $e.Text }
+            'tool' { Write-Host "  > $($e.Text)" -ForegroundColor DarkGray }
+            'result' { Write-Host ''; Write-Host "  = $($e.Text)" -ForegroundColor DarkGray }
+            'error' { Write-Host "  ! $($e.Text)" -ForegroundColor Yellow }
         }
     }
     Write-Host ''
@@ -7094,6 +7567,7 @@ function Write-ChatqCheatSheet {
     Write-Host '  chatqlog <n>                what a run did' -ForegroundColor Cyan
     Write-Host '  chatqnotify                 alerts: toast here, Join or ntfy on the phone' -ForegroundColor Cyan
     Write-Host '  chatoverlay                 every open chat, the queue and usage, always on top' -ForegroundColor Cyan
+    Write-Host '  chatconsole                 all of the above in a window: write, drop files, send now' -ForegroundColor Cyan
     Write-Host ''
     Write-Host '  -WhatIf shows the pick only   -Mode auto|acceptEdits|...   -At 13:00 / -In 2h' -ForegroundColor DarkGray
     Write-Host '  -Attach a.png, spec.pdf / -Paste   send files, a screenshot or the clipboard with it' -ForegroundColor DarkGray
@@ -7165,6 +7639,8 @@ function Get-ChatOverlayConfig {
         theme        = $(if ($theme -in 'dark', 'light', 'system') { $theme } else { 'dark' })
         prompts      = [bool](& $get 'prompts' $true)
         hotkey       = [string](& $get 'hotkey' 'Ctrl+Alt+Shift+O')
+        # the one that opens the console
+        consoleHotkey = [string](& $get 'consoleHotkey' 'Ctrl+Alt+Shift+Q')
         autoStart    = [bool](& $get 'autoStart' $false)
         # a Mac keeps the login in the keychain, whose first read by another
         # program puts up a password prompt - so there only when asked for
@@ -7174,6 +7650,8 @@ function Get-ChatOverlayConfig {
         usageView    = $(if ($view -in 'lines', 'bars') { $view } else { 'lines' })
         # Copilot's monthly quota through the GitHub CLI, where there is one
         copilotUsage = [bool](& $get 'copilotUsage' $true)
+        # chats the limit or a 529 stopped, marked, and a row for one not open
+        cutOff       = [bool](& $get 'cutOff' $true)
     }
 }
 
@@ -8070,6 +8548,18 @@ function Update-ChatOverlayText {
     }
 }
 
+function Format-ChatOverlayCutOff {
+    # what a chat the limit or a 529 stopped is waiting on
+    param($CutOff, [datetime]$Now = (Get-Date))
+    if ($CutOff.Why -eq 'overloaded') { return '529 - waits for Claude' }
+    $r = $CutOff.ResetsAt
+    if ($r -and $r -gt $Now) {
+        $at = if ($r.Date -eq $Now.Date) { $r.ToString('HH:mm', [System.Globalization.CultureInfo]::InvariantCulture) } else { $r.ToString('ddd HH:mm', [System.Globalization.CultureInfo]::InvariantCulture) }
+        return "cut off - resets $at"
+    }
+    return 'cut off - limit over'
+}
+
 function Get-ChatOverlayStateText {
     # the words at the right of a row: what it is doing, a queued prompt it
     # carries, and for how long
@@ -8080,6 +8570,8 @@ function Get-ChatOverlayStateText {
         'busy' { 'working' }
         'running' { 'running' }
         'idle' { 'idle' }
+        # the reset, or what it waits on, is what it says - not how long ago
+        'cutoff' { return [string]$Row.detail }
         default { [string]$Row.status }
     }
     $badge = ''
@@ -8111,14 +8603,18 @@ function Get-ChatOverlayRows {
     row, with the more urgent of their states. A prompt queued for a chat that
     is open rides on that chat's row; any other job gets a row of its own.
     Pure - everything comes in as parameters - so the tests drive it directly.
-      rank 0  waiting on you, or a job that needs input   oldest first
-      rank 1  working                                      newest first
-      rank 2  a job running                                newest first
-      rank 3  idle                                         newest first
-      rank 4  queued                                       in queue order
+      rank 0    waiting on you, or a job that needs input  oldest first
+      rank 0.5  cut off by the limit or a 529              newest first
+      rank 1    working                                    newest first
+      rank 2    a job running                              newest first
+      rank 3    idle                                       newest first
+      rank 4    queued                                     in queue order
+    -CutOff: Get-ChatqCutOffChats' rows. An open, idle chat among them takes
+    the cut-off state; one not open gets a row of its own; one a job is
+    queued or running for leaves it to the job.
     #>
-    param([object[]]$Sessions, [hashtable]$Texts, [object[]]$Jobs, [hashtable]$Eta, [datetime]$Now = (Get-Date))
-    $rankOf = @{ 'waiting' = 0; 'needs-input' = 0; 'busy' = 1; 'running' = 2; 'idle' = 3; 'queued' = 4 }
+    param([object[]]$Sessions, [hashtable]$Texts, [object[]]$Jobs, [hashtable]$Eta, [datetime]$Now = (Get-Date), [object[]]$CutOff)
+    $rankOf = @{ 'waiting' = 0; 'needs-input' = 0; 'cutoff' = 0.5; 'busy' = 1; 'running' = 2; 'idle' = 3; 'queued' = 4 }
     $ms = { param($v) ConvertTo-ChatOverlayMs $v }
     $nowMs = ConvertTo-ChatOverlayMs $Now
     $bySid = [ordered]@{}
@@ -8158,6 +8654,25 @@ function Get-ChatOverlayRows {
     }
     $rows = [System.Collections.Generic.List[object]]::new()
     foreach ($r in $bySid.Values) { $rows.Add($r) }
+    $taken = @{}
+    foreach ($jw in @($Jobs)) { if ($jw -and $jw.Job.sessionId -and $jw.Job.state -in 'queued', 'running') { $taken[[string]$jw.Job.sessionId] = $true } }
+    foreach ($c in @($CutOff)) {
+        if (-not $c -or -not $c.Id -or $taken[[string]$c.Id]) { continue }
+        $words = Format-ChatOverlayCutOff $c $Now
+        $open = $bySid[[string]$c.Id]
+        if ($open) {
+            # an open chat that is working again has moved on
+            if ($open.status -eq 'idle') { $open.status = 'cutoff'; $open.chat = 'cutoff'; $open.rank = $rankOf['cutoff']; $open.detail = $words }
+            continue
+        }
+        $rows.Add([pscustomobject]@{
+                key = "c:$($c.Id)"; kind = 'cutoff'; provider = 'claude'; status = 'cutoff'; chat = 'cutoff'; rank = $rankOf['cutoff']
+                project = $(if ($c.Cwd) { Split-Path ([string]$c.Cwd).TrimEnd('\', '/') -Leaf } else { '' })
+                title = (Format-ChatTitle ([string]$c.Title) 80); prompt = $null; promptKind = $null
+                detail = $words; since = $(if ($c.At) { & $ms $c.At } else { $null }); sessionId = [string]$c.Id; pids = @(); cwd = [string]$c.Cwd
+                job = $null; order = 0; stateText = ''; path = [string]$c.Path
+            })
+    }
     $order = 0
     foreach ($jw in @($Jobs)) {
         if (-not $jw) { continue }
@@ -8229,6 +8744,7 @@ function New-ChatOverlayContext {
         Cache = $null; CacheStamp = $null; CacheAt = $never
         Codex = $null; CodexFiles = @(); CodexListAt = $never; CodexStamp = $null; CodexAt = $never
         Commands = [System.Collections.Generic.List[object]]::new(); CommandId = 0
+        CutOff = @(); CutCache = @{}; CutAt = $never; CutSig = $null
         ViewSig = $null; SavedSig = $null; SavedAt = $never
     }
 }
@@ -8337,13 +8853,36 @@ function Invoke-ChatOverlayCycle {
     try { $usage = @(Update-ChatOverlayUsage $Ctx $busy -WaitMs $(if ($Sync) { 15000 } else { 0 }) -Blocks $Ctx.Blocks) }
     catch { $err = "usage: $($_.Exception.Message)" }
 
-    $rows = @(Get-ChatOverlayRows -Sessions $live -Texts $Ctx.Text -Jobs $Ctx.Jobs -Eta $eta -Now $now)
+    # Chats the limit or a 529 cut off, a minute apart, reading only the
+    # transcripts that moved since - and at once when a job came or went or
+    # a chat started or stopped working: a continue that ran in under a
+    # minute would otherwise bring its orange row back until the next look.
+    $cutSig = (@($live | ForEach-Object { "$($_.SessionId)=$($_.Status)" } | Sort-Object) -join ',') + "|$($Ctx.JobsSig)"
+    if ($cutSig -ne $Ctx.CutSig) { $Ctx.CutSig = $cutSig; $Ctx.CutAt = [datetime]::MinValue }
+    if (-not $Ctx.Config.cutOff) { $Ctx.CutOff = @() }
+    elseif (($now - $Ctx.CutAt).TotalSeconds -ge 60) {
+        $Ctx.CutAt = $now
+        $t0 = $sw.ElapsedMilliseconds
+        # a chat at work is not cut off, and its transcript moves all the time
+        $working = @($live | Where-Object { $_.Status -in 'busy', 'waiting' } | ForEach-Object { [string]$_.SessionId })
+        try {
+            # a week back, for a weekly limit that is still ahead; otherwise
+            # only what the last 12 hours cut off
+            $found = @(Get-ChatqCutOffChats @() -Hours 168 -Cache $Ctx.CutCache -Skip $working)
+            $Ctx.CutOff = @($found | Where-Object { ($_.ResetsAt -and $_.ResetsAt -gt $now) -or ($_.At -and $_.At -gt $now.AddHours(-12)) })
+        }
+        catch { $err = "cut off: $($_.Exception.Message)" }
+        $took = $sw.ElapsedMilliseconds - $t0
+        if ($took -gt 250) { Write-ChatOverlayLog "the cut-off scan took $took ms" }
+    }
+    $rows = @(Get-ChatOverlayRows -Sessions $live -Texts $Ctx.Text -Jobs $Ctx.Jobs -Eta $eta -Now $now -CutOff $Ctx.CutOff)
     $chats = @($rows | Where-Object { $_.kind -eq 'session' } | ForEach-Object { $_.chat })
     $counts = [pscustomobject]@{
         waiting = @($chats | Where-Object { $_ -eq 'waiting' }).Count; busy = @($chats | Where-Object { $_ -eq 'busy' }).Count
         idle = @($chats | Where-Object { $_ -eq 'idle' }).Count
         running = @($jobs | Where-Object { $_.state -eq 'running' }).Count; queued = $queued.Count
         needsInput = @($jobs | Where-Object { $_.state -eq 'needs-input' }).Count
+        cutOff = @($rows | Where-Object { $_.status -eq 'cutoff' }).Count
     }
     $next = $null
     foreach ($j in $jobs) { if ($j.state -eq 'queued' -and $eta[$j.id]) { $next = [string]$eta[$j.id]; break } }
@@ -8461,6 +9000,7 @@ function Format-ChatOverlayTooltip {
     $bits = @()
     $need = [int]$c.waiting + [int]$c.needsInput
     if ($need) { $bits += "$need need you" }
+    if ($c -and $c.PSObject.Properties['cutOff'] -and [int]$c.cutOff) { $bits += "$($c.cutOff) cut off" }
     if ($c.busy) { $bits += "$($c.busy) working" }
     if ($c.running) { $bits += "$($c.running) running" }
     if ($c.idle) { $bits += "$($c.idle) idle" }
@@ -8517,7 +9057,7 @@ function Write-ChatOverlayPrint {
     $rows = @($snap.rows)
     if (-not $rows) { Write-Host '  no chats open' -ForegroundColor DarkGray }
     $width = Get-ChatqWidth
-    $color = @{ waiting = 'Yellow'; 'needs-input' = 'Yellow'; busy = 'Green'; running = 'Blue'; idle = 'DarkGray'; queued = 'Magenta' }
+    $color = @{ waiting = 'Yellow'; 'needs-input' = 'Yellow'; cutoff = 'DarkYellow'; busy = 'Green'; running = 'Blue'; idle = 'DarkGray'; queued = 'Magenta' }
     foreach ($r in $rows) {
         $right = [string]$r.stateText
         $proj = if ($r.project) { "$($r.project)  " } else { '' }
@@ -8585,6 +9125,10 @@ public static class ChatOverlayNative {
     public static void MoveTo(IntPtr h, int x, int y) {
         SetWindowPos(h, IntPtr.Zero, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
     }
+    // where and how big, in the pixels of the screen it lands on
+    public static void Place(IntPtr h, int x, int y, int w, int hgt) {
+        SetWindowPos(h, IntPtr.Zero, x, y, w, hgt, SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+    }
     public static int[] GetRect(IntPtr h) {
         RECT r;
         if (!GetWindowRect(h, out r)) { return null; }
@@ -8594,6 +9138,11 @@ public static class ChatOverlayNative {
     public static bool SetDpiAware() {
         try { if (SetProcessDpiAwarenessContext(new IntPtr(-4))) { return true; } } catch (EntryPointNotFoundException) { }
         try { return SetProcessDPIAware(); } catch (EntryPointNotFoundException) { return false; }
+    }
+    // a file dropped on the console, copied off the window's thread: a large
+    // one would otherwise freeze the panel and the console both
+    public static System.Threading.Tasks.Task CopyFileAsync(string from, string to) {
+        return System.Threading.Tasks.Task.Run(() => System.IO.File.Copy(from, to, true));
     }
 }
 
@@ -8628,16 +9177,18 @@ public class ChatOverlayHotkey : NativeWindow, IDisposable {
 # box, which sit over the rows; accent marks the choice made.
 $script:ChatOverlayPalettes = @{
     dark  = @{
-        waiting = '#F5B942'; 'needs-input' = '#F5B942'; busy = '#4CC38A'; running = '#4EA1FF'; idle = '#80868F'; queued = '#B48CFF'
+        waiting = '#F5B942'; 'needs-input' = '#F5B942'; busy = '#4CC38A'; running = '#4EA1FF'; idle = '#80868F'; queued = '#B48CFF'; cutoff = '#FF8A4C'
         text = '#E8EAED'; dim = '#9AA0A6'; faint = '#6B7079'; project = '#8AB8FF'; frame = '#EB1B1F24'; edge = '#2EFFFFFF'
         unlocked = '#4EA1FF'; track = '#26FFFFFF'; normal = '#5AA9E6'; warning = '#F5B942'; critical = '#FF5C5C'
         warn = '#F5B942'; error = '#FF7B72'; panel = '#F7262B33'; hover = '#33FFFFFF'; accent = '#4EA1FF'; onAccent = '#FFFFFF'
+        window = '#FF1E2227'; input = '#FF15181C'; inputEdge = '#3DFFFFFF'; select = '#384EA1FF'
     }
     light = @{
-        waiting = '#C98A00'; 'needs-input' = '#C98A00'; busy = '#1A8F4C'; running = '#1F6FEB'; idle = '#8C959F'; queued = '#8250DF'
+        waiting = '#C98A00'; 'needs-input' = '#C98A00'; busy = '#1A8F4C'; running = '#1F6FEB'; idle = '#8C959F'; queued = '#8250DF'; cutoff = '#BC4C00'
         text = '#1F2328'; dim = '#57606A'; faint = '#8C959F'; project = '#0969DA'; frame = '#F2FAFAFB'; edge = '#26000000'
         unlocked = '#0969DA'; track = '#1F000000'; normal = '#0969DA'; warning = '#BF8700'; critical = '#CF222E'
         warn = '#9A6700'; error = '#CF222E'; panel = '#FAFFFFFF'; hover = '#1A000000'; accent = '#0969DA'; onAccent = '#FFFFFF'
+        window = '#FFF6F8FA'; input = '#FFFFFFFF'; inputEdge = '#40000000'; select = '#290969DA'
     }
 }
 $script:ChatOverlayColors = $script:ChatOverlayPalettes.dark
@@ -8786,6 +9337,8 @@ function Update-ChatOverlayTheme {
     $H.Frame.Background = Get-ChatOverlayBrush 'frame'
     $H.Frame.BorderBrush = Get-ChatOverlayBrush $(if ($H.Locked) { 'edge' } else { 'unlocked' })
     New-ChatOverlayControls $H
+    # the console too, keeping what is typed in it
+    if ($H.Con) { Initialize-ChatConsoleContent $H }
     $H.ViewKey = $null
     if ($H.Snap) {
         Update-ChatOverlayView $H $H.Snap
@@ -8844,6 +9397,8 @@ function New-ChatOverlayControls {
     $again = & $geo 'M8.6,3.2 A4,4 0 1 0 9,6.5 M8.8,0.6 L8.7,3.4 L5.9,3.1'
     # an arrow down onto a line: into the tray
     $tray = & $geo 'M4.5,0.5 L4.5,6 M2,3.6 L4.5,6 L7,3.6 M0.5,9 L8.5,9'
+    # a speech bubble: the console, to write to a chat
+    $bubble = & $geo 'M1,1 L10,1 L10,7 L4.5,7 L2,9.5 L2,7 L1,7 Z'
     $cross = & $geo 'M0.5,0.5 L8.5,8.5 M8.5,0.5 L0.5,8.5'
 
     $grip = New-ChatOverlayIcon 'Drag to move' $dots -Fill
@@ -8860,6 +9415,8 @@ function New-ChatOverlayControls {
     $againB.Child.RenderTransform = [System.Windows.Media.RotateTransform]::new(0, 5.2, 5.3)
     $H.Spin = $againB.Child.RenderTransform
     $H.Spinning = $false
+    $conB = New-ChatOverlayIcon 'Open the console - write to a chat, queue, continue' $bubble -Stroke
+    $conB.add_MouseLeftButtonUp({ param($s, $e) $e.Handled = $true; Invoke-ChatOverlayVerb 'console' })
     $gear = New-ChatOverlayIcon 'Opacity and theme' $sliders -Stroke -Fill
     $gear.add_MouseLeftButtonUp({ param($s, $e) $e.Handled = $true; Set-ChatOverlaySettingsOpen $script:ChatOverlayHost (-not $script:ChatOverlayHost.SettingsOpen) })
     $trayB = New-ChatOverlayIcon 'Hide to the tray - click the tray dot to show it' $tray -Stroke
@@ -8868,7 +9425,7 @@ function New-ChatOverlayControls {
     $close.add_MouseLeftButtonUp({ param($s, $e) $e.Handled = $true; Invoke-ChatOverlayVerb 'stop' })
     $line = [System.Windows.Controls.StackPanel]::new()
     $line.Orientation = [System.Windows.Controls.Orientation]::Horizontal
-    $H.CtlButtons = @($grip, $foldB, $againB, $gear, $trayB, $close)
+    $H.CtlButtons = @($grip, $foldB, $againB, $conB, $gear, $trayB, $close)
     foreach ($b in $H.CtlButtons) { [void]$line.Children.Add($b) }
     $H.CtlLine = $line
     $bar = [System.Windows.Controls.Border]::new()
@@ -9464,12 +10021,14 @@ function Add-ChatOverlayCompact {
     $c = $Snap.counts
     $need = [int]$c.waiting + [int]$c.needsInput
     $bits = @()
+    $cut = if ($c -and $c.PSObject.Properties['cutOff']) { [int]$c.cutOff } else { 0 }
     if ($need) { $bits += "$need waiting" }
+    if ($cut) { $bits += "$cut cut off" }
     if ([int]$c.busy) { $bits += "$([int]$c.busy) working" }
     if ([int]$c.running) { $bits += "$([int]$c.running) running" }
     if ([int]$c.idle) { $bits += "$([int]$c.idle) idle" }
     if ([int]$c.queued) { $bits += "$([int]$c.queued) queued" }
-    $state = if ($need) { 'waiting' } elseif ([int]$c.busy) { 'busy' } elseif ([int]$c.running) { 'running' } else { 'idle' }
+    $state = if ($need) { 'waiting' } elseif ($cut) { 'cutoff' } elseif ([int]$c.busy) { 'busy' } elseif ([int]$c.running) { 'running' } else { 'idle' }
     $line = [System.Windows.Controls.DockPanel]::new()
     $line.LastChildFill = $true
     $dot = [System.Windows.Shapes.Ellipse]::new()
@@ -9618,7 +10177,8 @@ function Update-ChatOverlayTray {
     param($H, $Snap)
     if (-not $H.Tray) { return }
     $c = $Snap.counts
-    $name = if ([int]$c.waiting + [int]$c.needsInput) { 'waiting' } elseif ($c.busy) { 'busy' } elseif ($c.running) { 'running' } else { 'idle' }
+    $cut = if ($c -and $c.PSObject.Properties['cutOff']) { [int]$c.cutOff } else { 0 }
+    $name = if ([int]$c.waiting + [int]$c.needsInput) { 'waiting' } elseif ($cut) { 'cutoff' } elseif ($c.busy) { 'busy' } elseif ($c.running) { 'running' } else { 'idle' }
     Set-ChatOverlayTrayColor $H $script:ChatOverlayColors[$name]
     $tip = Format-ChatOverlayTooltip $Snap
     if ($H.Tray.Text -ne $tip) { $H.Tray.Text = $tip }
@@ -9640,6 +10200,10 @@ function New-ChatOverlayTrayIcon {
     param($H)
     $ni = [System.Windows.Forms.NotifyIcon]::new()
     $menu = [System.Windows.Forms.ContextMenuStrip]::new()
+    $open = $menu.Items.Add('Open console')
+    $open.Font = [System.Drawing.Font]::new($open.Font, [System.Drawing.FontStyle]::Bold)
+    $open.add_Click({ Invoke-ChatOverlayVerb 'console' })
+    [void]$menu.Items.Add([System.Windows.Forms.ToolStripSeparator]::new())
     $head = $menu.Items.Add("VS-code-chat-manager $script:ChatVersion")
     $head.Enabled = $false
     $H.Menu.Hotkey = $menu.Items.Add('hotkey')
@@ -9707,6 +10271,7 @@ function Invoke-ChatOverlayVerb {
             $H.Win.Width = $H.Ctx.Config.width
             $H.Win.Opacity = $H.Ctx.Config.opacity
             Register-ChatOverlayHotkey $H
+            Register-ChatConsoleHotkey $H
             $H.ViewKey = $null
             # made anew, so the settings box shows what a shell just set
             $H.ThemeName = $null
@@ -9721,6 +10286,7 @@ function Invoke-ChatOverlayVerb {
         'hotkey' { if ($H.Hidden) { Set-ChatOverlayHidden $H $false } else { Set-ChatOverlayLocked $H (-not $H.Locked) } }
         'collapse' { if (-not $H.Collapsed) { Set-ChatOverlayCollapsed $H $true } }
         'expand' { if ($H.Collapsed) { Set-ChatOverlayCollapsed $H $false } }
+        'console' { Show-ChatConsole $H -Activate }
     }
 }
 
@@ -9741,14 +10307,25 @@ function Invoke-ChatOverlayTick {
     if (-not $H -or $H.ShuttingDown) { return }
     try {
         $H.Tick++
-        if ($H.Tick % 2 -eq 0 -and -not $H.Dragging) {
+        # a key just pressed in the console puts the pass off a tick - twice
+        # at most - so typing there never waits behind one
+        $C = $H.Con
+        $typing = $C -and $C.TypedAt -and ((Get-Date) - $C.TypedAt).TotalMilliseconds -lt 400 -and $C.Skips -lt 2
+        if ($H.Tick % 2 -eq 0 -and $typing) { $C.Skips++; $H.Tick-- }
+        elseif ($H.Tick % 2 -eq 0 -and -not $H.Dragging) {
+            if ($C) { $C.Skips = 0 }
             $snap = Invoke-ChatOverlayCycle $H.Ctx
             foreach ($v in @($H.Ctx.Verbs)) { Invoke-ChatOverlayVerb $v }
             if ($H.ShuttingDown) { return }
             Update-ChatOverlayView $H $snap
             Update-ChatOverlayTray $H $snap
+            if ($C -and $C.Win.IsVisible) { Update-ChatConsole $H }
         }
-        else { Update-ChatOverlayClock $H }
+        else {
+            Update-ChatOverlayClock $H
+            # a dropped file's copy may have finished
+            if ($C -and $C.Win.IsVisible) { Update-ChatConsoleStaging $H }
+        }
         if ($H.Tick % 5 -eq 0 -and -not $H.Hidden) {
             # system: follows Windows' own light or dark setting
             if ($H.Ctx.Config.theme -eq 'system') { Update-ChatOverlayTheme $H }
@@ -9784,6 +10361,10 @@ function Close-ChatOverlayWindow {
     try { if ($H.Timer) { $H.Timer.Stop() } } catch {}
     try { if ($H.HoverTimer) { $H.HoverTimer.Stop() } } catch {}
     try { if ($H.Hotkey) { $H.Hotkey.Dispose(); $H.Hotkey = $null } } catch {}
+    try { if ($H.ConHotkey) { $H.ConHotkey.Dispose(); $H.ConHotkey = $null } } catch {}
+    # the console's draft kept, then the window closed for good
+    $H.ShuttingDown = $true
+    try { if ($H.Con) { Save-ChatConsoleDraft $H; $H.Con.Win.Close() } } catch {}
     try { if ($H.Tray) { $H.Tray.Visible = $false; $H.Tray.Dispose(); $H.Tray = $null } } catch {}
     try { if ($H.IconHandle -ne [IntPtr]::Zero) { [void][ChatOverlayNative]::DestroyIcon($H.IconHandle); $H.IconHandle = [IntPtr]::Zero } } catch {}
     try { if ($H.CtlWin) { $H.CtlWin.Close() } } catch {}
@@ -9801,6 +10382,7 @@ function New-ChatOverlayHostState {
         Tray = $null; IconHandle = [IntPtr]::Zero; IconColor = $null; Hotkey = $null; HotkeyText = $null
         Timer = $null; ViewKey = $null; Clocks = [System.Collections.Generic.List[object]]::new(); Snap = $null
         ScreenSig = $null; Stop = $false; Restart = $false; ShuttingDown = $false; Menu = @{}
+        Con = $null; ConHotkey = $null; ConHotkeyText = $null
     }
 }
 
@@ -9811,7 +10393,9 @@ function Start-ChatOverlayHost {
     1 s timer. One thread is enough - a pass costs tens of milliseconds, and
     nobody clicks a window that clicks go through - and it keeps every
     handler on the thread PowerShell runs on, the only one with a runspace.
+    -Open console: chatconsole started it, and the console opens with it.
     #>
+    param([string]$Open)
     Set-StrictMode -Off
     if (-not $script:ChatqIsWindows) { Start-ChatOverlayMacHost; return }
     New-ChatqDir $script:ChatqData
@@ -9842,6 +10426,7 @@ function Start-ChatOverlayHost {
         New-ChatOverlayTrayIcon $H
         Update-ChatOverlayTray $H $H.Snap
         Register-ChatOverlayHotkey $H
+        Register-ChatConsoleHotkey $H
         $d = [System.Windows.Threading.Dispatcher]::CurrentDispatcher
         $d.add_UnhandledException({
                 param($s, $e)
@@ -9859,6 +10444,7 @@ function Start-ChatOverlayHost {
         # what came in while this was starting - a -Stop right after the start,
         # chatinstall's restart - was taken by the first pass above
         foreach ($v in @($H.Ctx.Verbs)) { Invoke-ChatOverlayVerb $v }
+        if ($Open -eq 'console') { Show-ChatConsole $H -Activate }
         [System.Windows.Threading.Dispatcher]::Run()
     }
     catch { Write-ChatOverlayLog "overlay failed: $($_.Exception.Message) @ $(($_.ScriptStackTrace -split "`n")[0])" }
@@ -9870,6 +10456,1577 @@ function Start-ChatOverlayHost {
     }
     # last, once the lock is released: the new copy takes it on its way up
     if ($H.Restart) { [void](Start-ChatOverlayProcess) }
+}
+
+#endregion
+
+#region console: chatq in a window ---------------------------------------------
+# Pick a chat - one open in VS Code, one the limit cut off, a recent one, or a
+# new one in a folder - write to it, drop or paste files on it, and send it
+# now or queue it; the queue beside it, with each job's outcome and log. A
+# normal window that takes focus, in the overlay's own process and on its
+# thread, drawn from the snapshot the collector makes every 2 s. Only the
+# user ever opens it: the button on the overlay's bar, the tray, the console
+# hotkey, or chatconsole. Windows only, like the panel's buttons.
+
+$script:ChatConsoleStatePath = Join-Path $script:ChatqData 'console-state.json'
+$script:ChatConsoleDraftDir = Join-Path (Join-Path $script:ChatqData 'console') 'draft'
+# tests: what a paste finds on the clipboard; no index sync in a child
+$script:ChatConsoleClipboardSeam = $null
+$script:ChatConsoleNoSync = $false
+$script:ChatConsoleModes = @('default', 'acceptEdits', 'auto', 'plan', 'bypassPermissions')
+$script:ChatConsoleModels = @('opus', 'sonnet', 'haiku')
+
+function ConvertFrom-ChatConsoleWhen {
+    <#
+    The When choice to what a job holds. now: the front of the queue, and a
+    chat busy in VS Code looked at every 30 s. turn: behind what is queued.
+    at / in: -Value, as chatq -At 13:00 or -In 2h reads it. Pure.
+    #>
+    param([string]$When, [string]$Value)
+    $ok = { param($nb, $first, $now) [pscustomobject]@{ Error = $null; NotBefore = $nb; First = $first; SendNow = $now } }
+    switch ($When) {
+        'now' { return & $ok $null $true $true }
+        'turn' { return & $ok $null $false $false }
+    }
+    $v = ([string]$Value).Trim()
+    $example = if ($When -eq 'at') { '13:00' } else { '90m, 2h or 1d' }
+    if (-not $v) { return [pscustomobject]@{ Error = "give a time - $example"; NotBefore = $null; First = $false; SendNow = $false } }
+    $t = try { if ($When -eq 'at') { ConvertFrom-ChatqWhen -At $v } else { ConvertFrom-ChatqWhen -In $v } } catch { $null }
+    if (-not $t) { return [pscustomobject]@{ Error = "'$v' is not a time - $example"; NotBefore = $null; First = $false; SendNow = $false } }
+    return & $ok $t $false $false
+}
+
+function Select-ChatConsoleChats {
+    # every word typed, anywhere in the title or the project, in any case
+    param([object[]]$Chats, [string]$Search, [int]$Max = 0)
+    $words = @(([string]$Search).ToLowerInvariant() -split '\s+' | Where-Object { $_ })
+    $out = @(foreach ($c in @($Chats)) {
+            if (-not $c) { continue }
+            $hay = "$($c.Title) $($c.Project)".ToLowerInvariant()
+            $all = $true
+            foreach ($w in $words) { if (-not $hay.Contains($w)) { $all = $false; break } }
+            if ($all) { $c }
+        })
+    if ($Max -gt 0) { $out = @($out | Select-Object -First $Max) }
+    return $out
+}
+
+function Get-ChatConsoleSendPreview {
+    <#
+    What Send will do, said before it is pressed. -Target: @{ Kind = chat |
+    new; Live = busy | waiting | idle, or $null when no window has it }.
+    -Plan: ConvertFrom-ChatConsoleWhen's answer. -Block: its provider's
+    limit, @{ Until; Type }. -Ahead: jobs queued in front of it. Pure.
+    #>
+    param($Target, $Plan, $Block, [int]$Ahead, [bool]$Watcher, [datetime]$Now = (Get-Date))
+    if (-not $Target) { return 'pick a chat on the left, or + New chat' }
+    if ($Plan.Error) { return $Plan.Error }
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    $bits = @()
+    if ($Plan.NotBefore) { $bits += "sends $(Format-ChatOverlayWhen ([datetime]$Plan.NotBefore) $Now) at the earliest" }
+    elseif ($Block -and $Block.Type -eq 'overloaded') { $bits += 'Claude is overloaded - sends once status.claude.com has it back' }
+    # a refused login and a probe that failed hold the queue too, but no limit
+    # is over at their time - the watcher only looks again then
+    elseif ($Block -and $Block.Type -eq 'login needed') {
+        $said = if ($Block.PSObject.Properties['Why'] -and $Block.Why -and $Block.Why -notin 'probe', 'run') { [string]$Block.Why } else { 'login refused' }
+        $bits += "$said - log in or check the subscription; sends once the login works again, looked at every 15 min"
+    }
+    elseif ($Block -and $Block.Type -eq 'probe failed' -and $Block.Until) { $bits += "the limit could not be checked - looked at again $($Block.Until.ToString('HH:mm', $inv))" }
+    elseif ($Block -and $Block.Until -and $Block.Until -gt $Now) { $bits += "limited until $($Block.Until.ToString('HH:mm', $inv)) - sends $($Block.Until.AddMinutes(1).ToString('HH:mm', $inv))" }
+    elseif (-not $Plan.First -and $Ahead -gt 0) { $bits += "after the $Ahead queued ahead of it" }
+    else { $bits += 'sends within a few seconds' }
+    if ($Target.Kind -eq 'new') { $bits += 'a new chat - a VS Code window on that folder is offered a reload to pick it up' }
+    elseif ($Target.Live -in 'busy', 'waiting') { $bits += "that chat is working in VS Code - it goes once the chat is idle$(if ($Plan.SendNow) { ', looked at every 30 s' })" }
+    elseif ($Target.Live -eq 'idle' -or $Target.Live -eq 'cutoff') { $bits += 'open in VS Code - reload that window to see the reply' }
+    if (-not $Watcher) { $bits += 'the watcher starts for it' }
+    return ($bits -join ' - ')
+}
+
+function Get-ChatConsoleJobStatus {
+    # a job's words at the right of the console's queue, and their colour
+    param($Job, [string]$Eta, [datetime]$Now = (Get-Date))
+    $at = { param($s) $d = ConvertTo-ChatqDate $s; if ($d) { Format-ChatOverlayWhen $d $Now } else { '' } }
+    $why = if ($Job.result -and $Job.result.reason) { " - $($Job.result.reason)" } else { '' }
+    switch ([string]$Job.state) {
+        'queued' {
+            $t = if (-not $Eta) { 'queued' } elseif ($Eta -match '^(\d|[A-Z][a-z]{2} \d)') { "sends $Eta" } else { $Eta }
+            return [pscustomobject]@{ Text = $t; Tone = 'queued' }
+        }
+        'running' { return [pscustomobject]@{ Text = "running since $(& $at $Job.startedAt)"; Tone = 'running' } }
+        'needs-input' { return [pscustomobject]@{ Text = "needs you$why"; Tone = 'waiting' } }
+        'done' { return [pscustomobject]@{ Text = "done $(& $at $Job.endedAt)"; Tone = 'busy' } }
+        'failed' { return [pscustomobject]@{ Text = "failed$why"; Tone = 'error' } }
+        'skipped' { return [pscustomobject]@{ Text = "skipped$why"; Tone = 'faint' } }
+    }
+    return [pscustomobject]@{ Text = [string]$Job.state; Tone = 'dim' }
+}
+
+function Get-ChatConsolePlacement {
+    # Where the console opens, in screen pixels: where it was left, while
+    # 120 x 60 of it is on some screen, else the middle of the main one. Pure.
+    param($Saved, [object[]]$Screens, [double]$Width = 980, [double]$Height = 680)
+    if ($Saved -and $null -ne $Saved.x -and [double]$Saved.w -ge 400 -and [double]$Saved.h -ge 300) {
+        foreach ($s in @($Screens)) {
+            $vw = [Math]::Min([double]$Saved.x + [double]$Saved.w, $s.X + $s.Width) - [Math]::Max([double]$Saved.x, $s.X)
+            $vh = [Math]::Min([double]$Saved.y + [double]$Saved.h, $s.Y + $s.Height) - [Math]::Max([double]$Saved.y, $s.Y)
+            if ($vw -ge 120 -and $vh -ge 60) { return [pscustomobject]@{ X = [double]$Saved.x; Y = [double]$Saved.y; W = [double]$Saved.w; H = [double]$Saved.h } }
+        }
+    }
+    $p = @($Screens | Where-Object { $_.Primary })[0]
+    if (-not $p) { $p = @($Screens)[0] }
+    if (-not $p) { return [pscustomobject]@{ X = 40; Y = 40; W = $Width; H = $Height } }
+    $w = [Math]::Min($Width, $p.Width - 40)
+    $h = [Math]::Min($Height, $p.Height - 40)
+    return [pscustomobject]@{ X = $p.X + ($p.Width - $w) / 2; Y = $p.Y + ($p.Height - $h) / 2; W = $w; H = $h }
+}
+
+function Read-ChatConsoleState {
+    # console-state.json: where it was, and the draft - what was being
+    # written, to which chat, with which files - so a restart keeps it
+    $s = Read-ChatqJson $script:ChatConsoleStatePath
+    if (-not $s) { $s = [pscustomobject]@{} }
+    foreach ($k in 'x', 'y', 'w', 'h', 'draft') { if (-not $s.PSObject.Properties[$k]) { Set-ChatqProp $s $k $null } }
+    foreach ($k in @(@('max', $false), @('left', 300), @('queue', 230))) { if (-not $s.PSObject.Properties[$k[0]]) { Set-ChatqProp $s $k[0] $k[1] } }
+    if (-not $s.PSObject.Properties['folders']) { Set-ChatqProp $s 'folders' @() }
+    return $s
+}
+
+function New-ChatConsoleButton {
+    # a flat button, drawn as a border: WPF's own Button brings the system's
+    # light look into a dark console
+    param([string]$Text, [scriptblock]$OnClick, [switch]$Accent, [string]$Tip, $Tag, [switch]$Small)
+    $b = [System.Windows.Controls.Border]::new()
+    $b.CornerRadius = [System.Windows.CornerRadius]::new(4)
+    $b.BorderThickness = [System.Windows.Thickness]::new(1)
+    $b.Padding = if ($Small) { [System.Windows.Thickness]::new(7, 1, 7, 2) } else { [System.Windows.Thickness]::new(11, 3, 11, 4) }
+    $b.Margin = [System.Windows.Thickness]::new(0, 0, 6, 0)
+    $b.Cursor = [System.Windows.Input.Cursors]::Hand
+    $b.Background = if ($Accent) { Get-ChatOverlayBrush 'accent' } else { [System.Windows.Media.Brushes]::Transparent }
+    $b.BorderBrush = Get-ChatOverlayBrush $(if ($Accent) { 'accent' } else { 'inputEdge' })
+    $b.VerticalAlignment = [System.Windows.VerticalAlignment]::Center
+    $b.Child = New-ChatOverlayText $Text $(if ($Accent) { 'onAccent' } else { 'text' }) $(if ($Small) { 11 } else { 12 })
+    if ($Tip) { $b.ToolTip = $Tip }
+    $b.Tag = $Tag
+    if (-not $Accent) {
+        $b.add_MouseEnter({ param($s, $e) $s.Background = Get-ChatOverlayBrush 'hover' })
+        $b.add_MouseLeave({ param($s, $e) $s.Background = [System.Windows.Media.Brushes]::Transparent })
+    }
+    if ($OnClick) { $b.add_MouseLeftButtonUp($OnClick) }
+    return $b
+}
+
+function New-ChatConsoleInput {
+    param([switch]$Multi, [string]$Tip)
+    $t = [System.Windows.Controls.TextBox]::new()
+    $t.Background = Get-ChatOverlayBrush 'input'
+    $t.Foreground = Get-ChatOverlayBrush 'text'
+    $t.BorderBrush = Get-ChatOverlayBrush 'inputEdge'
+    $t.CaretBrush = Get-ChatOverlayBrush 'text'
+    $t.SelectionBrush = Get-ChatOverlayBrush 'accent'
+    $t.Padding = [System.Windows.Thickness]::new(6, 4, 6, 4)
+    $t.FontSize = 12.5
+    if ($Tip) { $t.ToolTip = $Tip }
+    if ($Multi) {
+        $t.AcceptsReturn = $true
+        $t.TextWrapping = [System.Windows.TextWrapping]::Wrap
+        $t.VerticalScrollBarVisibility = [System.Windows.Controls.ScrollBarVisibility]::Auto
+        $t.VerticalContentAlignment = [System.Windows.VerticalAlignment]::Top
+    }
+    return $t
+}
+
+function New-ChatConsoleChips {
+    # a row of choices, the one in force filled; a click hands the chip to
+    # -OnClick, whose Tag is its value
+    param([string[]]$Values, [string[]]$Labels, [string]$Current, [scriptblock]$OnClick)
+    $row = [System.Windows.Controls.WrapPanel]::new()
+    for ($i = 0; $i -lt $Values.Count; $i++) {
+        $on = $Values[$i] -eq $Current
+        $c = [System.Windows.Controls.Border]::new()
+        $c.CornerRadius = [System.Windows.CornerRadius]::new(4)
+        $c.BorderThickness = [System.Windows.Thickness]::new(1)
+        $c.Padding = [System.Windows.Thickness]::new(8, 1, 8, 2)
+        $c.Margin = [System.Windows.Thickness]::new(0, 2, 4, 2)
+        $c.Background = if ($on) { Get-ChatOverlayBrush 'accent' } else { [System.Windows.Media.Brushes]::Transparent }
+        $c.BorderBrush = Get-ChatOverlayBrush $(if ($on) { 'accent' } else { 'inputEdge' })
+        $c.Cursor = [System.Windows.Input.Cursors]::Hand
+        $c.Tag = $Values[$i]
+        $c.Child = New-ChatOverlayText $Labels[$i] $(if ($on) { 'onAccent' } else { 'text' }) 11.5
+        $c.add_MouseLeftButtonUp($OnClick)
+        [void]$row.Children.Add($c)
+    }
+    return $row
+}
+
+function New-ChatConsoleWindow {
+    <#
+    The window, made once, the first time it is opened; hidden, never closed,
+    until the overlay stops - closing it keeps the draft. Its content is
+    built by Initialize-ChatConsoleContent, again when the theme changes.
+    #>
+    param($H)
+    $C = @{
+        # Sigs, not Keys: $C.Keys is the hashtable's own list of its keys
+        Win = $null; Hwnd = [IntPtr]::Zero; State = (Read-ChatConsoleState); Sigs = @{}; Target = $null
+        Staged = [System.Collections.Generic.List[object]]::new(); When = 'now'; WhenValue = ''; Mode = ''; Model = ''
+        Text = ''; NewCwd = ''; NewName = ''; Search = ''; Sel = $null; ShowLog = $false; Jobs = @(); JobsSig = $null
+        Index = @(); IndexStamp = $null; IndexParsed = $false; IndexRead = $null; Sync = $null; SyncAt = [datetime]::MinValue; Info = @{}
+        Request = $null; WatchSays = ''; TypedAt = $null; Skips = 0; Dirty = $null; Modal = $false; Confirm = @{}; Blocks = $null; BlocksAt = [datetime]::MinValue
+    }
+    $H.Con = $C
+    $w = [System.Windows.Window]::new()
+    $w.Title = 'chatq console'
+    $w.Width = 980
+    $w.Height = 680
+    $w.MinWidth = 640
+    $w.MinHeight = 420
+    $w.WindowStartupLocation = [System.Windows.WindowStartupLocation]::Manual
+    $w.Left = -32000
+    $w.Top = -32000
+    $w.FontFamily = [System.Windows.Media.FontFamily]::new('Segoe UI')
+    $w.FontSize = 12.5
+    $w.ShowInTaskbar = $true
+    $w.add_Closing({
+            param($s, $e)
+            $H = $script:ChatOverlayHost
+            if ($H -and -not $H.ShuttingDown) { $e.Cancel = $true; Hide-ChatConsole $H }
+        })
+    # a key pressed here holds off the next collector pass a moment, so
+    # typing never stutters behind one
+    $w.add_PreviewKeyDown({ $H = $script:ChatOverlayHost; if ($H.Con) { $H.Con.TypedAt = Get-Date } })
+    $C.Win = $w
+    $C.Hwnd = [System.Windows.Interop.WindowInteropHelper]::new($w).EnsureHandle()
+    Restore-ChatConsoleDraft $H
+    Initialize-ChatConsoleContent $H
+}
+
+function Initialize-ChatConsoleContent {
+    # everything in the window, from scratch - a theme change comes through
+    # here too - keeping what is typed
+    param($H)
+    $C = $H.Con
+    if ($C.Prompt) { $C.Text = $C.Prompt.Text }
+    if ($C.FolderBox) { $C.NewCwd = $C.FolderBox.Text }
+    if ($C.NameBox) { $C.NewName = $C.NameBox.Text }
+    if ($C.WhenBox) { $C.WhenValue = $C.WhenBox.Text }
+    $w = $C.Win
+    $w.Background = Get-ChatOverlayBrush 'window'
+    $w.Foreground = Get-ChatOverlayBrush 'text'
+    $gl = { param($v) if ($v -gt 0) { [System.Windows.GridLength]::new($v) } else { [System.Windows.GridLength]::new(1, [System.Windows.GridUnitType]::Star) } }
+    $root = [System.Windows.Controls.Grid]::new()
+    foreach ($r in 'auto', 'star', 'auto') {
+        $rd = [System.Windows.Controls.RowDefinition]::new()
+        $rd.Height = if ($r -eq 'auto') { [System.Windows.GridLength]::Auto } else { & $gl 0 }
+        $root.RowDefinitions.Add($rd)
+    }
+    $C.Header = New-ChatOverlayText '' 'dim' 12 -Trim
+    $C.Header.Margin = [System.Windows.Thickness]::new(12, 8, 12, 8)
+    [void]$root.Children.Add($C.Header)
+
+    $body = [System.Windows.Controls.Grid]::new()
+    [System.Windows.Controls.Grid]::SetRow($body, 1)
+    foreach ($cw in [Math]::Max(200, [double]$C.State.left), 6, 0) { $cd = [System.Windows.Controls.ColumnDefinition]::new(); $cd.Width = & $gl $cw; $body.ColumnDefinitions.Add($cd) }
+    $body.ColumnDefinitions[0].MinWidth = 200
+    $C.LeftCol = $body.ColumnDefinitions[0]
+    [void]$root.Children.Add($body)
+
+    # left: search, + New chat, and the chats
+    $left = [System.Windows.Controls.DockPanel]::new()
+    $left.Margin = [System.Windows.Thickness]::new(10, 0, 0, 8)
+    $top = [System.Windows.Controls.DockPanel]::new()
+    $top.Margin = [System.Windows.Thickness]::new(0, 0, 0, 6)
+    [System.Windows.Controls.DockPanel]::SetDock($top, [System.Windows.Controls.Dock]::Top)
+    $newB = New-ChatConsoleButton '+ New chat' { Select-ChatConsoleNew $script:ChatOverlayHost } -Tip 'Start a new Claude chat in a folder'
+    $newB.Margin = [System.Windows.Thickness]::new(6, 0, 0, 0)
+    [System.Windows.Controls.DockPanel]::SetDock($newB, [System.Windows.Controls.Dock]::Right)
+    [void]$top.Children.Add($newB)
+    $C.SearchBox = New-ChatConsoleInput -Tip 'Search chats: every word, in the title or the project'
+    $C.SearchBox.Text = $C.Search
+    # what the box is for, faint inside it while it is empty
+    $hint = New-ChatOverlayText 'Search chats' 'faint' 12
+    $hint.IsHitTestVisible = $false
+    $hint.Margin = [System.Windows.Thickness]::new(9, 0, 0, 0)
+    $hint.VerticalAlignment = [System.Windows.VerticalAlignment]::Center
+    $hint.Visibility = if ($C.Search) { [System.Windows.Visibility]::Collapsed } else { [System.Windows.Visibility]::Visible }
+    $C.SearchHint = $hint
+    $C.SearchBox.add_TextChanged({
+            param($s, $e)
+            $H = $script:ChatOverlayHost
+            $H.Con.Search = $s.Text
+            $H.Con.SearchHint.Visibility = if ($s.Text) { [System.Windows.Visibility]::Collapsed } else { [System.Windows.Visibility]::Visible }
+            Update-ChatConsoleChats $H
+        })
+    $sg = [System.Windows.Controls.Grid]::new()
+    [void]$sg.Children.Add($C.SearchBox)
+    [void]$sg.Children.Add($hint)
+    [void]$top.Children.Add($sg)
+    [void]$left.Children.Add($top)
+    $sv = [System.Windows.Controls.ScrollViewer]::new()
+    $sv.VerticalScrollBarVisibility = [System.Windows.Controls.ScrollBarVisibility]::Auto
+    $C.Chats = [System.Windows.Controls.StackPanel]::new()
+    $sv.Content = $C.Chats
+    [void]$left.Children.Add($sv)
+    [void]$body.Children.Add($left)
+    $split = [System.Windows.Controls.GridSplitter]::new()
+    $split.Width = 6
+    $split.HorizontalAlignment = [System.Windows.HorizontalAlignment]::Stretch
+    $split.Background = [System.Windows.Media.Brushes]::Transparent
+    [System.Windows.Controls.Grid]::SetColumn($split, 1)
+    [void]$body.Children.Add($split)
+
+    # right: compose above, the queue below
+    $right = [System.Windows.Controls.Grid]::new()
+    [System.Windows.Controls.Grid]::SetColumn($right, 2)
+    foreach ($rh in 0, 6, [Math]::Max(140, [double]$C.State.queue)) { $rd = [System.Windows.Controls.RowDefinition]::new(); $rd.Height = & $gl $rh; $right.RowDefinitions.Add($rd) }
+    $right.RowDefinitions[0].MinHeight = 200
+    $right.RowDefinitions[2].MinHeight = 120
+    $C.QueueRow = $right.RowDefinitions[2]
+    [void]$body.Children.Add($right)
+
+    $compose = [System.Windows.Controls.DockPanel]::new()
+    $compose.Margin = [System.Windows.Thickness]::new(4, 0, 12, 6)
+    $C.To = [System.Windows.Controls.StackPanel]::new()
+    $C.To.Margin = [System.Windows.Thickness]::new(0, 0, 0, 6)
+    [System.Windows.Controls.DockPanel]::SetDock($C.To, [System.Windows.Controls.Dock]::Top)
+    [void]$compose.Children.Add($C.To)
+    # a new chat's folder and name
+    $C.NewBox = [System.Windows.Controls.StackPanel]::new()
+    $C.NewBox.Margin = [System.Windows.Thickness]::new(0, 0, 0, 6)
+    [System.Windows.Controls.DockPanel]::SetDock($C.NewBox, [System.Windows.Controls.Dock]::Top)
+    $fr = [System.Windows.Controls.DockPanel]::new()
+    $fl = New-ChatOverlayText 'Folder' 'dim' 12
+    $fl.Width = 52
+    $fl.VerticalAlignment = [System.Windows.VerticalAlignment]::Center
+    [System.Windows.Controls.DockPanel]::SetDock($fl, [System.Windows.Controls.Dock]::Left)
+    [void]$fr.Children.Add($fl)
+    $browse = New-ChatConsoleButton 'Browse' { Invoke-ChatConsoleBrowse $script:ChatOverlayHost } -Tip 'Pick the folder the new chat works in'
+    $browse.Margin = [System.Windows.Thickness]::new(6, 0, 0, 0)
+    [System.Windows.Controls.DockPanel]::SetDock($browse, [System.Windows.Controls.Dock]::Right)
+    [void]$fr.Children.Add($browse)
+    $C.FolderBox = New-ChatConsoleInput -Tip 'The folder the new chat works in - or drop a folder here'
+    $C.FolderBox.Text = $C.NewCwd
+    $C.FolderBox.AllowDrop = $true
+    $C.FolderBox.add_PreviewDragOver({ param($s, $e) if ($e.Data.GetDataPresent([System.Windows.DataFormats]::FileDrop)) { $e.Effects = [System.Windows.DragDropEffects]::Copy; $e.Handled = $true } })
+    $C.FolderBox.add_PreviewDrop({
+            param($s, $e)
+            if (-not $e.Data.GetDataPresent([System.Windows.DataFormats]::FileDrop)) { return }
+            $e.Handled = $true
+            $d = @([string[]]$e.Data.GetData([System.Windows.DataFormats]::FileDrop) | Where-Object { Test-Path -LiteralPath $_ -PathType Container })[0]
+            if ($d) { $s.Text = $d }
+        })
+    $C.FolderBox.add_TextChanged({ $H = $script:ChatOverlayHost; if ($H.Con.Target -and $H.Con.Target.Kind -eq 'new') { $H.Con.Target.Cwd = $H.Con.FolderBox.Text; $H.Con.Dirty = Get-Date; Update-ChatConsolePreview $H } })
+    [void]$fr.Children.Add($C.FolderBox)
+    [void]$C.NewBox.Children.Add($fr)
+    $C.Recent = [System.Windows.Controls.WrapPanel]::new()
+    $C.Recent.Margin = [System.Windows.Thickness]::new(52, 3, 0, 3)
+    [void]$C.NewBox.Children.Add($C.Recent)
+    $nr = [System.Windows.Controls.DockPanel]::new()
+    $nl = New-ChatOverlayText 'Name' 'dim' 12
+    $nl.Width = 52
+    $nl.VerticalAlignment = [System.Windows.VerticalAlignment]::Center
+    [System.Windows.Controls.DockPanel]::SetDock($nl, [System.Windows.Controls.Dock]::Left)
+    [void]$nr.Children.Add($nl)
+    $C.NameBox = New-ChatConsoleInput -Tip 'What the chat list calls it - the prompt''s first line if left empty'
+    $C.NameBox.Text = $C.NewName
+    [void]$nr.Children.Add($C.NameBox)
+    [void]$C.NewBox.Children.Add($nr)
+    [void]$compose.Children.Add($C.NewBox)
+    # the foot: when, mode, model; what Send will do; Send
+    $foot = [System.Windows.Controls.StackPanel]::new()
+    $foot.Margin = [System.Windows.Thickness]::new(0, 6, 0, 0)
+    [System.Windows.Controls.DockPanel]::SetDock($foot, [System.Windows.Controls.Dock]::Bottom)
+    $C.Opts = [System.Windows.Controls.StackPanel]::new()
+    [void]$foot.Children.Add($C.Opts)
+    $sendRow = [System.Windows.Controls.DockPanel]::new()
+    $sendRow.Margin = [System.Windows.Thickness]::new(0, 6, 0, 0)
+    $C.SendBtn = New-ChatConsoleButton 'Send now' { Invoke-ChatConsoleSend $script:ChatOverlayHost } -Accent -Tip 'Ctrl+Enter'
+    $C.SendBtn.Margin = [System.Windows.Thickness]::new(8, 0, 0, 0)
+    [System.Windows.Controls.DockPanel]::SetDock($C.SendBtn, [System.Windows.Controls.Dock]::Right)
+    [void]$sendRow.Children.Add($C.SendBtn)
+    $C.Preview = New-ChatOverlayText '' 'dim' 11.5
+    $C.Preview.TextWrapping = [System.Windows.TextWrapping]::Wrap
+    $C.Preview.VerticalAlignment = [System.Windows.VerticalAlignment]::Center
+    [void]$sendRow.Children.Add($C.Preview)
+    [void]$foot.Children.Add($sendRow)
+    [void]$compose.Children.Add($foot)
+    # the prompt, and its files under it
+    $pg = [System.Windows.Controls.Grid]::new()
+    foreach ($r in 'star', 'auto') { $rd = [System.Windows.Controls.RowDefinition]::new(); $rd.Height = if ($r -eq 'auto') { [System.Windows.GridLength]::Auto } else { & $gl 0 }; $pg.RowDefinitions.Add($rd) }
+    $C.Prompt = New-ChatConsoleInput -Multi -Tip 'The prompt. Ctrl+Enter sends; drop files here or paste a screenshot to send them with it'
+    $C.Prompt.MinHeight = 80
+    $C.Prompt.AllowDrop = $true
+    $C.Prompt.Text = $C.Text
+    $C.Prompt.add_TextChanged({ $H = $script:ChatOverlayHost; $H.Con.Dirty = Get-Date })
+    $C.Prompt.add_PreviewKeyDown({
+            param($s, $e)
+            $H = $script:ChatOverlayHost
+            $ctrl = ([System.Windows.Input.Keyboard]::Modifiers -band [System.Windows.Input.ModifierKeys]::Control) -ne 0
+            if ($ctrl -and $e.Key -eq [System.Windows.Input.Key]::Return) { $e.Handled = $true; Invoke-ChatConsoleSend $H; return }
+            # a screenshot or copied files: the box would take neither - text
+            # is left to its own paste
+            if ($ctrl -and $e.Key -eq [System.Windows.Input.Key]::V) {
+                $clip = Get-ChatConsoleClipboard
+                if ($clip -and (@($clip.Files).Count -or $clip.Image)) { $e.Handled = $true; Invoke-ChatConsolePaste $H $clip }
+            }
+        })
+    # the box would take a drop as text: files are taken here first
+    $C.Prompt.add_PreviewDragEnter({ param($s, $e) if ($e.Data.GetDataPresent([System.Windows.DataFormats]::FileDrop)) { $e.Effects = [System.Windows.DragDropEffects]::Copy; $e.Handled = $true } })
+    $C.Prompt.add_PreviewDragOver({ param($s, $e) if ($e.Data.GetDataPresent([System.Windows.DataFormats]::FileDrop)) { $e.Effects = [System.Windows.DragDropEffects]::Copy; $e.Handled = $true } })
+    $C.Prompt.add_PreviewDrop({
+            param($s, $e)
+            if (-not $e.Data.GetDataPresent([System.Windows.DataFormats]::FileDrop)) { return }
+            $e.Handled = $true
+            Add-ChatConsoleDrop $script:ChatOverlayHost ([string[]]$e.Data.GetData([System.Windows.DataFormats]::FileDrop))
+        })
+    [void]$pg.Children.Add($C.Prompt)
+    $C.Files = [System.Windows.Controls.WrapPanel]::new()
+    $C.Files.Margin = [System.Windows.Thickness]::new(0, 4, 0, 0)
+    [System.Windows.Controls.Grid]::SetRow($C.Files, 1)
+    [void]$pg.Children.Add($C.Files)
+    [void]$compose.Children.Add($pg)
+    [void]$right.Children.Add($compose)
+
+    $hs = [System.Windows.Controls.GridSplitter]::new()
+    $hs.Height = 6
+    $hs.HorizontalAlignment = [System.Windows.HorizontalAlignment]::Stretch
+    $hs.Background = [System.Windows.Media.Brushes]::Transparent
+    [System.Windows.Controls.Grid]::SetRow($hs, 1)
+    [void]$right.Children.Add($hs)
+
+    # the queue: the jobs, and the one picked in full beside them
+    $qg = [System.Windows.Controls.Grid]::new()
+    $qg.Margin = [System.Windows.Thickness]::new(4, 0, 12, 4)
+    [System.Windows.Controls.Grid]::SetRow($qg, 2)
+    foreach ($cw in 0, 8, 340) { $cd = [System.Windows.Controls.ColumnDefinition]::new(); $cd.Width = & $gl $cw; $qg.ColumnDefinitions.Add($cd) }
+    $ql = [System.Windows.Controls.DockPanel]::new()
+    $qh = New-ChatOverlayText 'Queue - open jobs and the last day''s' 'dim' 11.5
+    $qh.Margin = [System.Windows.Thickness]::new(0, 0, 0, 4)
+    [System.Windows.Controls.DockPanel]::SetDock($qh, [System.Windows.Controls.Dock]::Top)
+    [void]$ql.Children.Add($qh)
+    $qs = [System.Windows.Controls.ScrollViewer]::new()
+    $qs.VerticalScrollBarVisibility = [System.Windows.Controls.ScrollBarVisibility]::Auto
+    $C.Queue = [System.Windows.Controls.StackPanel]::new()
+    $qs.Content = $C.Queue
+    [void]$ql.Children.Add($qs)
+    [void]$qg.Children.Add($ql)
+    $ds = [System.Windows.Controls.ScrollViewer]::new()
+    $ds.VerticalScrollBarVisibility = [System.Windows.Controls.ScrollBarVisibility]::Auto
+    [System.Windows.Controls.Grid]::SetColumn($ds, 2)
+    $C.Details = [System.Windows.Controls.StackPanel]::new()
+    $ds.Content = $C.Details
+    [void]$qg.Children.Add($ds)
+    [void]$right.Children.Add($qg)
+
+    # the status line: what the last action did, and the watcher
+    $sb = [System.Windows.Controls.DockPanel]::new()
+    $sb.Margin = [System.Windows.Thickness]::new(12, 2, 12, 6)
+    [System.Windows.Controls.Grid]::SetRow($sb, 2)
+    $C.WatchText = New-ChatOverlayText '' 'faint' 11
+    [System.Windows.Controls.DockPanel]::SetDock($C.WatchText, [System.Windows.Controls.Dock]::Right)
+    [void]$sb.Children.Add($C.WatchText)
+    $C.Status = New-ChatOverlayText '' 'dim' 11.5 -Trim
+    [void]$sb.Children.Add($C.Status)
+    [void]$root.Children.Add($sb)
+    $w.Content = $root
+
+    $C.Sigs = @{}
+    $C.WhenBox = $null
+    Update-ChatConsoleTarget $H
+    Update-ChatConsoleFiles $H
+    if ($C.Win.IsVisible) { Update-ChatConsole $H }
+}
+
+function Set-ChatConsoleStatus {
+    # what the last action did, in the status line; tone warn for a refusal
+    param($H, [string]$Text, [string]$Tone = 'dim')
+    if (-not $H.Con -or -not $H.Con.Status) { return }
+    $H.Con.Status.Text = $Text
+    $H.Con.Status.Foreground = Get-ChatOverlayBrush $Tone
+}
+
+function Show-ChatConsole {
+    # opened, where it was left; -Activate brings it forward with the
+    # prompt box ready, when the user asked for it
+    param($H, [switch]$Activate)
+    if (-not $H.Con) { New-ChatConsoleWindow $H }
+    $C = $H.Con
+    if (-not $C.Win.IsVisible) {
+        # In screen pixels, as the panel is placed: WPF's units differ from
+        # one monitor to the next, and a window left on a 100% screen beside
+        # a 150% one reopened in the wrong place. Shown off every screen
+        # first, then put where it goes - Windows rescales it on the way.
+        $screens = @([System.Windows.Forms.Screen]::AllScreens | ForEach-Object {
+                $a = $_.WorkingArea
+                [pscustomobject]@{ X = $a.X; Y = $a.Y; Width = $a.Width; Height = $a.Height; Primary = $_.Primary }
+            })
+        $scale = try { $g = [System.Drawing.Graphics]::FromHwnd([IntPtr]::Zero); $v = $g.DpiX / 96.0; $g.Dispose(); $v } catch { 1.0 }
+        $at = Get-ChatConsolePlacement $C.State $screens (980 * $scale) (680 * $scale)
+        $C.Win.WindowState = [System.Windows.WindowState]::Normal
+        $C.Win.Left = -32000
+        $C.Win.Top = -32000
+        $C.Win.ShowActivated = [bool]$Activate
+        $C.Win.Show()
+        [ChatOverlayNative]::Place($C.Hwnd, [int]$at.X, [int]$at.Y, [int]$at.W, [int]$at.H)
+        if ($C.State.max) { $C.Win.WindowState = [System.Windows.WindowState]::Maximized }
+        # a fresh look at what the limit cut off, and at the chats
+        $H.Ctx.CutAt = [datetime]::MinValue
+        $C.Sigs = @{}
+        Update-ChatConsole $H
+    }
+    if ($Activate) {
+        if ($C.Win.WindowState -eq [System.Windows.WindowState]::Minimized) { $C.Win.WindowState = [System.Windows.WindowState]::Normal }
+        [void]$C.Win.Activate()
+        [void]$C.Prompt.Focus()
+    }
+}
+
+function Hide-ChatConsole {
+    param($H)
+    if (-not $H.Con) { return }
+    Save-ChatConsoleDraft $H
+    $H.Con.Win.Hide()
+}
+
+function Save-ChatConsoleDraft {
+    # where the window is and what is being written, for the next time it
+    # opens - after a restart too
+    param($H)
+    $C = $H.Con
+    if (-not $C) { return }
+    try {
+        $s = $C.State
+        $max = $C.Win.WindowState -eq [System.Windows.WindowState]::Maximized
+        # its rect in screen pixels, while it is neither maximized nor
+        # minimized - those keep the last normal one
+        if ($C.Win.IsVisible) {
+            $s.max = $max
+            if ($C.Win.WindowState -eq [System.Windows.WindowState]::Normal) {
+                $r = [ChatOverlayNative]::GetRect($C.Hwnd)
+                if ($r -and $r[2] -gt 0 -and $r[0] -gt -30000) { $s.x = $r[0]; $s.y = $r[1]; $s.w = $r[2]; $s.h = $r[3] }
+            }
+        }
+        if ($C.LeftCol -and $C.LeftCol.ActualWidth -gt 0) { $s.left = [Math]::Round($C.LeftCol.ActualWidth) }
+        if ($C.QueueRow -and $C.QueueRow.ActualHeight -gt 0) { $s.queue = [Math]::Round($C.QueueRow.ActualHeight) }
+        $t = $C.Target
+        $s.draft = [pscustomobject]@{
+            target = $(if ($t) { [pscustomobject]@{ Kind = $t.Kind; Id = $t.Id; Provider = $t.Provider; Title = $t.Title; Project = $t.Project; Cwd = $t.Cwd; Path = $t.Path } } else { $null })
+            text = $(if ($C.Prompt) { $C.Prompt.Text } else { $C.Text })
+            files = @($C.Staged | Where-Object { -not $_.Error -and -not $_.Task } | ForEach-Object { [pscustomobject]@{ Name = $_.Name; Path = $_.Path; Dir = $_.Dir; Size = $_.Size } })
+            when = $C.When; whenValue = $(if ($C.WhenBox) { $C.WhenBox.Text } else { $C.WhenValue }); mode = $C.Mode; model = $C.Model
+            newCwd = $(if ($C.FolderBox) { $C.FolderBox.Text } else { $C.NewCwd }); newName = $(if ($C.NameBox) { $C.NameBox.Text } else { $C.NewName })
+        }
+        New-ChatqDir $script:ChatqData
+        Save-ChatqJson $script:ChatConsoleStatePath $s
+        $C.Dirty = $null
+    }
+    catch { Write-ChatOverlayLog "console state: $($_.Exception.Message)" }
+}
+
+function Restore-ChatConsoleDraft {
+    # the draft console-state.json kept; staged files it no longer names -
+    # left by a crash, or sent - are swept from data/console/draft
+    param($H)
+    $C = $H.Con
+    $d = $C.State.draft
+    $keep = @{}
+    if ($d) {
+        if ($d.target) { $C.Target = @{ Kind = $d.target.Kind; Id = $d.target.Id; Provider = $d.target.Provider; Title = $d.target.Title; Project = $d.target.Project; Cwd = $d.target.Cwd; Path = $d.target.Path; Live = $null } }
+        $C.Text = [string]$d.text
+        foreach ($f in @($d.files)) {
+            if ($f -and $f.Path -and (Test-Path -LiteralPath $f.Path)) {
+                $C.Staged.Add(@{ Name = $f.Name; Path = $f.Path; Dir = $f.Dir; Size = [int64]$f.Size; Task = $null; Error = $null })
+                $keep[([string]$f.Dir).ToLowerInvariant()] = $true
+            }
+        }
+        if ($d.when) { $C.When = [string]$d.when }
+        $C.WhenValue = [string]$d.whenValue
+        $C.Mode = [string]$d.mode
+        $C.Model = [string]$d.model
+        $C.NewCwd = [string]$d.newCwd
+        $C.NewName = [string]$d.newName
+    }
+    if (Test-Path -LiteralPath $script:ChatConsoleDraftDir) {
+        foreach ($x in @(Get-ChildItem -LiteralPath $script:ChatConsoleDraftDir -Directory -EA SilentlyContinue)) {
+            if (-not $keep[$x.FullName.ToLowerInvariant()]) { Remove-Item -LiteralPath $x.FullName -Recurse -Force -EA SilentlyContinue }
+        }
+    }
+}
+
+function Update-ChatConsole {
+    # after every collector pass while it shows: each part redrawn only when
+    # what it shows changed
+    param($H)
+    $C = $H.Con
+    # minimized, nobody sees it: nothing drawn until it is restored
+    if (-not $C -or -not $C.Win.IsVisible -or $C.Modal -or $C.Win.WindowState -eq [System.Windows.WindowState]::Minimized) { return }
+    try {
+        Update-ChatConsoleIndex $H
+        Update-ChatConsoleStaging $H
+        $jsig = [string]$H.Ctx.JobsSig
+        if ($jsig -ne $C.JobsSig) { $C.JobsSig = $jsig; $C.Jobs = @(Get-ChatqJobs) }
+        Update-ChatConsoleHeader $H
+        Update-ChatConsoleChats $H
+        Update-ChatConsoleQueue $H
+        Update-ChatConsolePreview $H
+        Update-ChatConsoleWatcher $H
+        if ($C.Dirty -and ((Get-Date) - $C.Dirty).TotalSeconds -ge 1) { Save-ChatConsoleDraft $H }
+    }
+    catch { Write-ChatOverlayLog "console: $($_.Exception.Message) @ $(($_.ScriptStackTrace -split "`n")[0])" }
+}
+
+function Update-ChatConsoleIndex {
+    # The chats the index knows, for Recent and the search: read when the
+    # window first shows and again whenever the file changes - each time in
+    # a runspace of its own, never on this thread - and brought up to date
+    # by a hidden PowerShell every 10 minutes, since Sync-ChatIndex reads
+    # transcripts.
+    param($H)
+    $C = $H.Con
+    $C.IndexParsed = $true
+    $stamp = Get-ChatIndexStamp
+    if ($stamp -and $stamp -ne $C.IndexStamp) { Start-ChatConsoleIndexRead $H $stamp }
+    if ($C.Sync) {
+        if ($C.Sync.HasExited) { try { $C.Sync.Dispose() } catch {}; $C.Sync = $null }
+        return
+    }
+    if ($script:ChatConsoleNoSync) { return }
+    $old = try { ((Get-Date) - [System.IO.File]::GetLastWriteTime($script:ChatIndexPath)).TotalMinutes -ge 10 } catch { $true }
+    if ($old -and ((Get-Date) - $C.SyncAt).TotalMinutes -ge 10) { Start-ChatConsoleIndexSync $H }
+}
+
+function Start-ChatConsoleIndexRead {
+    # Get-ChatIndex's parse, in a runspace of its own: on the window's thread
+    # it took 250 ms for 226 chats here, and about 2 s for 2,000, each time
+    # the index changed. Starting the runspace costs this thread 10-50 ms; a
+    # timer takes the rows once they are ready. One read at a time - a file
+    # changed meanwhile is read on the pass after.
+    param($H, [string]$Stamp)
+    $C = $H.Con
+    if ($C.IndexRead) { return }
+    try {
+        $rs = [runspacefactory]::CreateRunspace([System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault2())
+        $rs.Open()
+        $ps = [powershell]::Create()
+        $ps.Runspace = $rs
+        [void]$ps.AddScript($script:ChatIndexRead.ToString()).AddArgument($script:ChatIndexPath).AddArgument($script:ChatIndexSep)
+        $C.IndexRead = @{ Ps = $ps; Async = $ps.BeginInvoke(); Stamp = $Stamp; At = Get-Date }
+    }
+    catch {
+        Write-ChatOverlayLog "console: the index could not be read: $($_.Exception.Message)"
+        # not tried again until the file changes
+        $C.IndexStamp = $Stamp
+        return
+    }
+    $t = [System.Windows.Threading.DispatcherTimer]::new()
+    $t.Interval = [TimeSpan]::FromMilliseconds(100)
+    $t.add_Tick({
+            param($s, $e)
+            $H = $script:ChatOverlayHost
+            if (-not $H.Con.IndexRead -or $H.Con.IndexRead.Async.IsCompleted) { $s.Stop(); Complete-ChatConsoleIndexRead $H }
+        })
+    $t.Start()
+}
+
+function Complete-ChatConsoleIndexRead {
+    # the rows a read brought back, into the console - and into Get-ChatIndex's
+    # own copy while the file is still that version, so a Send does not parse
+    # it again on this thread
+    param($H)
+    $C = $H.Con
+    $r = $C.IndexRead
+    if (-not $r) { return }
+    $C.IndexRead = $null
+    $rows = $null
+    try {
+        $got = $r.Ps.EndInvoke($r.Async)
+        if ($r.Ps.HadErrors) { Write-ChatOverlayLog "console: the index could not be read: $(@($r.Ps.Streams.Error)[0])" }
+        else { $rows = @($got) }
+    }
+    catch { Write-ChatOverlayLog "console: the index could not be read: $($_.Exception.Message)" }
+    finally {
+        try { $r.Ps.Runspace.Dispose() } catch {}
+        try { $r.Ps.Dispose() } catch {}
+    }
+    $ms = [int]((Get-Date) - $r.At).TotalMilliseconds
+    if ($ms -gt 2000) { Write-ChatOverlayLog "console: the index took $ms ms to read, off the window's thread" }
+    # a file that would not parse is not read again until it changes
+    $C.IndexStamp = $r.Stamp
+    if ($null -eq $rows) { return }
+    $C.Index = $rows
+    if ($r.Stamp -and $r.Stamp -eq (Get-ChatIndexStamp)) { $script:ChatIndexCache = $rows; $script:ChatIndexStamp = $r.Stamp }
+    $C.Sigs.Chats = $null
+    if ($C.Win -and $C.Win.IsVisible) { Update-ChatConsoleChats $H }
+}
+
+function Start-ChatConsoleIndexSync {
+    # Sync-ChatIndex in a hidden Windows PowerShell of its own, with this
+    # process's view of where the chats are
+    param($H)
+    $C = $H.Con
+    $C.SyncAt = Get-Date
+    $path = $script:ChatqScriptPath
+    if (-not $path -or -not (Test-Path -LiteralPath $path)) { return }
+    $q = { param($s) "'" + ([string]$s).Replace("'", "''") + "'" }
+    $pre = '$env:CHATQ_OVERLAY=''1''; '
+    foreach ($n in 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'CHAT_CODE_USER') {
+        $v = [Environment]::GetEnvironmentVariable($n)
+        if ($v) { $pre += "`$env:$n=$(& $q $v); " }
+    }
+    $cmd = "$pre. $(& $q $path); `$null = Sync-ChatIndex -Provider claude, codex"
+    $enc = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($cmd))
+    $exe = Join-Path $(if ($env:SystemRoot) { $env:SystemRoot } else { 'C:\Windows' }) 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    try { $C.Sync = Start-Process -FilePath $exe -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $enc) -WindowStyle Hidden -PassThru }
+    catch { Write-ChatOverlayLog "console: index sync: $($_.Exception.Message)" }
+}
+
+function Update-ChatConsoleHeader {
+    param($H)
+    $C = $H.Con
+    $bits = @()
+    foreach ($u in @($H.Snap.header.usage)) {
+        if (-not $u) { continue }
+        $bits += "$($u.provider) " + ((@($u.windows) | ForEach-Object { "$($_.label) $($_.percent)%" }) -join " $($script:ChatqDot) ")
+    }
+    # $n, not $c: PowerShell's names ignore case, and $C is the console
+    $n = $H.Snap.counts
+    if ($n) {
+        $q = @()
+        if ([int]$n.queued) { $q += "$([int]$n.queued) queued" }
+        if ([int]$n.running) { $q += "$([int]$n.running) running" }
+        if ($n.PSObject.Properties['cutOff'] -and [int]$n.cutOff) { $q += "$([int]$n.cutOff) cut off" }
+        if ($q) { $bits += ($q -join ', ') }
+    }
+    $C.Header.Text = $bits -join "    $($script:ChatqDot)    "
+}
+
+function Get-ChatConsoleChatItems {
+    # what the list shows: cut off first, then open in VS Code, then recent -
+    # each chat once, as the snapshot and the index have it
+    param($H)
+    $C = $H.Con
+    $cut = [System.Collections.Generic.List[object]]::new()
+    $open = [System.Collections.Generic.List[object]]::new()
+    $seen = @{}
+    foreach ($r in @($H.Snap.rows)) {
+        if (-not $r -or $r.kind -notin 'session', 'cutoff' -or -not $r.sessionId) { continue }
+        $path = if ($r.PSObject.Properties['path'] -and $r.path) { [string]$r.path } elseif ($H.Ctx.Text[[string]$r.sessionId]) { [string]$H.Ctx.Text[[string]$r.sessionId].Path } else { $null }
+        $item = [pscustomobject]@{
+            Key = "$($r.kind):$($r.sessionId)"; Kind = $(if ($r.status -eq 'cutoff') { 'cutoff' } else { 'open' }); Provider = 'claude'; Id = [string]$r.sessionId
+            Title = [string]$r.title; Project = [string]$r.project; Cwd = [string]$r.cwd; Path = $path; State = [string]$r.stateText
+            Status = [string]$r.status; Live = $(if ($r.kind -eq 'session') { [string]$r.chat } else { $null })
+        }
+        $seen[$item.Id] = $true
+        if ($item.Kind -eq 'cutoff') { $cut.Add($item) } else { $open.Add($item) }
+    }
+    # The index's chats newest first, sorted once per version of the index -
+    # not every pass: that walked every row of it, 1 s for 2,000 chats. Each
+    # pass takes only the first 30 (50 when searching) that are not listed
+    # above and that the search matches.
+    if ($null -eq $C.Pool -or $C.PoolStamp -ne $C.IndexStamp) {
+        $C.Pool = @($C.Index | Where-Object { $_.Provider -in 'claude', 'codex' -and -not $_.Hidden -and $_.Title -and $_.Title -ne '(empty)' } |
+                ForEach-Object { [pscustomobject]@{ Row = $_; When = (ConvertTo-ChatqDate $_.When); Hay = ([string]$_.Title).ToLowerInvariant() } } |
+                Sort-Object { if ($_.When) { $_.When } else { [datetime]::MinValue } } -Descending)
+        $C.PoolStamp = $C.IndexStamp
+    }
+    $words = @(([string]$C.Search).ToLowerInvariant() -split '\s+' | Where-Object { $_ })
+    $max = if ($words) { 50 } else { 30 }
+    $recent = [System.Collections.Generic.List[object]]::new()
+    foreach ($x in $C.Pool) {
+        if ($recent.Count -ge $max) { break }
+        $r = $x.Row
+        if ($seen[[string]$r.Id]) { continue }
+        $all = $true
+        foreach ($w in $words) { if (-not $x.Hay.Contains($w)) { $all = $false; break } }
+        if (-not $all) { continue }
+        $recent.Add([pscustomobject]@{
+                Key = "recent:$($r.Id)"; Kind = 'recent'; Provider = [string]$r.Provider; Id = [string]$r.Id; Title = [string]$r.Title
+                Project = ''; Cwd = $null; Path = [string]$r.Path; State = "$($r.Provider)$(if ($x.When) { " $($script:ChatqDot) $(Get-ChatAge $x.When)" })"; Status = 'idle'; Live = $null
+            })
+    }
+    return [pscustomobject]@{ CutOff = $cut.ToArray(); Open = $open.ToArray(); Recent = $recent.ToArray() }
+}
+
+function Update-ChatConsoleChats {
+    param($H)
+    $C = $H.Con
+    if (-not $C.Chats) { return }
+    $all = Get-ChatConsoleChatItems $H
+    $cut = @(Select-ChatConsoleChats $all.CutOff $C.Search)
+    $open = @(Select-ChatConsoleChats $all.Open $C.Search)
+    # searched and cut to length as it was gathered
+    $recent = @($all.Recent)
+    $sel = if ($C.Target) { "$($C.Target.Kind)|$($C.Target.Id)|$($C.Target.Cwd)" } else { '' }
+    $key = (@($cut + $open + $recent | ForEach-Object { "$($_.Key)=$($_.State)" }) -join ';') + "|$sel"
+    if ($key -eq $C.Sigs.Chats) { return }
+    $C.Sigs.Chats = $key
+    $C.Chats.Children.Clear()
+    $C.ChatItems = @($cut + $open + $recent)
+    $section = {
+        param($title, $items, [scriptblock]$extra)
+        if (-not $items) { return }
+        $hd = [System.Windows.Controls.DockPanel]::new()
+        $hd.Margin = [System.Windows.Thickness]::new(0, 8, 0, 3)
+        if ($extra) { $x = & $extra; [System.Windows.Controls.DockPanel]::SetDock($x, [System.Windows.Controls.Dock]::Right); [void]$hd.Children.Add($x) }
+        $tb = New-ChatOverlayText "$title ($(@($items).Count))" 'dim' 11.5 -Bold
+        $tb.VerticalAlignment = [System.Windows.VerticalAlignment]::Center
+        [void]$hd.Children.Add($tb)
+        [void]$C.Chats.Children.Add($hd)
+        foreach ($i in $items) { [void]$C.Chats.Children.Add((New-ChatConsoleChatItem $H $i)) }
+    }
+    & $section 'Cut off' $cut { New-ChatConsoleButton 'Continue all' { Invoke-ChatConsoleContinue $script:ChatOverlayHost @($script:ChatOverlayHost.Con.ChatItems | Where-Object { $_.Kind -eq 'cutoff' }) } -Small -Tip 'Queue "Continue from where you left off." for each of them' }
+    & $section 'Open in VS Code' $open $null
+    & $section 'Recent' $recent $null
+    if (-not ($cut -or $open -or $recent)) {
+        [void]$C.Chats.Children.Add((New-ChatOverlayText $(if ($C.Search) { 'no chat matches' } elseif (-not $C.Index -and ($C.IndexRead -or -not $C.IndexParsed)) { 'reading the chats...' } else { 'no chats' }) 'faint' 12))
+    }
+}
+
+function New-ChatConsoleChatItem {
+    # one chat in the list: a dot in its state's colour, project and title,
+    # what it is doing; a click makes it the one written to
+    param($H, $Item)
+    $C = $H.Con
+    $b = [System.Windows.Controls.Border]::new()
+    $b.CornerRadius = [System.Windows.CornerRadius]::new(4)
+    $b.Padding = [System.Windows.Thickness]::new(6, 3, 6, 4)
+    $b.Cursor = [System.Windows.Input.Cursors]::Hand
+    $b.Tag = $Item
+    $on = $C.Target -and $C.Target.Kind -ne 'new' -and $C.Target.Id -eq $Item.Id
+    $b.Background = if ($on) { Get-ChatOverlayBrush 'select' } else { [System.Windows.Media.Brushes]::Transparent }
+    $g = [System.Windows.Controls.DockPanel]::new()
+    $dot = [System.Windows.Shapes.Ellipse]::new()
+    $dot.Width = 8
+    $dot.Height = 8
+    $dot.Margin = [System.Windows.Thickness]::new(0, 5, 7, 0)
+    $dot.VerticalAlignment = [System.Windows.VerticalAlignment]::Top
+    $dot.Fill = Get-ChatOverlayBrush $(if ($Item.Kind -eq 'recent') { 'faint' } else { [string]$Item.Status })
+    [System.Windows.Controls.DockPanel]::SetDock($dot, [System.Windows.Controls.Dock]::Left)
+    [void]$g.Children.Add($dot)
+    if ($Item.Kind -eq 'cutoff') {
+        $cb = New-ChatConsoleButton 'Continue' { param($s, $e) $e.Handled = $true; Invoke-ChatConsoleContinue $script:ChatOverlayHost @($s.Tag) } -Small -Tag $Item -Tip 'Queue "Continue from where you left off." for this chat'
+        [System.Windows.Controls.DockPanel]::SetDock($cb, [System.Windows.Controls.Dock]::Right)
+        [void]$g.Children.Add($cb)
+    }
+    $txt = [System.Windows.Controls.StackPanel]::new()
+    $t1 = [System.Windows.Controls.TextBlock]::new()
+    $t1.TextTrimming = [System.Windows.TextTrimming]::CharacterEllipsis
+    if ($Item.Project) {
+        $r = [System.Windows.Documents.Run]::new("$($Item.Project)  ")
+        $r.Foreground = Get-ChatOverlayBrush 'project'
+        $r.FontWeight = [System.Windows.FontWeights]::SemiBold
+        $t1.Inlines.Add($r)
+    }
+    $r = [System.Windows.Documents.Run]::new([string]$Item.Title)
+    $r.Foreground = Get-ChatOverlayBrush 'text'
+    $t1.Inlines.Add($r)
+    [void]$txt.Children.Add($t1)
+    [void]$txt.Children.Add((New-ChatOverlayText ([string]$Item.State) $(if ($Item.Kind -eq 'cutoff') { 'cutoff' } else { 'faint' }) 11 -Trim))
+    [void]$g.Children.Add($txt)
+    $b.Child = $g
+    $b.add_MouseEnter({ param($s, $e) if ($s.Background -eq [System.Windows.Media.Brushes]::Transparent) { $s.Background = Get-ChatOverlayBrush 'hover' } })
+    $b.add_MouseLeave({ param($s, $e) $H = $script:ChatOverlayHost; $t = $H.Con.Target; if (-not ($t -and $t.Kind -ne 'new' -and $t.Id -eq $s.Tag.Id)) { $s.Background = [System.Windows.Media.Brushes]::Transparent } })
+    $b.add_MouseLeftButtonUp({ param($s, $e) Select-ChatConsoleTarget $script:ChatOverlayHost $s.Tag })
+    return $b
+}
+
+function Select-ChatConsoleTarget {
+    # the chat Send goes to
+    param($H, $Item)
+    $C = $H.Con
+    $C.Target = @{ Kind = 'chat'; Id = $Item.Id; Provider = $Item.Provider; Title = $Item.Title; Project = $Item.Project; Cwd = $Item.Cwd; Path = $Item.Path; Live = $Item.Live }
+    $C.Sigs.Chats = $null
+    $C.Dirty = Get-Date
+    Update-ChatConsoleTarget $H
+    Update-ChatConsoleChats $H
+    [void]$C.Prompt.Focus()
+}
+
+function Select-ChatConsoleNew {
+    param($H)
+    $C = $H.Con
+    $cwd = if ($C.FolderBox -and $C.FolderBox.Text) { $C.FolderBox.Text } elseif (@($C.State.folders).Count) { [string]@($C.State.folders)[0] } else { '' }
+    $C.Target = @{ Kind = 'new'; Id = $null; Provider = 'claude'; Title = $null; Project = $null; Cwd = $cwd; Path = $null; Live = $null }
+    if ($C.FolderBox) { $C.FolderBox.Text = $cwd }
+    $C.Sigs.Chats = $null
+    $C.Dirty = Get-Date
+    Update-ChatConsoleTarget $H
+    Update-ChatConsoleChats $H
+    [void]$C.FolderBox.Focus()
+}
+
+function Get-ChatConsoleRow {
+    # the index's row for the chat picked, and what the run needs to know of
+    # it - read once per version of its transcript
+    param($H, $Target)
+    $row = Get-ChatqRowById $Target.Id $Target.Provider $Target.Path $Target.Cwd
+    if (-not $row) { return $null }
+    $len = try { ([System.IO.FileInfo]::new($row.Path)).Length } catch { 0 }
+    $k = "$($row.Path)|$len"
+    $info = $H.Con.Info[$k]
+    if (-not $info) { $info = Get-ChatqJobInfo $row; $H.Con.Info[$k] = $info }
+    return [pscustomobject]@{ Row = $row; Info = $info }
+}
+
+function Update-ChatConsoleTarget {
+    # the To line - or a new chat's folder and name - and the choices
+    param($H)
+    $C = $H.Con
+    $C.To.Children.Clear()
+    $t = $C.Target
+    $isNew = $t -and $t.Kind -eq 'new'
+    $C.NewBox.Visibility = if ($isNew) { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed }
+    $line = [System.Windows.Controls.TextBlock]::new()
+    $line.TextTrimming = [System.Windows.TextTrimming]::CharacterEllipsis
+    $add = { param($x, $tone, [switch]$b) $r = [System.Windows.Documents.Run]::new($x); $r.Foreground = Get-ChatOverlayBrush $tone; if ($b) { $r.FontWeight = [System.Windows.FontWeights]::SemiBold }; $line.Inlines.Add($r) }
+    & $add 'To  ' 'faint'
+    $sub = ''
+    if (-not $t) { & $add 'pick a chat on the left, or + New chat' 'dim' }
+    elseif ($isNew) {
+        & $add 'a new Claude chat' 'text' -b
+        $sub = 'it starts in the folder below, in default mode unless you pick another'
+        $C.Recent.Children.Clear()
+        foreach ($f in @($C.State.folders | Select-Object -First 6)) {
+            if (-not $f) { continue }
+            [void]$C.Recent.Children.Add((New-ChatConsoleButton (Split-Path ([string]$f).TrimEnd('\', '/') -Leaf) { param($s, $e) $s.Tag.Text = [string]$s.ToolTip } -Small -Tip ([string]$f) -Tag $C.FolderBox))
+        }
+    }
+    else {
+        if ($t.Project) { & $add "$($t.Project)  " 'project' -b }
+        & $add ([string]$t.Title) 'text' -b
+        $got = try { Get-ChatConsoleRow $H $t } catch { $null }
+        if (-not $got) { $sub = Get-ChatConsoleMissingSay $t }
+        elseif ($got.Info.Error) { $sub = [string]$got.Info.Error }
+        else {
+            $t.Cwd = $got.Info.Cwd
+            $t.Mode = $got.Info.Mode
+            $sub = "$($got.Row.Provider) $($script:ChatqDot) $($got.Info.Mode) as it last ran $($script:ChatqDot) $($got.Info.Cwd)"
+        }
+    }
+    [void]$C.To.Children.Add($line)
+    if ($sub) { [void]$C.To.Children.Add((New-ChatOverlayText $sub 'faint' 11 -Trim)) }
+    Update-ChatConsoleOptions $H
+}
+
+function Update-ChatConsoleOptions {
+    # When, mode and model, as chips
+    param($H)
+    $C = $H.Con
+    if ($C.WhenBox) { $C.WhenValue = $C.WhenBox.Text }
+    $C.Opts.Children.Clear()
+    $row = {
+        param($label, $chips, $extra)
+        $d = [System.Windows.Controls.DockPanel]::new()
+        $l = New-ChatOverlayText $label 'dim' 12
+        $l.Width = 52
+        $l.VerticalAlignment = [System.Windows.VerticalAlignment]::Center
+        [System.Windows.Controls.DockPanel]::SetDock($l, [System.Windows.Controls.Dock]::Left)
+        [void]$d.Children.Add($l)
+        if ($extra) { [System.Windows.Controls.DockPanel]::SetDock($extra, [System.Windows.Controls.Dock]::Right); [void]$d.Children.Add($extra) }
+        [void]$d.Children.Add($chips)
+        [void]$C.Opts.Children.Add($d)
+    }
+    $wb = $null
+    if ($C.When -in 'at', 'in') {
+        $wb = New-ChatConsoleInput -Tip $(if ($C.When -eq 'at') { 'a time: 13:00, or 2026-10-01 09:00' } else { 'how long from now: 90m, 2h, 1d' })
+        $wb.Width = 150
+        $wb.Text = $C.WhenValue
+        $wb.add_TextChanged({ $H = $script:ChatOverlayHost; $H.Con.WhenValue = $H.Con.WhenBox.Text; $H.Con.Dirty = Get-Date; Update-ChatConsolePreview $H })
+    }
+    $C.WhenBox = $wb
+    & $row 'When' (New-ChatConsoleChips @('now', 'turn', 'at', 'in') @('Now', 'In turn', 'At', 'In') $C.When {
+            param($s, $e) $H = $script:ChatOverlayHost; $H.Con.When = [string]$s.Tag; $H.Con.Dirty = Get-Date; Update-ChatConsoleOptions $H
+            if ($H.Con.WhenBox) { [void]$H.Con.WhenBox.Focus() }
+        }) $wb
+    $isNew = $C.Target -and $C.Target.Kind -eq 'new'
+    if ($C.Target -and $C.Target.Provider -eq 'codex') {
+        # Codex runs in the sandbox it last used, on its own model: Claude's
+        # modes and models are not offered, and are never sent with it
+        $cx = New-ChatOverlayText 'a Codex chat runs in the sandbox and on the model it last used' 'faint' 11 -Trim
+        $cx.Margin = [System.Windows.Thickness]::new(52, 2, 0, 0)
+        [void]$C.Opts.Children.Add($cx)
+        Update-ChatConsolePreview $H
+        return
+    }
+    $asRan = if ($isNew) { 'default' } else { 'as it ran' }
+    & $row 'Mode' (New-ChatConsoleChips (@('') + $script:ChatConsoleModes) (@($asRan) + $script:ChatConsoleModes) $C.Mode {
+            param($s, $e) $H = $script:ChatOverlayHost; $H.Con.Mode = [string]$s.Tag; $H.Con.Dirty = Get-Date; Update-ChatConsoleOptions $H
+        }) $null
+    & $row 'Model' (New-ChatConsoleChips (@('') + $script:ChatConsoleModels) (@($(if ($isNew) { 'default' } else { 'its own' })) + $script:ChatConsoleModels) $C.Model {
+            param($s, $e) $H = $script:ChatOverlayHost; $H.Con.Model = [string]$s.Tag; $H.Con.Dirty = Get-Date; Update-ChatConsoleOptions $H
+        }) $null
+    # what the mode means for a run with nobody there to answer
+    $m = if ($C.Mode) { $C.Mode } elseif ($isNew) { 'default' } elseif ($C.Target) { [string]$C.Target.Mode } else { '' }
+    $hint = switch ($m) {
+        'plan' { 'plan mode stops at a plan - auto lets it act' }
+        'bypassPermissions' { 'bypassPermissions runs everything without asking' }
+        { $_ -in 'default', 'manual' } { 'anything that would ask is denied unattended - acceptEdits or auto lets it edit' }
+        default { $null }
+    }
+    if ($hint) {
+        $ht = New-ChatOverlayText $hint 'faint' 11 -Trim
+        $ht.Margin = [System.Windows.Thickness]::new(52, 1, 0, 0)
+        [void]$C.Opts.Children.Add($ht)
+    }
+    Update-ChatConsolePreview $H
+}
+
+function Get-ChatConsoleBlock {
+    <#
+    The provider's limit, for the preview, from what the collector already
+    holds: the watcher's blocks while jobs wait, a usage window marked
+    limited, and the latest reset among the chats the limit cut off. Nothing
+    is read here: Get-ChatqBlocks with no watcher running scans the
+    transcripts, which stalled the window for half a second each minute.
+    #>
+    param($H, [string]$Provider)
+    $p = if ($Provider) { $Provider } else { 'claude' }
+    $now = Get-Date
+    $b = $H.Ctx.Blocks
+    if ($b -and $b.Count) {
+        foreach ($k in @($b.Keys)) {
+            # Why: what the watcher kept of it - for a refused login, the CLI's words
+            if (($k -eq $p -or $k -like "$p|*") -and $b[$k].Until) { return [pscustomobject]@{ Until = $b[$k].Until; Type = [string]$b[$k].Type; Why = [string]$b[$k].Source } }
+        }
+    }
+    $name = if ($p -eq 'codex') { 'Codex' } else { 'Claude' }
+    $u = @($H.Snap.header.usage | Where-Object { $_ -and $_.provider -eq $name })[0]
+    foreach ($w in @($u.windows)) {
+        if (-not $w -or -not $w.limited -or -not $w.resetsAt) { continue }
+        $until = [DateTimeOffset]::FromUnixTimeMilliseconds([int64]$w.resetsAt).LocalDateTime
+        if ($until -gt $now) { return [pscustomobject]@{ Until = $until; Type = [string]$w.label } }
+    }
+    if ($p -eq 'claude') {
+        # one account, one limit: the chats it stopped wait for its latest reset
+        $cut = @($H.Ctx.CutOff | Where-Object { $_.Why -eq 'limit' -and $_.ResetsAt -and $_.ResetsAt -gt $now } | Sort-Object ResetsAt -Descending)[0]
+        if ($cut) { return [pscustomobject]@{ Until = $cut.ResetsAt; Type = 'limit' } }
+    }
+    return $null
+}
+
+function Update-ChatConsolePreview {
+    param($H)
+    $C = $H.Con
+    if (-not $C.Preview) { return }
+    $plan = ConvertFrom-ChatConsoleWhen $C.When $(if ($C.WhenBox) { $C.WhenBox.Text } else { $C.WhenValue })
+    $t = $C.Target
+    if ($t -and $t.Kind -eq 'chat') {
+        # open in VS Code now, or not: as the collector last saw it
+        $r = @($H.Snap.rows | Where-Object { $_ -and $_.kind -eq 'session' -and $_.sessionId -eq $t.Id })[0]
+        $t.Live = if ($r) { [string]$r.chat } else { $null }
+    }
+    $prov = if ($t) { $t.Provider } else { 'claude' }
+    $ahead = @($C.Jobs | Where-Object { $_.state -eq 'queued' -and $_.provider -eq $prov }).Count
+    $text = Get-ChatConsoleSendPreview $t $plan (Get-ChatConsoleBlock $H $prov) $ahead ([bool]$H.Ctx.Watcher)
+    $C.Preview.Text = $text
+    $C.Preview.Foreground = Get-ChatOverlayBrush $(if ($plan.Error -or -not $t) { 'warn' } else { 'dim' })
+    $C.SendBtn.Child.Text = if ($C.When -eq 'now') { 'Send now' } else { 'Queue' }
+}
+
+function Update-ChatConsoleWatcher {
+    param($H)
+    $C = $H.Con
+    $queued = [bool](@($C.Jobs | Where-Object { $_.state -eq 'queued' }).Count)
+    if ($C.Request) {
+        switch (Test-ChatqWatcherRequest $C.Request $queued) {
+            'up' { $C.Request = $null }
+            'failed' { $C.Request = $null; Set-ChatConsoleStatus $H 'the watcher did not start - chatqrun -Foreground in a shell shows why' 'warn' }
+        }
+    }
+    $C.WatchText.Text = if ($C.Request) { 'starting the watcher...' } elseif ($H.Ctx.Watcher) { 'watcher running' } elseif ($queued) { 'watcher stopped - jobs wait' } else { 'watcher idle' }
+}
+
+function Get-ChatConsoleClipboard {
+    # what a paste would bring: files copied in Explorer, or an image - a
+    # PNG as the snipping tool writes it, else the bitmap - or $null for
+    # text, which the box pastes itself
+    if ($script:ChatConsoleClipboardSeam) { return (& $script:ChatConsoleClipboardSeam) }
+    try {
+        if ([System.Windows.Clipboard]::ContainsFileDropList()) { return [pscustomobject]@{ Files = @([System.Windows.Clipboard]::GetFileDropList()); Image = $null } }
+        # text wins: cells copied from Excel bring a picture of themselves
+        # along, a screenshot brings no text
+        if ([System.Windows.Clipboard]::ContainsText()) { return $null }
+        if ([System.Windows.Clipboard]::ContainsData('PNG')) {
+            $st = [System.Windows.Clipboard]::GetData('PNG')
+            if ($st -is [System.IO.Stream]) { $ms = [System.IO.MemoryStream]::new(); $st.CopyTo($ms); return [pscustomobject]@{ Files = @(); Image = $ms.ToArray() } }
+        }
+        if ([System.Windows.Clipboard]::ContainsImage()) {
+            $img = [System.Windows.Clipboard]::GetImage()
+            $enc = [System.Windows.Media.Imaging.PngBitmapEncoder]::new()
+            $enc.Frames.Add([System.Windows.Media.Imaging.BitmapFrame]::Create($img))
+            $ms = [System.IO.MemoryStream]::new()
+            $enc.Save($ms)
+            return [pscustomobject]@{ Files = @(); Image = $ms.ToArray() }
+        }
+    }
+    catch { Write-ChatOverlayLog "console: clipboard: $($_.Exception.Message)" }
+    return $null
+}
+
+function Invoke-ChatConsolePaste {
+    param($H, $Clip)
+    if (@($Clip.Files).Count) { Add-ChatConsoleDrop $H @($Clip.Files) }
+    if ($Clip.Image) { Add-ChatConsoleImage $H ([byte[]]$Clip.Image) }
+}
+
+function Add-ChatConsoleDrop {
+    # what was dropped or pasted: files go with the prompt; a folder names a
+    # new chat's folder, or is turned away
+    param($H, [string[]]$Paths)
+    $C = $H.Con
+    $files = @()
+    foreach ($p in @($Paths)) {
+        if (Test-Path -LiteralPath $p -PathType Container) {
+            if ($C.Target -and $C.Target.Kind -eq 'new') { $C.FolderBox.Text = $p }
+            else { Set-ChatConsoleStatus $H "$(Split-Path $p -Leaf) is a folder - only files go with a prompt" 'warn' }
+            continue
+        }
+        if (Test-Path -LiteralPath $p -PathType Leaf) { $files += $p }
+    }
+    if ($files) { Add-ChatConsoleFiles $H $files }
+}
+
+function Add-ChatConsoleFiles {
+    # Staged: copied into data/console/draft off this thread - the original
+    # may move or change before the job sends - each into a folder of its
+    # own so it keeps its name; Send waits for every copy.
+    param($H, [string[]]$Paths)
+    $C = $H.Con
+    foreach ($p in @($Paths)) {
+        $fi = Get-Item -LiteralPath $p -EA SilentlyContinue
+        if (-not $fi -or $fi.PSIsContainer) { continue }
+        $dir = Join-Path $script:ChatConsoleDraftDir ([guid]::NewGuid().ToString('N').Substring(0, 12))
+        New-ChatqDir $dir
+        $dest = Join-Path $dir $fi.Name
+        $task = $null
+        $err = $null
+        try { $task = [ChatOverlayNative]::CopyFileAsync($fi.FullName, $dest) } catch { $err = $_.Exception.Message }
+        $C.Staged.Add(@{ Name = $fi.Name; Path = $dest; Dir = $dir; Size = $fi.Length; Task = $task; Error = $err })
+    }
+    $C.Dirty = Get-Date
+    Update-ChatConsoleFiles $H
+}
+
+function Add-ChatConsoleImage {
+    # a pasted screenshot, kept as clip.png - clip-2.png for a second
+    param($H, [byte[]]$Bytes)
+    $C = $H.Con
+    $n = @($C.Staged | Where-Object { $_.Name -like 'clip*.png' }).Count
+    $name = if ($n) { "clip-$($n + 1).png" } else { 'clip.png' }
+    $dir = Join-Path $script:ChatConsoleDraftDir ([guid]::NewGuid().ToString('N').Substring(0, 12))
+    New-ChatqDir $dir
+    $dest = Join-Path $dir $name
+    [System.IO.File]::WriteAllBytes($dest, $Bytes)
+    $C.Staged.Add(@{ Name = $name; Path = $dest; Dir = $dir; Size = [int64]$Bytes.Length; Task = $null; Error = $null })
+    $C.Dirty = Get-Date
+    Update-ChatConsoleFiles $H
+}
+
+function Update-ChatConsoleStaging {
+    # Copies that have finished, or failed, since the last look - the draft
+    # is saved again with them, or a crash now would sweep them away. A file
+    # x'd out while it was still copying is deleted once the copy lets go.
+    param($H)
+    $C = $H.Con
+    $moved = $false
+    foreach ($s in @($C.Staged)) {
+        if (-not $s.Task -or -not $s.Task.IsCompleted) { continue }
+        if ($s.Task.IsFaulted) { $s.Error = $s.Task.Exception.GetBaseException().Message }
+        $s.Task = $null
+        $moved = $true
+    }
+    if ($C.Trash) {
+        foreach ($x in @($C.Trash)) {
+            if ($x.Task -and -not $x.Task.IsCompleted) { continue }
+            Remove-Item -LiteralPath $x.Dir -Recurse -Force -EA SilentlyContinue
+            [void]$C.Trash.Remove($x)
+        }
+    }
+    if ($moved) { $C.Dirty = Get-Date; Update-ChatConsoleFiles $H }
+}
+
+function Update-ChatConsoleFiles {
+    # the files going with the prompt, as chips with their size and a x
+    param($H)
+    $C = $H.Con
+    $C.Files.Children.Clear()
+    foreach ($s in @($C.Staged)) {
+        $kb = if ($s.Size -ge 1MB) { '{0:N1} MB' -f ($s.Size / 1MB) } else { '{0:N0} KB' -f [Math]::Max(1, $s.Size / 1KB) }
+        $what = if ($s.Error) { " - $($s.Error)" } elseif ($s.Task) { ' - copying' } else { '' }
+        $chip = [System.Windows.Controls.Border]::new()
+        $chip.CornerRadius = [System.Windows.CornerRadius]::new(4)
+        $chip.BorderThickness = [System.Windows.Thickness]::new(1)
+        $chip.BorderBrush = Get-ChatOverlayBrush $(if ($s.Error) { 'error' } else { 'inputEdge' })
+        $chip.Padding = [System.Windows.Thickness]::new(7, 1, 3, 2)
+        $chip.Margin = [System.Windows.Thickness]::new(0, 0, 5, 3)
+        $sp = [System.Windows.Controls.StackPanel]::new()
+        $sp.Orientation = [System.Windows.Controls.Orientation]::Horizontal
+        [void]$sp.Children.Add((New-ChatOverlayText "$($s.Name) ($kb)$what" $(if ($s.Error) { 'error' } else { 'text' }) 11.5))
+        $x = New-ChatConsoleButton ([string][char]0x00D7) { param($o, $e) $e.Handled = $true; Remove-ChatConsoleFile $script:ChatOverlayHost $o.Tag } -Small -Tag $s -Tip 'Leave this file out'
+        $x.BorderThickness = [System.Windows.Thickness]::new(0)
+        $x.Margin = [System.Windows.Thickness]::new(3, 0, 0, 0)
+        [void]$sp.Children.Add($x)
+        $chip.Child = $sp
+        [void]$C.Files.Children.Add($chip)
+    }
+    $n = @($C.Staged).Count
+    $bytes = (@($C.Staged) | ForEach-Object { [int64]$_.Size } | Measure-Object -Sum).Sum
+    if ($n -gt $script:ChatqAttachWarnCount -or $bytes -gt $script:ChatqAttachWarnBytes) {
+        [void]$C.Files.Children.Add((New-ChatOverlayText 'that is a lot for one run - every file costs context, and usage' 'warn' 11))
+    }
+}
+
+function Remove-ChatConsoleFile {
+    param($H, $Staged)
+    $C = $H.Con
+    [void]$C.Staged.Remove($Staged)
+    # still being copied: the copy holds the file open, so it goes when done
+    if ($Staged.Task -and -not $Staged.Task.IsCompleted) {
+        if (-not $C.Trash) { $C.Trash = [System.Collections.Generic.List[object]]::new() }
+        $C.Trash.Add(@{ Dir = $Staged.Dir; Task = $Staged.Task })
+    }
+    elseif ($Staged.Dir -and (Test-Path -LiteralPath $Staged.Dir)) { Remove-Item -LiteralPath $Staged.Dir -Recurse -Force -EA SilentlyContinue }
+    $C.Dirty = Get-Date
+    Update-ChatConsoleFiles $H
+}
+
+function Invoke-ChatConsoleBrowse {
+    # the folder picker, over the console; the console is not redrawn under it
+    param($H)
+    $C = $H.Con
+    $d = [System.Windows.Forms.FolderBrowserDialog]::new()
+    $d.Description = 'The folder the new chat works in'
+    if ($C.FolderBox.Text -and (Test-Path -LiteralPath $C.FolderBox.Text)) { $d.SelectedPath = $C.FolderBox.Text }
+    $own = [System.Windows.Forms.NativeWindow]::new()
+    $C.Modal = $true
+    try {
+        $own.AssignHandle($C.Hwnd)
+        if ($d.ShowDialog($own) -eq [System.Windows.Forms.DialogResult]::OK) { $C.FolderBox.Text = $d.SelectedPath }
+    }
+    finally { $C.Modal = $false; try { $own.ReleaseHandle() } catch {}; $d.Dispose() }
+}
+
+function Invoke-ChatConsoleSend {
+    <#
+    Send: the prompt, its files and the choices made, to the chat picked or
+    a new one - New-ChatqJob, the same job chatq makes - then the watcher
+    asked for without a wait. The box empties for the next one; the chat
+    stays picked.
+    #>
+    param($H)
+    $C = $H.Con
+    $t = $C.Target
+    # the second click of a double-click finds the box it just emptied
+    if (-not $C.Prompt.Text.Trim() -and $C.SentAt -and ((Get-Date) - $C.SentAt).TotalSeconds -lt 2) { return }
+    if (-not $t) { Set-ChatConsoleStatus $H 'pick a chat on the left, or + New chat' 'warn'; return }
+    if (@($C.Staged | Where-Object { $_.Task }).Count) { Set-ChatConsoleStatus $H 'a file is still being copied - a moment' 'warn'; return }
+    if (@($C.Staged | Where-Object { $_.Error }).Count) { Set-ChatConsoleStatus $H 'a file could not be copied - x it out, or drop it again' 'warn'; return }
+    $plan = ConvertFrom-ChatConsoleWhen $C.When $(if ($C.WhenBox) { $C.WhenBox.Text } else { $C.WhenValue })
+    if ($plan.Error) { Set-ChatConsoleStatus $H $plan.Error 'warn'; return }
+    $text = $C.Prompt.Text
+    $src = @{ Files = @($C.Staged | ForEach-Object { $_.Path }) }
+    # the job list read afresh for its number: a shell may have queued one
+    # since the last pass
+    # Claude's modes and models mean nothing to Codex, which runs in the
+    # sandbox it last used: -m opus would fail the run
+    $codex = $t.Provider -eq 'codex'
+    $how = @{
+        Prompt = $text; Mode = $(if ($codex) { '' } else { $C.Mode }); Model = $(if ($codex) { '' } else { $C.Model })
+        NotBefore = $plan.NotBefore; First = $plan.First; SendNow = $plan.SendNow; Sources = $src; MoveSources = $true
+    }
+    if ($t.Kind -eq 'new') {
+        $made = New-ChatqJob -Kind new -Cwd $C.FolderBox.Text -Title $C.NameBox.Text.Trim() @how
+    }
+    else {
+        $got = Get-ChatConsoleRow $H $t
+        if (-not $got) { Set-ChatConsoleStatus $H (Get-ChatConsoleMissingSay $t) 'warn'; return }
+        $made = New-ChatqJob -Row $got.Row -Info $got.Info -Rule 'picked' @how
+    }
+    if ($made.Error) { Set-ChatConsoleStatus $H $made.Error 'warn'; return }
+    $j = $made.Job
+    # what was staged went in with it
+    foreach ($s in @($C.Staged)) { if ($s.Dir -and (Test-Path -LiteralPath $s.Dir)) { Remove-Item -LiteralPath $s.Dir -Recurse -Force -EA SilentlyContinue } }
+    $C.Staged.Clear()
+    $C.Prompt.Text = ''
+    if ($t.Kind -eq 'new') {
+        $folders = @(@($j.cwd) + @($C.State.folders | Where-Object { $_ -and $_ -ne $j.cwd }) | Select-Object -First 10)
+        $C.State.folders = $folders
+        $C.NameBox.Text = ''
+        # the new chat is the one picked now, for what goes to it next
+        $C.Target = @{ Kind = 'chat'; Id = $j.sessionId; Provider = 'claude'; Title = $j.title; Project = (Split-Path ([string]$j.cwd).TrimEnd('\', '/') -Leaf); Cwd = $j.cwd; Path = $j.path; Live = $null }
+    }
+    $C.Request = Request-ChatqWatcher -Wake poke
+    $C.Sel = $j.id
+    $C.SentAt = Get-Date
+    $C.Confirm = @{}
+    Save-ChatConsoleDraft $H
+    Update-ChatConsoleTarget $H
+    Update-ChatConsoleFiles $H
+    $miss = if (@($made.Missed).Count) { " - could not take in $(@($made.Missed).Count) file(s)" } else { '' }
+    Set-ChatConsoleStatus $H "queued #$($j.seq) for '$($j.title)'$(if (@($made.Files).Count) { " with $(Format-ChatqAttachSummary @($made.Files))" })$miss" $(if ($miss) { 'warn' } else { 'dim' })
+    Update-ChatConsoleNow $H
+}
+
+function Get-ChatConsoleMissingSay {
+    # why a chat picked has no row to send to: a new chat not made yet - its
+    # first run makes it - or one the index has not seen
+    param($Target)
+    $first = @(Get-ChatqJobs | Where-Object { $_.kind -eq 'new' -and $_.sessionId -eq $Target.Id -and $_.state -in 'queued', 'running' })[0]
+    if ($first) { return "this chat is made when #$($first.seq) runs - write to it after that" }
+    return "that chat is not in the index yet - chatindex in a shell, or wait for the console's own sync"
+}
+
+function Invoke-ChatConsoleContinue {
+    # "Continue from where you left off." for each chat the limit or a 529
+    # stopped - one New-ChatqJob each, in turn, then the watcher asked once.
+    # A chat that already has one waiting or running is left alone: the list
+    # is redrawn only on the next pass, and a second click would queue it twice.
+    param($H, [object[]]$Items)
+    $n = 0
+    $had = 0
+    $fails = @()
+    $taken = @{}
+    foreach ($j in @(Get-ChatqJobs)) { if ($j.state -in 'queued', 'running' -and $j.sessionId) { $taken[[string]$j.sessionId] = $true } }
+    foreach ($i in @($Items)) {
+        if (-not $i) { continue }
+        if ($taken[[string]$i.Id]) { $had++; continue }
+        $row = Get-ChatqRowById $i.Id 'claude' $i.Path $i.Cwd
+        if (-not $row) { $fails += "$($i.Title): not found"; continue }
+        $made = New-ChatqJob -Row $row -Kind continue -Rule 'continue'
+        if ($made.Error) { $fails += "$($i.Title): $($made.Error)" } else { $n++; $taken[[string]$i.Id] = $true }
+    }
+    if ($n) { $H.Con.Request = Request-ChatqWatcher -Wake poke }
+    $say = "queued $n continue$(if ($n -ne 1) { 's' }) - each goes when its limit is over$(if ($had) { "; $had had one already" })"
+    Set-ChatConsoleStatus $H $(if ($fails) { "$say; $($fails -join '; ')" } else { $say }) $(if ($fails) { 'warn' } else { 'dim' })
+    Update-ChatConsoleNow $H
+}
+
+function Update-ChatConsoleNow {
+    # a pass now, not in up to 2 s: what was just queued shows at once, and
+    # the rows it answers - a cut-off chat continued - leave the list
+    param($H)
+    $H.Con.JobsSig = $null
+    $H.Con.Sigs = @{}
+    try { Update-ChatOverlayView $H (Invoke-ChatOverlayCycle $H.Ctx -Peek) } catch { Write-ChatOverlayLog "console: $($_.Exception.Message)" }
+    Update-ChatConsole $H
+}
+
+function Update-ChatConsoleQueue {
+    # the jobs: open ones and those that ended in the last day, newest work
+    # first, each with where it stands; the one picked in full beside them
+    param($H)
+    $C = $H.Con
+    if (-not $C.Queue) { return }
+    $eta = @{}
+    foreach ($r in @($H.Snap.rows)) { if ($r -and $r.job -and $r.job.eta) { $eta[[int]$r.job.seq] = [string]$r.job.eta } }
+    $day = (Get-Date).AddDays(-1)
+    $list = @($C.Jobs | Where-Object { $_.state -in 'queued', 'running', 'needs-input' -or ((ConvertTo-ChatqDate $_.endedAt) -gt $day) })
+    $key = (@($list | ForEach-Object { "$($_.id)=$($_.state)=$($eta[[int]$_.seq])" }) -join ';') + "|$($C.Sel)|$($C.ShowLog)|$(@($C.Confirm.Keys) -join ',')"
+    if ($key -eq $C.Sigs.Queue) { return }
+    $C.Sigs.Queue = $key
+    $C.Queue.Children.Clear()
+    if (-not $list) { [void]$C.Queue.Children.Add((New-ChatOverlayText 'nothing queued' 'faint' 12)) }
+    $open = @($list | Where-Object { $_.state -in 'queued', 'running', 'needs-input' })
+    $shut = @($list | Where-Object { $_.state -notin 'queued', 'running', 'needs-input' } | Sort-Object { ConvertTo-ChatqDate $_.endedAt } -Descending)
+    foreach ($j in @($open + $shut)) {
+        $st = Get-ChatConsoleJobStatus $j $eta[[int]$j.seq]
+        $b = [System.Windows.Controls.Border]::new()
+        $b.CornerRadius = [System.Windows.CornerRadius]::new(4)
+        $b.Padding = [System.Windows.Thickness]::new(6, 2, 6, 3)
+        $b.Cursor = [System.Windows.Input.Cursors]::Hand
+        $b.Tag = $j.id
+        $b.Background = if ($C.Sel -eq $j.id) { Get-ChatOverlayBrush 'select' } else { [System.Windows.Media.Brushes]::Transparent }
+        $d = [System.Windows.Controls.DockPanel]::new()
+        $right = New-ChatOverlayText $st.Text $st.Tone 11 -Trim
+        $right.MaxWidth = 260
+        $right.Margin = [System.Windows.Thickness]::new(8, 0, 0, 0)
+        [System.Windows.Controls.DockPanel]::SetDock($right, [System.Windows.Controls.Dock]::Right)
+        [void]$d.Children.Add($right)
+        $l = [System.Windows.Controls.TextBlock]::new()
+        $l.TextTrimming = [System.Windows.TextTrimming]::CharacterEllipsis
+        $r1 = [System.Windows.Documents.Run]::new("#$($j.seq)  ")
+        $r1.Foreground = Get-ChatOverlayBrush 'faint'
+        $l.Inlines.Add($r1)
+        $r2 = [System.Windows.Documents.Run]::new("$(if ($j.kind -eq 'new') { 'new: ' })$($j.title)")
+        $r2.Foreground = Get-ChatOverlayBrush 'text'
+        $l.Inlines.Add($r2)
+        $first = if ($j.kind -eq 'continue' -or $j.retryAs -eq 'continue') { 'continue' } else { (Get-ChatqPromptStats ([string](Read-ChatqPrompt $j))).First }
+        if ($first) { $r3 = [System.Windows.Documents.Run]::new("   $first"); $r3.Foreground = Get-ChatOverlayBrush 'dim'; $l.Inlines.Add($r3) }
+        [void]$d.Children.Add($l)
+        $b.Child = $d
+        # another job picked: a Remove asked about the last one no longer stands
+        $b.add_MouseLeftButtonUp({ param($s, $e) $H = $script:ChatOverlayHost; $H.Con.Sel = [string]$s.Tag; $H.Con.ShowLog = $false; $H.Con.Confirm = @{}; $H.Con.Sigs.Queue = $null; Update-ChatConsoleQueue $H })
+        [void]$C.Queue.Children.Add($b)
+    }
+    Show-ChatConsoleDetails $H
+}
+
+function Show-ChatConsoleDetails {
+    # the job picked: where it stands, what came of it, the buttons for what
+    # can be done to it now, its prompt - editable while it waits - and its
+    # reply or log
+    param($H)
+    $C = $H.Con
+    # A prompt being edited outlives the redraw: any job's state or send
+    # time moving redraws this pane, and the edit went with it. Kept while
+    # it differs from the file and is for the same job.
+    $typed = $null
+    if ($C.EditBox -and $C.EditFor -and $C.EditBox.Text -ne $C.EditWas) { $typed = @{ For = $C.EditFor; Text = $C.EditBox.Text; Was = $C.EditWas } }
+    $C.EditBox = $null
+    $C.EditFor = $null
+    $C.Details.Children.Clear()
+    $j = if ($C.Sel) { @($C.Jobs | Where-Object { $_.id -eq $C.Sel })[0] } else { $null }
+    if (-not $j) { [void]$C.Details.Children.Add((New-ChatOverlayText 'pick a job to see it in full' 'faint' 12)); return }
+    $add = { param($x) [void]$C.Details.Children.Add($x) }
+    $h1 = New-ChatOverlayText "#$($j.seq)  $($j.title)" 'text' 13 -Bold -Trim
+    & $add $h1
+    $st = Get-ChatConsoleJobStatus $j $null
+    $w = New-ChatOverlayText "$($st.Text)" $st.Tone 11.5
+    $w.TextWrapping = [System.Windows.TextWrapping]::Wrap
+    & $add $w
+    & $add (New-ChatOverlayText "$($j.provider) $($script:ChatqDot) $($j.kind)$(if ($j.mode) { " $($script:ChatqDot) $($j.mode)" }) $($script:ChatqDot) $($j.cwd)" 'faint' 11 -Trim)
+    $acts = [System.Windows.Controls.WrapPanel]::new()
+    $acts.Margin = [System.Windows.Thickness]::new(0, 6, 0, 6)
+    $act = { param($label, $what, $tip) [void]$acts.Children.Add((New-ChatConsoleButton $label { param($s, $e) Invoke-ChatConsoleJobAction $script:ChatOverlayHost ([string]$s.Tag.Id) ([string]$s.Tag.Act) } -Small -Tag @{ Id = $j.id; Act = $what } -Tip $tip)) }
+    switch ([string]$j.state) {
+        'queued' {
+            & $act 'Try now' 'now' 'Stop waiting for a reset: ask now, and send if the limit is over'
+            & $act 'First' 'first' 'To the front of the queue'
+            & $act $(if ($C.Confirm[$j.id]) { 'Remove - sure?' } else { 'Remove' }) 'remove' 'Drop it, its prompt and its files'
+        }
+        'running' { & $act 'Cancel' 'cancel' 'Stop the run - it is marked failed' }
+        default {
+            & $act 'Requeue' 'requeue' 'Send it again - as "continue" if its prompt already reached the chat'
+            & $act $(if ($C.Confirm[$j.id]) { 'Remove - sure?' } else { 'Remove' }) 'remove' 'Drop it, its prompt and its files'
+        }
+    }
+    if ($j.sessionId) { & $act 'Write to this chat' 'write' 'Pick this chat to write to' }
+    if (Test-Path -LiteralPath (Join-Path $script:ChatqLogDir "$($j.id).jsonl")) { & $act $(if ($C.ShowLog) { 'Reply' } else { 'Log' }) 'log' 'What the run did' }
+    & $add $acts
+    if ($j.state -eq 'queued' -and $j.kind -ne 'continue' -and $j.retryAs -ne 'continue') {
+        $ed = New-ChatConsoleInput -Multi -Tip 'Edits count until it sends'
+        $ed.MinHeight = 60
+        $ed.MaxHeight = 220
+        $C.EditWas = [string](Read-ChatqPrompt $j)
+        $ed.Text = if ($typed -and $typed.For -eq $j.id) { $typed.Text } else { $C.EditWas }
+        $C.EditBox = $ed
+        $C.EditFor = $j.id
+        & $add $ed
+        $sv = New-ChatConsoleButton 'Save the prompt' { param($s, $e) Invoke-ChatConsoleJobAction $script:ChatOverlayHost ([string]$s.Tag) 'save' } -Small -Tag $j.id
+        $sv.Margin = [System.Windows.Thickness]::new(0, 4, 0, 6)
+        $sv.HorizontalAlignment = [System.Windows.HorizontalAlignment]::Left
+        & $add $sv
+    }
+    $files = @(Get-ChatqAttachments $j)
+    if ($files) { & $add (New-ChatOverlayText (Format-ChatqAttachSummary $files) 'faint' 11 -Trim) }
+    # the log read once per length: a long run's is megabytes of JSON
+    $lp = Join-Path $script:ChatqLogDir "$($j.id).jsonl"
+    $ll = try { ([System.IO.FileInfo]::new($lp)).Length } catch { 0 }
+    if (-not $C.LogCache) { $C.LogCache = @{} }
+    $lc = $C.LogCache[$j.id]
+    if (-not $lc -or $lc.Len -ne $ll) { $lc = @{ Len = $ll; Entries = @(Get-ChatqLogEntries $j -MaxBytes 2MB) }; $C.LogCache[$j.id] = $lc }
+    if ($C.ShowLog) {
+        foreach ($e in @($lc.Entries)) {
+            $tone = switch ($e.Type) { 'text' { 'text' } 'denied' { 'warn' } 'error' { 'error' } default { 'faint' } }
+            $prefix = switch ($e.Type) { 'tool' { '> ' } 'denied' { '! denied ' } 'error' { '! ' } 'result' { '= ' } default { '' } }
+            $tb = New-ChatOverlayText "$prefix$($e.Text)" $tone 11.5
+            $tb.TextWrapping = [System.Windows.TextWrapping]::Wrap
+            $tb.Margin = [System.Windows.Thickness]::new(0, 2, 0, 2)
+            & $add $tb
+        }
+    }
+    elseif ($j.result) {
+        # the reply: the log's last words, else the excerpt the job kept
+        $reply = @($lc.Entries | Where-Object { $_.Type -eq 'text' } | ForEach-Object { $_.Text })
+        $text = if ($reply) { $reply[-1] } elseif ($j.result.excerpt) { [string]$j.result.excerpt } else { '' }
+        if ($text) {
+            $tb = New-ChatOverlayText $text 'text' 12
+            $tb.TextWrapping = [System.Windows.TextWrapping]::Wrap
+            & $add $tb
+        }
+        if ($j.result.PSObject.Properties['stale'] -and $j.result.stale) { & $add (New-ChatOverlayText 'the chat is open in VS Code - reload that window to see this there' 'warn' 11) }
+    }
+    foreach ($h in @($j.history | Select-Object -Last 6)) {
+        $at = ConvertTo-ChatqDate $h.at
+        & $add (New-ChatOverlayText "$(if ($at) { $at.ToString('MM-dd HH:mm') })  $($h.state)  $($h.why)" 'faint' 10.5 -Trim)
+    }
+}
+
+function Invoke-ChatConsoleJobAction {
+    # what a button in the details does - the same core chatqrm, chatqrun
+    # and chatq <n> call
+    param($H, [string]$Id, [string]$Act)
+    $C = $H.Con
+    $j = Find-ChatqJob $Id
+    if (-not $j) { Set-ChatConsoleStatus $H 'that job is gone' 'warn'; $C.JobsSig = $null; return }
+    $say = ''
+    switch ($Act) {
+        'now' { Set-ChatqJobFirst $j; $C.Request = Request-ChatqWatcher -Wake now; $say = "#$($j.seq) tried now - it sends if nothing holds it" }
+        'first' { Set-ChatqJobFirst $j; $C.Request = Request-ChatqWatcher -Wake poke; $say = "#$($j.seq) moved to the front" }
+        'remove' {
+            # Twice, and on purpose: a first click only asks, and the second
+            # counts from 0.4 s to 5 s after it - the second half of a
+            # double-click lands on "sure?" at once, and an old ask is stale.
+            $asked = $C.Confirm[$j.id]
+            $age = if ($asked) { ((Get-Date) - $asked).TotalSeconds } else { -1 }
+            if ($age -ge 0 -and $age -lt 0.4) { return }
+            # the ask's time is taken again once the pane is redrawn: the
+            # second half of a double-click waits in the queue while it draws,
+            # and a slow redraw would otherwise use up the 0.4 s
+            if ($age -lt 0 -or $age -gt 5) { $C.Confirm = @{ $j.id = (Get-Date) }; $C.Sigs.Queue = $null; Update-ChatConsoleQueue $H; $C.Confirm[$j.id] = Get-Date; return }
+            $C.Confirm.Remove($j.id)
+            if (Remove-ChatqJob $j 'the console') { $say = "removed #$($j.seq)"; $C.Sel = $null } else { $say = "#$($j.seq) is running - cancel it first" }
+        }
+        'cancel' {
+            $say = switch (Stop-ChatqJobRun $j) {
+                'cancelling' { "#$($j.seq) cancelling - stopped within a few seconds" }
+                'not running' { "#$($j.seq) had already ended - $($j.state)" }
+                default { "#$($j.seq) was left running by a watcher that stopped - marked failed" }
+            }
+        }
+        'requeue' {
+            $r = Reset-ChatqJob $j
+            if ($r.Error) { $say = $r.Error } else { $C.Request = Request-ChatqWatcher -Wake poke; $say = "#$($j.seq) queued again$(if ($r.Landed) { ', as "continue" - the prompt already reached the chat' })" }
+        }
+        'write' {
+            $C.Target = @{ Kind = 'chat'; Id = [string]$j.sessionId; Provider = [string]$j.provider; Title = [string]$j.title; Project = (Split-Path ([string]$j.cwd).TrimEnd('\', '/') -Leaf); Cwd = $j.cwd; Path = $j.path; Live = $null }
+            $C.Sigs.Chats = $null
+            Update-ChatConsoleTarget $H
+            [void]$C.Prompt.Focus()
+            return
+        }
+        'log' { $C.ShowLog = -not $C.ShowLog; $C.Sigs.Queue = $null; Update-ChatConsoleQueue $H; return }
+        'save' {
+            if ($j.state -ne 'queued') { $say = "#$($j.seq) is $($j.state) - an edit now changes nothing"; break }
+            $p = Get-ChatqPromptPath $j
+            $old = if (Test-Path -LiteralPath $p) { [System.IO.File]::ReadAllText($p, [System.Text.Encoding]::UTF8) } else { '' }
+            $head = [regex]::Match($old, '^\s*<!--\s*chatq:.*?-->\s*', [System.Text.RegularExpressions.RegexOptions]::Singleline).Value
+            Save-ChatqText $p ($head + $C.EditBox.Text)
+            $say = "#$($j.seq) prompt saved"
+        }
+    }
+    $C.Confirm.Clear()
+    $C.JobsSig = $null
+    $C.Jobs = @(Get-ChatqJobs)
+    $C.Sigs.Queue = $null
+    Update-ChatConsoleQueue $H
+    if ($say) { Set-ChatConsoleStatus $H $say }
+}
+
+function Register-ChatConsoleHotkey {
+    # config consoleHotkey (Ctrl+Alt+Shift+Q): opens the console. Taken by
+    # another program, it is logged and the tray item still works.
+    param($H)
+    $text = [string]$H.Ctx.Config.consoleHotkey
+    if ($H.ConHotkey -and $H.ConHotkeyText -eq $text) { return }
+    if ($H.ConHotkey) { $H.ConHotkey.Dispose(); $H.ConHotkey = $null }
+    $H.ConHotkeyText = $text
+    $k = try { ConvertFrom-ChatOverlayHotkey $text } catch { Write-ChatOverlayLog "console hotkey: $($_.Exception.Message)"; $null }
+    if (-not $k) { return }
+    $hk = [ChatOverlayHotkey]::new()
+    $hk.add_Pressed({ Invoke-ChatOverlayVerb 'console' })
+    if ($hk.Register([uint32]$k.Mods, [uint32]$k.Vk)) { $H.ConHotkey = $hk }
+    else { $hk.Dispose(); Write-ChatOverlayLog "console hotkey $text is taken by another program" }
 }
 
 #endregion
@@ -9902,7 +12059,7 @@ var CO = {
   },
   colors: {
     waiting: [0.96, 0.73, 0.26], 'needs-input': [0.96, 0.73, 0.26], busy: [0.30, 0.76, 0.54],
-    running: [0.31, 0.63, 1.0], idle: [0.50, 0.53, 0.56], queued: [0.71, 0.55, 1.0],
+    running: [0.31, 0.63, 1.0], idle: [0.50, 0.53, 0.56], queued: [0.71, 0.55, 1.0], cutoff: [1.0, 0.54, 0.30],
     text: [0.91, 0.92, 0.93], dim: [0.60, 0.63, 0.65], faint: [0.42, 0.44, 0.47], project: [0.54, 0.72, 1.0],
     normal: [0.35, 0.66, 0.90], warning: [0.96, 0.73, 0.26], critical: [1.0, 0.36, 0.36],
     warn: [0.96, 0.73, 0.26], error: [1.0, 0.48, 0.45], unlocked: [0.31, 0.63, 1.0]
@@ -9910,7 +12067,7 @@ var CO = {
   // the light look: the same meanings, darker to read on white
   light: {
     waiting: [0.79, 0.54, 0.0], 'needs-input': [0.79, 0.54, 0.0], busy: [0.10, 0.56, 0.30],
-    running: [0.12, 0.44, 0.92], idle: [0.55, 0.58, 0.62], queued: [0.51, 0.31, 0.87],
+    running: [0.12, 0.44, 0.92], idle: [0.55, 0.58, 0.62], queued: [0.51, 0.31, 0.87], cutoff: [0.74, 0.30, 0.0],
     text: [0.12, 0.14, 0.16], dim: [0.34, 0.38, 0.42], faint: [0.55, 0.58, 0.62], project: [0.04, 0.41, 0.85],
     normal: [0.04, 0.41, 0.85], warning: [0.75, 0.53, 0.0], critical: [0.81, 0.13, 0.18],
     warn: [0.60, 0.40, 0.0], error: [0.81, 0.13, 0.18], unlocked: [0.04, 0.41, 0.85]
@@ -10286,16 +12443,17 @@ function Get-ChatOverlayLaunch {
     always Windows PowerShell with -STA, even from pwsh: WPF needs an STA
     thread, and every Windows has powershell.exe. The command carries the
     environment it needs, and a failure before the log function exists still
-    reaches the log.
+    reaches the log. -Open console: the console opens as it starts - a
+    command left for it now would be swept away as it takes its lock.
     #>
-    param([string]$Path = $script:ChatqScriptPath)
+    param([string]$Path = $script:ChatqScriptPath, [ValidateSet('', 'console')][string]$Open = '')
     $q = { param($s) "'" + ([string]$s).Replace("'", "''") + "'" }
     $pre = '$env:CHATQ_OVERLAY=''1''; '
     foreach ($n in 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'CHATQ_CLAUDE', 'CHATQ_CODEX', 'CHATQ_GH') {
         $v = [Environment]::GetEnvironmentVariable($n)
         if ($v) { $pre += "`$env:$n=$(& $q $v); " }
     }
-    $entry = if ($script:ChatqIsWindows) { 'Start-ChatOverlayHost' } else { 'Start-ChatOverlayMacHost' }
+    $entry = if ($script:ChatqIsWindows) { "Start-ChatOverlayHost$(if ($Open) { " -Open '$Open'" })" } else { 'Start-ChatOverlayMacHost' }
     $log = Join-Path $script:ChatqLogDir 'overlay.log'
     $cmd = $pre + "try { . $(& $q $Path); $entry } catch { try { [void][IO.Directory]::CreateDirectory($(& $q $script:ChatqLogDir)); " +
     "[IO.File]::AppendAllText($(& $q $log), (Get-Date).ToString('o') + '  overlay failed to start: ' + `$_.Exception.Message + [char]10) } catch {} }"
@@ -10310,6 +12468,7 @@ function Get-ChatOverlayLaunch {
 
 function Start-ChatOverlayProcess {
     # just the launch; chatoverlay decides whether one is needed
+    param([string]$Open = '')
     if ($script:ChatOverlaySpawn) { return (& $script:ChatOverlaySpawn) }   # tests: no real process
     if (-not $script:ChatqIsWindows -and -not $script:ChatIsMac) { return $false }
     $path = $script:ChatqScriptPath
@@ -10317,7 +12476,7 @@ function Start-ChatOverlayProcess {
         Write-Host '  cannot start the overlay: this shell does not know where VS-code-chat-manager.ps1 is' -ForegroundColor Yellow
         return $false
     }
-    $l = Get-ChatOverlayLaunch $path
+    $l = Get-ChatOverlayLaunch $path -Open $Open
     try {
         if ($script:ChatqIsWindows) { Start-Process -FilePath $l.Exe -ArgumentList $l.Args -WindowStyle Hidden | Out-Null }
         else {
@@ -10353,8 +12512,8 @@ function chatoverlay {
     .DESCRIPTION
     Each open chat is a row: project, title, its newest prompt, and whether it
     is working (green), waiting on you (amber, at the top), or idle (grey).
-    Queued prompts are rows too (purple), or ride on their chat's row when it
-    is open. Usage sits at the top, a line for each of Claude, Codex and
+    Chats the limit cut off are orange, with when it resets. Queued prompts
+    are rows too (purple), or ride on their chat's row when it is open. Usage sits at the top, a line for each of Claude, Codex and
     Copilot, each ending with when its figure is from - or as bars with a
     countdown to each reset. Claude's is asked live from its usage endpoint
     every five minutes while a chat works, every fifteen while all are idle,
@@ -10362,8 +12521,9 @@ function chatoverlay {
     fifteen; Codex's is what Codex wrote on its last run.
 
     Clicks go through it and it never takes focus. On Windows the pointer
-    brings up a row of buttons on its top edge: a grip to drag it by, collapse to
-    one line, refresh usage, settings (opacity, theme, usage as lines or bars), hide to the tray -
+    brings up a row of buttons over its top-right corner: a grip to drag it by, collapse to
+    one line, refresh usage, the console (chatconsole), settings (opacity, theme,
+    usage as lines or bars), hide to the tray -
     the tray dot shows it again - and close. The hotkey (Ctrl+Alt+Shift+O)
     or the tray menu unlocks the whole panel to drag; it locks again by
     itself two minutes after the pointer leaves. Windows and macOS
@@ -10390,6 +12550,10 @@ function chatoverlay {
     dark (the default), light, or system - following the OS's own light or dark setting.
     .PARAMETER Opacity
     How opaque the panel is, 0.3 to 1 - or as a percent, 30 to 100.
+    .PARAMETER Console
+    Open the console: pick a chat, write to it, drop files on it, send now or queue; the queue beside it. Starts the overlay if it is not running. Windows only.
+    .PARAMETER ConsoleHotkey
+    The key that opens the console: Ctrl+Alt+Shift+Q by default, none for no key.
     .PARAMETER UsageView
     lines (the default): usage as one line a provider. bars: a bar and a reset countdown per window.
     .PARAMETER CopilotUsage
@@ -10404,9 +12568,10 @@ function chatoverlay {
     [CmdletBinding()]
     param(
         [switch]$Stop, [switch]$Unlock, [switch]$Lock, [switch]$Reset, [switch]$Print,
-        [switch]$Collapse, [switch]$Expand, [switch]$Refresh,
+        [switch]$Collapse, [switch]$Expand, [switch]$Refresh, [switch]$Console,
         [ValidateSet('on', 'off')][string]$AutoStart,
         [string]$Hotkey,
+        [string]$ConsoleHotkey,
         [ValidateSet('on', 'off')][string]$LiveUsage,
         [ValidateSet('dark', 'light', 'system')][string]$Theme,
         [double]$Opacity,
@@ -10438,11 +12603,17 @@ function chatoverlay {
         catch { Write-Host "  $($_.Exception.Message)" -ForegroundColor Yellow; return }
         $set.hotkey = if ($k) { $k.Text } else { 'none' }
     }
+    if ($PSBoundParameters.ContainsKey('ConsoleHotkey')) {
+        try { $k = ConvertFrom-ChatOverlayHotkey $ConsoleHotkey }
+        catch { Write-Host "  $($_.Exception.Message)" -ForegroundColor Yellow; return }
+        $set.consoleHotkey = if ($k) { $k.Text } else { 'none' }
+    }
     if ($set.Count) {
         Set-ChatOverlayConfig $set
         if ($set.ContainsKey('autoStart')) { Write-Host "  start with every shell: $AutoStart" -ForegroundColor Green }
         if ($set.ContainsKey('liveUsage')) { Write-Host "  live usage: $LiveUsage" -ForegroundColor Green }
         if ($set.ContainsKey('hotkey')) { Write-Host "  hotkey: $($set.hotkey)" -ForegroundColor Green }
+        if ($set.ContainsKey('consoleHotkey')) { Write-Host "  console hotkey: $($set.consoleHotkey)" -ForegroundColor Green }
         if ($set.ContainsKey('theme')) { Write-Host "  theme: $($set.theme)" -ForegroundColor Green }
         if ($set.ContainsKey('opacity')) { Write-Host "  opacity: $([int]($set.opacity * 100))%" -ForegroundColor Green }
         if ($set.ContainsKey('usageView')) { Write-Host "  usage as $($set.usageView)" -ForegroundColor Green }
@@ -10480,6 +12651,14 @@ function chatoverlay {
         elseif ($alive) { Send-ChatOverlayCommand 'refresh'; Write-Host "  asked Claude for usage now - it shows within a few seconds. Codex's moves only when Codex runs." -ForegroundColor DarkGray }
         else { Write-Host '  the overlay is not running - chatoverlay -Print asks once' -ForegroundColor DarkGray }
     }
+    if ($Console) {
+        if (-not $script:ChatqIsWindows) { Write-Host '  the console is Windows only for now - chatq, chatqlist and chatqrm do the same from a shell' -ForegroundColor Yellow; return }
+        # Windows gives the focus to what the user started; a running overlay
+        # only told to open it may just flash its taskbar button
+        if ($alive) { Send-ChatOverlayCommand 'console'; Write-Host '  the console opens in the running overlay - its taskbar button, if it stays behind' -ForegroundColor DarkGray }
+        elseif (Start-ChatOverlayProcess -Open 'console') { Write-Host '  starting the overlay with its console - a few seconds' -ForegroundColor DarkGray }
+        return
+    }
     if ($set.Count -or $verbs -or $Refresh) { return }
 
     if (-not $script:ChatqIsWindows -and -not $script:ChatIsMac) {
@@ -10504,9 +12683,27 @@ function chatoverlay {
         Write-Host '  overlay started - top right of the main screen' -ForegroundColor Green
         if ($script:ChatIsMac) { Write-Host '  macOS support is untested - TESTING.md lists what to check' -ForegroundColor DarkGray }
     }
-    if ($script:ChatqIsWindows) { Write-Host '  clicks go through it - point at it for its buttons: move, collapse, refresh, settings, hide, close' -ForegroundColor DarkGray }
+    if ($script:ChatqIsWindows) { Write-Host '  clicks go through it - point at it for its buttons: move, collapse, refresh, console, settings, hide, close' -ForegroundColor DarkGray }
     else { Write-Host '  clicks go through it - the CQ menu bar item unlocks it to drag' -ForegroundColor DarkGray }
     Write-Host "  chatoverlay -Stop closes it $($script:ChatqDot) -AutoStart on brings it back with every shell" -ForegroundColor DarkGray
+}
+
+function chatconsole {
+    <#
+    .SYNOPSIS
+    chatq in a window: pick a chat, write to it, drop files on it, send now or queue it.
+    .DESCRIPTION
+    The chats cut off by the limit (Continue, or Continue all), the ones open
+    in VS Code, and the recent ones, with a search; + New chat starts one in
+    a folder. Send now runs the prompt within seconds - once the chat is idle
+    if it is working in VS Code - and In turn, At or In queue it. The queue
+    sits below: each job's outcome and log, Try now, First, Remove, Cancel,
+    Requeue. It is the overlay's window, so this starts the overlay if it is
+    not running. Windows only. Ctrl+Alt+Shift+Q, the overlay's speech-bubble
+    button and the tray menu open it too.
+    #>
+    Set-StrictMode -Off
+    chatoverlay -Console
 }
 
 #endregion

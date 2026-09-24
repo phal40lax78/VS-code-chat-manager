@@ -584,11 +584,16 @@ $j = Find-ChatqJob $j.id
 Check 'a busy chat is deferred' ($j.state -eq 'queued' -and $j.deferUntil) "$($j.state) $($j.deferUntil)"
 $env:FAKE_AGENTS = '[{"pid":1,"sessionId":"' + $idOld + '","kind":"interactive","status":"idle"}]'
 Set-ChatqProp $j 'deferUntil' $null; Save-ChatqJob $j
+# as a real run leaves it: the chat's transcript written this minute
+(Get-Item -LiteralPath $j.path).LastWriteTime = Get-Date
 Invoke-ChatqJob $W (Find-ChatqJob $j.id)
 $j = Find-ChatqJob $j.id
 Check 'an idle live chat runs, with a reload warning' ($j.state -eq 'done' -and $j.result.stale) "$($j.state) stale=$($j.result.stale)"
 $rq = [System.IO.File]::ReadAllText($script:ChatReloadPath, $utf8) | ConvertFrom-Json
 Check 'and a reload offer for the window that holds it' ($rq.kind -eq 'ran' -and $rq.cwd -eq $projA) "$($rq.kind) $($rq.cwd)"
+# projA has chats left mid-turn by the tests above, so busy is only checked
+# for being judged here; 'reload while a chat works' checks its value
+Check 'saying nobody is at the PC, and whether the folder was busy' ($rq.away -eq $true -and $null -ne $rq.busy) "away=$($rq.away) busy=$($rq.busy)"
 Remove-Item env:FAKE_AGENTS
 
 # a 529 mid-run, after the prompt reached the chat: queued again as an
@@ -656,6 +661,185 @@ Invoke-ChatqWatchLoop -Foreground *> $null
 Check 'a second watcher will not start' (((Get-Date) - $t0).TotalSeconds -lt 5)
 $lk.Dispose()
 Remove-Item env:FAKE_RECORD
+
+Section 'the job core'
+# what chatq writes is what it always wrote, plus sendNow at the end
+$jc = New-TestJob 'card redesign' 'field order'
+$fields = ($jc.PSObject.Properties | ForEach-Object Name) -join ','
+$want = 'v,id,seq,provider,sessionId,title,group,path,cwd,home,chatWhen,typed,rule,score,runnerUp,kind,promptFile,mode,modeAtQueue,model,runModel,first,sandbox,network,notBefore,state,attempts,retryAs,autoContinue,deferUntil,deferredSince,busyAlerted,createdAt,startedAt,endedAt,runnerPid,result,history,sendNow'
+Check 'a job made by chatq has the fields it always had, in order, and sendNow' ($fields -eq $want -and $jc.sendNow -eq $false) $fields
+$null = Remove-ChatqJob $jc 'test'
+$rowCard = Get-ChatqRowById $idCard
+$rowUpper = Get-ChatqRowById $idCard.ToUpperInvariant()
+Check 'a row by its id - exact, any case, nothing fuzzy' ($rowCard.Id -eq $idCard -and $rowUpper.Id -eq $idCard -and -not (Get-ChatqRowById 'facade') -and -not (Get-ChatqRowById $idCard.Substring(0, 8))) "$($rowCard.Title)"
+$before = @(Get-ChildItem -LiteralPath $script:ChatqQueueDir).Count
+$nEmpty = New-ChatqJob -Row $rowCard -Prompt '   '
+$nCopilot = New-ChatqJob -Row ([pscustomobject]@{ Provider = 'copilot'; Id = 'x'; Title = 'c' }) -Prompt 'hi'
+$nKind = New-ChatqJob -Row $rowCard -Kind continue -Sources @{ Files = @($pFw) }
+$nInfo = New-ChatqJob -Row ([pscustomobject]@{ Provider = 'claude'; Id = 'deadbeef-0000'; Title = 'gone'; Path = (Join-Path $sb 'no-such.jsonl'); Group = 'x' }) -Prompt 'hi'
+$nCopy = New-ChatqJob -Row $rowCard -Prompt 'with a file' -Sources @{ Files = @($pFw, (Join-Path $sb 'no-such-file.png')) }
+$after = @(Get-ChildItem -LiteralPath $script:ChatqQueueDir).Count
+Check 'New-ChatqJob says why and leaves nothing: empty, Copilot, continue with files, a chat gone, a file gone' (
+    $nEmpty.Code -eq 'empty' -and $nEmpty.Error -eq 'empty prompt - nothing queued' -and $nCopilot.Code -eq 'provider' -and $nKind.Code -eq 'kind' -and
+    $nInfo.Code -eq 'info' -and $nCopy.Code -eq 'copy' -and $nCopy.Error -like 'a file could not be copied - nothing queued*' -and $after -eq $before -and -not $nCopy.Job) "$($nEmpty.Code) $($nCopilot.Code) $($nKind.Code) $($nInfo.Code) $($nCopy.Code) $before/$after"
+# the console's own staged copy moves in; two jobs in one second get two ids
+$stage = Join-Path $sb 'stage'
+$null = New-Item -ItemType Directory -Path $stage -Force
+$staged = Join-Path $stage 'shot 1.png'
+[System.IO.File]::WriteAllBytes($staged, [byte[]](1, 2, 3))
+$at = (Get-Date).AddHours(3)
+$n1 = New-ChatqJob -Row $rowCard -Prompt 'first of two' -First -SendNow -Model 'sonnet' -NotBefore $at -Sources @{ Files = @($staged); Images = @(@{ Name = 'clip.png'; Bytes = [byte[]](9, 9) }) } -MoveSources -Rule 'picked'
+$n2 = New-ChatqJob -Row $rowCard -Prompt 'second of two' -Rule 'picked'
+$f1 = @($n1.Files | ForEach-Object Name | Sort-Object) -join ','
+Check 'New-ChatqJob: first, send now, a model, not before, a staged file moved in and a pasted image' (
+    $n1.Job -and $n1.Job.first -and $n1.Job.sendNow -and $n1.Job.runModel -eq 'sonnet' -and $n1.Job.rule -eq 'picked' -and
+    [math]::Abs(((ConvertTo-ChatqDate $n1.Job.notBefore) - $at).TotalSeconds) -lt 2 -and $f1 -eq 'clip.png,shot-1.png' -and -not (Test-Path -LiteralPath $staged) -and
+    (Read-ChatqPrompt $n1.Job) -eq 'first of two') "$f1 $($n1.Job.notBefore)"
+Check 'two jobs for one chat inside a second get ids of their own' ($n2.Job -and $n2.Job.id -ne $n1.Job.id -and (Get-ChatqAttachDir $n2.Job) -ne (Get-ChatqAttachDir $n1.Job)) "$($n1.Job.id) $($n2.Job.id)"
+Check 'and the first one sorts ahead of the queue' ((@(Get-ChatqJobs | Where-Object { $_.state -eq 'queued' })[0]).id -eq $n1.Job.id)
+# an id and the same id with -2 after it: the whole id finds the first, not
+# nothing - the watcher looks each job up by id before it runs it
+$twins = @([pscustomobject]@{ id = '20260924-101010-abcd'; seq = 1 }, [pscustomobject]@{ id = '20260924-101010-abcd-2'; seq = 2 })
+Check 'a job is found by its whole id even when another id starts with it' (
+    (Find-ChatqJob '20260924-101010-abcd' $twins).seq -eq 1 -and (Find-ChatqJob '20260924-101010-abcd-2' $twins).seq -eq 2 -and
+    -not (Find-ChatqJob '20260924-101010' $twins))
+$noAdd = Add-ChatqJobFiles ([pscustomobject]@{ seq = 9; state = 'done'; kind = 'prompt' }) @{ Files = @($pFw) }
+Check 'files go only to a job still waiting' ($noAdd.Error -eq '#9 is done - files added now would go nowhere')
+$null = Remove-ChatqJob $n1.Job 'test'
+$null = Remove-ChatqJob $n2.Job 'test'
+Check 'Remove-ChatqJob takes its prompt and files too' (-not (Test-Path -LiteralPath (Get-ChatqAttachDir $n1.Job)) -and -not (Test-Path -LiteralPath (Get-ChatqPromptPath $n1.Job)))
+# what a run did, from its log - the plain run above
+$ran = @(Get-ChatqJobs | Where-Object { $_.state -eq 'done' -and (Test-Path -LiteralPath (Join-Path $script:ChatqLogDir "$($_.id).jsonl")) })[0]
+$ents = @(Get-ChatqLogEntries $ran)
+$tail = @(Get-ChatqLogEntries $ran -MaxBytes 200)
+Check 'a run''s log read as entries: its start, the reply, how it ended; a tail read reads less' (
+    @($ents | Where-Object Type -eq 'init').Count -and @($ents | Where-Object Type -eq 'result').Count -and $tail.Count -lt $ents.Count) "$(($ents | ForEach-Object Type) -join ',') / $($tail.Count)"
+# a running job's log is held open for writing by its run
+$held = [System.IO.File]::Open((Join-Path $script:ChatqLogDir "$($ran.id).jsonl"), 'Open', 'ReadWrite', 'ReadWrite')
+try { $entsHeld = @(Get-ChatqLogEntries $ran) } finally { $held.Dispose() }
+Check 'and read while a run still holds it open to write' ($entsHeld.Count -eq $ents.Count) "$($entsHeld.Count) of $($ents.Count)"
+Check 'Stop-ChatqJobRun leaves a job that already ended as it ended' ((Stop-ChatqJobRun $ran) -eq 'not running' -and (Find-ChatqJob $ran.id).state -eq 'done')
+# the watcher asked for without a wait: the wake goes, a process only when none runs
+$spawnWas = $script:ChatqSpawn
+$script:ChatqSpawns = 0
+$script:ChatqSpawn = { $script:ChatqSpawns++; $true }
+$lk = [System.IO.File]::Open($script:ChatqLockPath, 'OpenOrCreate', 'ReadWrite', 'None')
+$sw = [System.Diagnostics.Stopwatch]::StartNew()
+$rq1 = Request-ChatqWatcher -Wake now
+$ms1 = $sw.ElapsedMilliseconds
+$sp1 = $rq1.Spawned
+$st1 = Test-ChatqWatcherRequest $rq1 $true
+$lk.Dispose()
+$rq2 = Request-ChatqWatcher
+$st2 = Test-ChatqWatcherRequest $rq2 $true
+$rq2.At = (Get-Date).AddSeconds(-11)
+$st3 = Test-ChatqWatcherRequest $rq2 $true
+# one running when poked that has gone since, with jobs waiting: started again, once
+$st4 = Test-ChatqWatcherRequest $rq1 $true
+$st5 = Test-ChatqWatcherRequest $rq1 $false
+$script:ChatqSpawn = $spawnWas
+Check 'Request-ChatqWatcher never waits: a running watcher gets the wake, none gets a start' (
+    $rq1.Alive -and -not $sp1 -and $ms1 -lt 500 -and $st1 -eq 'up' -and (Get-Content -LiteralPath $script:ChatqWakePath -Raw).Trim() -eq 'poke' -and
+    $rq2.Spawned -and $st2 -eq 'waiting' -and $st3 -eq 'failed' -and $st4 -eq 'waiting' -and $rq1.Respawned -and $st5 -eq 'up' -and $script:ChatqSpawns -eq 2) "$ms1 ms $st1 $st2 $st3 $st4 $st5 spawns=$($script:ChatqSpawns)"
+
+Section 'new chats'
+$newDir = Join-Path $sb 'work\fresh project'
+$null = New-Item -ItemType Directory -Path $newDir -Force
+$nn = New-ChatqJob -Kind new -Cwd $newDir -Prompt "set up the build`nwith tests"
+$nj = $nn.Job
+$slugNew = ($newDir -replace '[^A-Za-z0-9]', '-')
+Check 'a new chat''s job: its session id chosen now, its transcript''s path known, named by the first line' (
+    $nj.kind -eq 'new' -and $nj.sessionId -match '^[0-9a-f-]{36}$' -and $nj.title -eq 'set up the build' -and $nj.rule -eq 'new' -and
+    $nj.path -eq (Join-Path (Join-Path (Join-Path $claudeHome 'projects') $slugNew) "$($nj.sessionId).jsonl") -and $nj.cwd -eq $newDir -and -not (Test-Path -LiteralPath $nj.path)) "$($nj.title) $($nj.path)"
+$env:FAKE_RECORD = $rec
+$env:FAKE_NEW_CHAT = '1'
+Remove-Item -LiteralPath $script:ChatReloadPath -Force -EA SilentlyContinue
+Invoke-ChatqJob $W (Find-ChatqJob $nj.id)
+$nj = Find-ChatqJob $nj.id
+$argvNew = @([System.IO.File]::ReadAllLines((Join-Path $rec 'argv.txt')))
+$si = [Array]::IndexOf($argvNew, '--session-id')
+$ni = [Array]::IndexOf($argvNew, '--name')
+$rqNew = if (Test-Path -LiteralPath $script:ChatReloadPath) { [System.IO.File]::ReadAllText($script:ChatReloadPath, $utf8) | ConvertFrom-Json } else { $null }
+Check 'its first run starts the chat with that id and name - no --resume - and it lands where said' (
+    $nj.state -eq 'done' -and $si -ge 0 -and $argvNew[$si + 1] -eq $nj.sessionId -and $ni -ge 0 -and $argvNew[$ni + 1] -eq 'set up the build' -and
+    $argvNew -notcontains '--resume' -and (Test-Path -LiteralPath $nj.path)) "$($nj.state) $($argvNew -join ' ')"
+Check 'and a window on that folder is offered a reload to pick it up' ($rqNew -and $rqNew.kind -eq 'new' -and $rqNew.cwd -eq $newDir -and $rqNew.title -eq 'set up the build') "$($rqNew.kind) $($rqNew.cwd)"
+$newRow = Get-ChatqRowById $nj.sessionId -Path $nj.path
+$follow = (New-ChatqJob -Row $newRow -Prompt 'now the tests' -Rule 'picked').Job
+Invoke-ChatqJob $W (Find-ChatqJob $follow.id)
+$argvF = @([System.IO.File]::ReadAllLines((Join-Path $rec 'argv.txt')))
+$ri = [Array]::IndexOf($argvF, '--resume')
+Check 'the chat it made is a chat like any other: found by id, named, and the next prompt resumes it' (
+    $newRow.Title -eq 'set up the build' -and $ri -ge 0 -and $argvF[$ri + 1] -eq $nj.sessionId -and $argvF -notcontains '--session-id' -and
+    (Find-ChatqJob $follow.id).state -eq 'done') "$($newRow.Title) $($argvF -join ' ')"
+# a limit after the prompt reached the new chat: back as a continue into it,
+# never a second new chat
+$nl = (New-ChatqJob -Kind new -Cwd $newDir -Prompt 'a second new one' -Title 'limited start').Job
+$env:FAKE_SCENARIO = Join-Path $here 'fixtures\stream\rejected.jsonl'
+Remove-Item -LiteralPath $script:ChatReloadPath -Force -EA SilentlyContinue
+Invoke-ChatqJob $W (Find-ChatqJob $nl.id)
+$nl = Find-ChatqJob $nl.id
+$rqLimited = Test-Path -LiteralPath $script:ChatReloadPath
+Remove-Item env:FAKE_SCENARIO
+$W.blocked = @{}
+# Claude Code writes the limit into the chat as it stops; the continue goes
+# only while that is still the chat's last word
+$limRec = [ordered]@{ type = 'assistant'; uuid = [guid]::NewGuid().ToString(); timestamp = (Get-Date).ToUniversalTime().ToString('o'); sessionId = $nl.sessionId
+    message = [ordered]@{ model = '<synthetic>'; role = 'assistant'; content = @([ordered]@{ type = 'text'; text = "You've hit your session limit" }) }
+    quotaLimits = [ordered]@{ status = 'rejected'; resetsAt = [DateTimeOffset]::UtcNow.AddHours(2).ToUnixTimeSeconds(); rateLimitType = 'five_hour' }
+    error = 'rate_limit'; isApiErrorMessage = $true } | ConvertTo-Json -Compress -Depth 6
+[System.IO.File]::AppendAllText($nl.path, $limRec + "`n", $utf8)
+Invoke-ChatqJob $W (Find-ChatqJob $nl.id)
+$argvL = @([System.IO.File]::ReadAllLines((Join-Path $rec 'argv.txt')))
+$stdinL = [System.IO.File]::ReadAllText((Join-Path $rec 'stdin.bin'), $utf8)
+$ri = [Array]::IndexOf($argvL, '--resume')
+Check 'a new chat limited after its prompt landed goes on as "continue" in that same chat' (
+    $nl.retryAs -eq 'continue' -and $ri -ge 0 -and $argvL[$ri + 1] -eq $nl.sessionId -and $stdinL -eq $script:ChatqContinueText -and (Find-ChatqJob $nl.id).state -eq 'done') "$($nl.retryAs) $($argvL -join ' ')"
+$rqL = if (Test-Path -LiteralPath $script:ChatReloadPath) { [System.IO.File]::ReadAllText($script:ChatReloadPath, $utf8) | ConvertFrom-Json } else { $null }
+Check 'its reload is offered when it finishes, not lost with the run the limit cut' (-not $rqLimited -and $rqL.kind -eq 'new' -and $rqL.title -eq 'limited start') "$rqLimited $($rqL.kind) $($rqL.title)"
+# Claude filed it under a folder name that is not the slug - a path over 200
+# characters, or CLAUDE_CODE_PROJECT_DIR_NAME: found by its id and kept, and
+# never started twice with --session-id, which Claude refuses. Its title goes
+# through claude.cmd - cmd.exe - with nothing cmd would take as its own.
+$env:CLAUDE_CODE_PROJECT_DIR_NAME = 'named-elsewhere'
+$nr = (New-ChatqJob -Kind new -Cwd $newDir -Prompt 'filed elsewhere' -Title 'Use "quotes" & more').Job
+Remove-Item -LiteralPath $script:ChatReloadPath -Force -EA SilentlyContinue
+Invoke-ChatqJob $W (Find-ChatqJob $nr.id)
+$nr = Find-ChatqJob $nr.id
+$argvR = @([System.IO.File]::ReadAllLines((Join-Path $rec 'argv.txt')))
+$ni = [Array]::IndexOf($argvR, '--name')
+$wantR = Join-Path (Join-Path (Join-Path $claudeHome 'projects') 'named-elsewhere') "$($nr.sessionId).jsonl"
+$rqR = if (Test-Path -LiteralPath $script:ChatReloadPath) { [System.IO.File]::ReadAllText($script:ChatReloadPath, $utf8) | ConvertFrom-Json } else { $null }
+Check 'a title through claude.cmd keeps its words and loses what cmd.exe would run' ($ni -ge 0 -and $argvR[$ni + 1] -eq 'Use quotes more' -and $argvR -contains 'stream-json') ($argvR -join ' ')
+Check 'a new chat filed under another folder name is found by its id, and kept' (
+    $nr.state -eq 'done' -and $nr.path -eq $wantR -and $nr.group -eq 'named-elsewhere' -and $rqR.kind -eq 'new') "$($nr.state) $($nr.path) $($rqR.kind)"
+$null = Reset-ChatqJob $nr
+Invoke-ChatqJob $W (Find-ChatqJob $nr.id)
+$argvR2 = @([System.IO.File]::ReadAllLines((Join-Path $rec 'argv.txt')))
+Check 'and a requeue resumes it' ((Find-ChatqJob $nr.id).state -eq 'done' -and $argvR2 -contains '--resume' -and $argvR2 -notcontains '--session-id') ($argvR2 -join ' ')
+Remove-Item env:CLAUDE_CODE_PROJECT_DIR_NAME
+# its transcript deleted since: the continue fails as a chat gone - never a
+# fresh chat whose only prompt is "continue"
+Remove-Item -LiteralPath $nr.path -Force
+$null = Reset-ChatqJob (Find-ChatqJob $nr.id)
+Remove-Item -LiteralPath (Join-Path $rec 'argv.txt') -Force
+Invoke-ChatqJob $W (Find-ChatqJob $nr.id)
+$gone = Find-ChatqJob $nr.id
+Check 'a new chat deleted since is gone: no second start' ($gone.state -eq 'failed' -and $gone.result.reason -like '*chat is gone*' -and -not (Test-Path -LiteralPath (Join-Path $rec 'argv.txt'))) "$($gone.state) $($gone.result.reason)"
+Remove-Item env:FAKE_NEW_CHAT, env:FAKE_RECORD
+$noDir = New-ChatqJob -Kind new -Cwd (Join-Path $sb 'no such folder') -Prompt 'x'
+$noText = New-ChatqJob -Kind new -Cwd $newDir -Prompt ' '
+$cutOk = try { $null = Get-ChatqCutOffChats (@(Get-ChatqJobs) + @([pscustomobject]@{ state = 'queued'; sessionId = $null })); $true } catch { $false }
+Check 'a folder that is not there, or no prompt, makes no job; a job with no session never breaks the cut-off list' (
+    $noDir.Code -eq 'info' -and $noText.Code -eq 'empty' -and $cutOk) "$($noDir.Error) / $($noText.Code) / $cutOk"
+# a drive's root: C:\, not C: - which as a working folder means wherever
+# that drive last was - and Claude's slug for it, C--
+$driveRoot = [System.IO.Path]::GetPathRoot($sb)
+$nroot = (New-ChatqJob -Kind new -Cwd $driveRoot -Prompt 'at the root').Job
+$rootSlug = ($driveRoot -replace '[^A-Za-z0-9]', '-')
+Check 'a new chat at a drive''s root keeps the root, and the slug Claude gives it' (
+    $nroot.cwd -eq $driveRoot -and $nroot.group -eq $rootSlug -and (Get-ChatSlug 'D:\a\b\') -eq 'D--a-b' -and (Get-ChatSlug 'C:\') -eq 'C--') "$($nroot.cwd) $($nroot.group)"
+foreach ($x in $nj, $follow, $nl, $nr, $nroot) { $null = Remove-ChatqJob (Find-ChatqJob $x.id) 'test' }
 
 Section 'find and delete'
 $rows = @(Sync-ChatIndex)
@@ -755,7 +939,30 @@ Section 'retries and failures'
 $o = Invoke-Scenario 'network'
 Check 'a dropped connection -> network, not failed' ($o.kind -eq 'network') "$($o.kind) $($o.reason)"
 $o = Invoke-Scenario 'auth'
-Check 'an expired login -> auth' ($o.kind -eq 'auth') "$($o.kind) $($o.reason)"
+Check 'an expired login -> auth, in the API''s own words' ($o.kind -eq 'auth' -and $o.reason -ceq 'login refused: OAuth token has expired. (401)') "$($o.kind) $($o.reason)"
+# a subscription that ran out: a 403, not a login gone, and the words say so
+$o = Invoke-Scenario 'auth-403'
+$planWords = "This account$([char]0x2019)s plan does not include Claude Code. (403)"
+Check 'a 403 -> auth, its message kept, not "logged out"' ($o.kind -eq 'auth' -and $o.reason -ceq "login refused: $planWords") "$($o.kind) $($o.reason)"
+$w = Get-ChatqAuthWords 'API Error: 403 {"error":{"message":"Plan \"Max\" ended \u2014 renew"}}'
+Check 'the message read out of the JSON, escapes and all, the code from the text' ($w -ceq "Plan `"Max`" ended $([char]0x2014) renew (403)") $w
+$w = Get-ChatqAuthWords "Invalid API key`n  Please run /login" 401
+Check 'no JSON: the text itself, one line' ($w -ceq 'Invalid API key Please run /login') $w
+$w = Get-ChatqAuthWords ('x' * 400)
+Check 'and cut short' ($w.Length -eq 160 -and $w.EndsWith($script:ChatqEllipsis)) $w.Length
+Check 'nothing said at all still says something' ((Get-ChatqAuthWords '' 403) -ceq 'API Error 403' -and (Get-ChatqAuthWords '') -ceq 'no reason given')
+$w = Get-ChatqAuthWords (('[warn] retrying ' * 20) + 'OAuth token has expired. Please run /login')
+Check 'log noise ahead of the refusal does not crowd it out' ($w -ceq "$($script:ChatqEllipsis)OAuth token has expired. Please run /login") $w
+# no result line: $text is the last reply, and a reply is never the refusal
+$st = New-ChatqRunState
+$st.LastText = 'Here is the payload: {"message":"hello"}'
+$o = Get-ChatqClaudeOutcome $st ([pscustomobject]@{ ExitCode = 1; StdErr = 'OAuth token has expired. Please run /login'; Stopped = $null }) 'auto'
+Check 'the words come from the error, never from the chat''s reply' ($o.kind -eq 'auth' -and $o.reason -ceq 'login refused: OAuth token has expired. Please run /login') "$($o.kind) $($o.reason)"
+$st = New-ChatqRunState
+foreach ($l in [System.IO.File]::ReadAllLines((Join-Path $here 'fixtures\stream\codex-auth.jsonl'), $utf8)) { if ($l.Trim()) { Update-ChatqCodexState $st $l } }
+$o = Get-ChatqCodexOutcome $st ([pscustomobject]@{ ExitCode = 1; StdErr = ''; Stopped = $null })
+Check 'codex refused -> auth, its message and "unexpected status" code kept' ($o.kind -eq 'auth' -and $o.reason -ceq 'login refused: Your refresh token has expired. Please sign in again. (401)') "$($o.kind) $($o.reason)"
+Check 'and the error text whole beside it' ($o.detail -like 'unexpected status 401 Unauthorized: {"error":{"message":"Your refresh token*"code":"refresh_token_expired"}}') $o.detail
 $st = New-ChatqRunState
 foreach ($l in [System.IO.File]::ReadAllLines((Join-Path $here 'fixtures\stream\codex-network.jsonl'), $utf8)) { if ($l.Trim()) { Update-ChatqCodexState $st $l } }
 $o = Get-ChatqCodexOutcome $st ([pscustomobject]@{ ExitCode = 1; StdErr = ''; Stopped = $null })
@@ -805,12 +1012,33 @@ Save-ChatqJson $script:ChatqConfigPath $cfg0
 $env:FAKE_SCENARIO = Join-Path $here 'fixtures\stream\auth.jsonl'
 $Wa = New-ChatqWatchState
 $ja = [pscustomobject]@{ id = 'auth-x'; provider = 'claude'; home = $null; model = 'claude-opus-5'; runModel = $null; cwd = $projA; title = 'x'; seq = 99 }
-$a0 = Get-AlertCount '*logged out*'
+$a0 = Get-AlertCount '*login refused*'
 $ok = Confirm-ChatqAllowed $Wa $ja
 Check 'a login gone: the lane waits and its jobs stay queued' (-not $ok -and $Wa.blocked[(Get-ChatqLane $ja)].Type -eq 'login needed') "$ok $($Wa.blocked['claude'].Type)"
 $null = Confirm-ChatqAllowed $Wa $ja
-Check 'with one alert, not one per probe' ((Get-AlertCount '*logged out*') -eq $a0 + 1)
-Check 'and the status line says logged out' ((Get-ChatqStatusLine @() $Wa.blocked) -like '*logged out*')
+Check 'with one alert, not one per probe' ((Get-AlertCount '*login refused*') -eq $a0 + 1)
+Check 'which quotes the API and names both ways out' ((Get-AlertCount '*login refused: OAuth token has expired. (401)*/login, or check the subscription*') -eq 1)
+$wlog = [System.IO.File]::ReadAllText((Join-Path $script:ChatqLogDir 'watcher.log'), $utf8)
+Check 'the watcher log keeps the same words' ($wlog -like '*claude login refused: OAuth token has expired. (401)*')
+Check 'and the error text whole, type and all' ($wlog -like '*claude error text: Failed to authenticate. API Error: 401 {"type":"error","error":{"type":"authentication_error",*')
+Check 'and so does the status line' ((Get-ChatqStatusLine @() $Wa.blocked) -like '*Claude login refused: OAuth token has expired. (401) - log in or check the subscription*') (Get-ChatqStatusLine @() $Wa.blocked)
+$old = @{ claude = [pscustomobject]@{ Until = (Get-Date).AddMinutes(9); Type = 'login needed'; Source = 'probe' } }
+Check 'a watcher from before the words were kept still reads right' ((Get-ChatqStatusLine @() $old) -like '*Claude login refused - log in*') (Get-ChatqStatusLine @() $old)
+
+# the same refusal met by a run rather than the probe
+$j = New-TestJob 'Deadline notes' 'after the plan ran out'
+$env:FAKE_SCENARIO = Join-Path $here 'fixtures\stream\auth-403.jsonl'
+$Wp = New-ChatqWatchState
+Invoke-ChatqJob $Wp (Find-ChatqJob $j.id)
+$j = Find-ChatqJob $j.id
+$bp = $Wp.blocked[(Get-ChatqLane $j)]
+Check 'a 403 mid-run: the job waits, the lane holds what the API said' ($j.state -eq 'queued' -and $bp.Type -eq 'login needed' -and $bp.Source -ceq "login refused: $planWords") "$($j.state) $($bp.Type) $($bp.Source)"
+Check 'and the job''s result says it too' ($j.result.kind -eq 'auth' -and $j.result.reason -ceq "login refused: $planWords") "$($j.result.reason)"
+Check 'the alert quotes it on this path too' ((Get-AlertCount "*login refused: $planWords*check the subscription*") -eq 1)
+$wlog = [System.IO.File]::ReadAllText((Join-Path $script:ChatqLogDir 'watcher.log'), $utf8)
+Check 'and so does the watcher log, error type and all' ($wlog -like "*login refused: $planWords*" -and $wlog -like '*error text: API Error: 403 {"type":"error","error":{"type":"permission_error",*')
+Check 'and the status line' ((Get-ChatqStatusLine @() $Wp.blocked) -like "*login refused: $planWords - log in*") (Get-ChatqStatusLine @() $Wp.blocked)
+chatqrm $j.seq -Force *> $null
 Remove-Item env:FAKE_SCENARIO
 
 Set-FakeStatus 'major_outage'
@@ -1063,6 +1291,17 @@ $script:ChatqIdleSeam = $null
 $idle = try { Get-ChatqIdleSeconds } catch { 'threw' }
 $script:ChatqIdleSeam = 99999
 Check 'the idle clock reads without an error' ($null -eq $idle -or ($idle -is [double] -and $idle -ge 0)) "$idle"
+# away is what lets a window reload by itself, so it is known, never assumed
+$script:ChatqIdleSeam = 30
+$awayAt = Test-ChatqUserAway $null
+$script:ChatqIdleSeam = 99999
+$awayGone = Test-ChatqUserAway $null
+$awayZero = Test-ChatqUserAway ([pscustomobject]@{ quietMinutes = 0 })
+$origIdle = ${function:Get-ChatqIdleSeconds}
+${function:Get-ChatqIdleSeconds} = { $null }
+$awayBlind = Test-ChatqUserAway $null
+${function:Get-ChatqIdleSeconds} = $origIdle
+Check 'away only when known: not at the PC, not with quietMinutes 0, not on a clock that cannot be read' (-not $awayAt -and -not $awayZero -and $awayGone -and -not $awayBlind) "$awayAt $awayZero $awayGone $awayBlind"
 
 Section 'usage'
 $fetched = [DateTimeOffset]::Now.AddMinutes(-20).ToUnixTimeMilliseconds()
@@ -1210,6 +1449,38 @@ Add-ChatNotification 'aagent0001' 8
 Add-ChatLaunch 'Bash' ([ordered]@{ stdout = ''; stderr = ''; interrupted = $false; backgroundTaskId = 'bshell0001' }) 5
 Set-Quiet
 Check 'a background shell does not count - it may be a server that never ends' ((Test-ChatIdle -Cwd $projW) -eq $true)
+# the chat a queued run just wrote reads live for a minute; that alone must
+# not stop its window reloading by itself
+(Get-Item -LiteralPath $pW1).LastWriteTime = Get-Date
+Check 'a chat written this minute is live - unless it is the one the run wrote' ((Test-ChatIdle -Cwd $projW) -eq $false -and (Test-ChatIdle -Cwd $projW -Except $pW1) -eq $true)
+# but what Claude says of that chat's own open process still counts: after
+# the run it can only be a window's, and that may be mid-answer
+Set-Live 'busy'
+Check 'the run''s own chat busy in a window still counts' ((Test-ChatIdle -Cwd $projW -Except $pW1) -eq $false)
+Remove-Item env:FAKE_AGENTS
+# a chat written minutes ago is someone's, at the PC or from the phone
+$pW2 = Join-Path (Join-Path (Join-Path $claudeHome 'projects') (Get-Slug $projW)) "$idW2.jsonl"
+$w2Was = (Get-Item -LiteralPath $pW2).LastWriteTime
+(Get-Item -LiteralPath $pW2).LastWriteTime = (Get-Date).AddMinutes(-3)
+Check 'a neighbour written 3 min ago is live over quietMinutes, not over one minute' ((Test-ChatIdle -Cwd $projW -Except $pW1 -Seconds 300) -eq $false -and (Test-ChatIdle -Cwd $projW -Except $pW1) -eq $true)
+(Get-Item -LiteralPath $pW2).LastWriteTime = $w2Was
+# the common case: a folder with one chat, the one the run wrote
+$projOne = Join-Path $work 'projOne'
+$null = New-Item -ItemType Directory -Path $projOne -Force
+$pOne = New-FakeChat $projOne 'cdcdcdcd-cdcd-4cdc-8cdc-cdcdcdcdcdcd' 'The only chat here' 1 @('hello')
+$null = @(Sync-ChatIndex)
+(Get-Item -LiteralPath $pOne).LastWriteTime = Get-Date
+Check 'a folder whose only chat is the one the run wrote is idle, not unjudged' ((Test-ChatIdle -Cwd $projOne -Except $pOne) -eq $true)
+Set-Quiet
+# and end to end: a queued run into that chat, open and idle in a window,
+# with nobody at the PC - the one case the window reloads by itself
+$jw = New-TestJob 'Workflow host chat' 'one more pass'
+Set-Live 'idle'
+(Get-Item -LiteralPath $pW1).LastWriteTime = Get-Date
+Invoke-ChatqJob (New-ChatqWatchState) (Find-ChatqJob $jw.id)
+$rqW = [System.IO.File]::ReadAllText($script:ChatReloadPath, $utf8) | ConvertFrom-Json
+Check 'a run into a quiet folder asks for the reload it may take by itself' ($rqW.kind -eq 'ran' -and $rqW.away -eq $true -and $rqW.busy -eq $false) "$($rqW.kind) away=$($rqW.away) busy=$($rqW.busy)"
+Set-Quiet
 
 # the request the window reads carries the verdict. Write-ChatGhostAdvice
 # speaks only while a VS Code window is up, so one is made to look up.
@@ -1488,6 +1759,58 @@ Check 'a prompt queued for an open chat rides on its row' ($ri1.job.seq -eq 1 -a
 $ri2 = @($R | Where-Object { $_.key -eq 's:i-2' })[0]
 Check 'the second window''s state wins when it is the more urgent' ($ri2.status -eq 'busy' -and (@($ri2.pids) -join ',') -eq '6,7') "$($ri2.status) $(@($ri2.pids) -join ',')"
 Check 'a job row says what it is and carries its first line' ((@($R | Where-Object { $_.key -eq 'j:j2' })[0].stateText -eq '#2 after #1') -and (@($R | Where-Object { $_.key -eq 'j:j2' })[0].prompt -eq 'for a closed one'))
+# cut off by the limit or a 529: an open idle chat takes the state, one not
+# open gets a row, one a job is queued for leaves it to the job
+$resetAt = $tnow.AddMinutes(90)
+$C = @(
+    [pscustomobject]@{ Id = 'i-1'; Title = 'title i-1'; Why = 'limit'; ResetsAt = $resetAt; At = $tnow.AddMinutes(-60); Cwd = 'C:\p\five' }
+    [pscustomobject]@{ Id = 'b-new'; Title = 'title b-new'; Why = 'limit'; ResetsAt = $resetAt; At = $tnow.AddMinutes(-2); Cwd = 'C:\p\four' }
+    [pscustomobject]@{ Id = 'gone-1'; Title = 'Stopped at the limit'; Why = 'limit'; ResetsAt = $resetAt; At = $tnow.AddMinutes(-30); Cwd = 'C:\p\eleven'; Path = 'C:\x.jsonl' }
+    [pscustomobject]@{ Id = 'gone-2'; Title = 'Stopped by a 529'; Why = 'overloaded'; ResetsAt = $null; At = $tnow.AddMinutes(-20); Cwd = 'C:\p\twelve' }
+    [pscustomobject]@{ Id = 'closed-1'; Title = 'Closed chat'; Why = 'limit'; ResetsAt = $resetAt; At = $tnow.AddMinutes(-45); Cwd = 'C:\p\seven' }
+)
+$S2 = @($S | Where-Object { $_.SessionId -ne 'i-1' }) + @([pscustomobject]@{ SessionId = 'i-3'; Pid = 8; Status = 'idle'; Cwd = 'C:\p\five'; StatusUpdatedAt = (& $ago 60) })
+$C[0].Id = 'i-3'
+$T['i-3'] = @{ Path = 'x'; AiTitle = 'title i-3'; Prompt = 'prompt i-3' }
+$RC = @(Get-ChatOverlayRows -Sessions $S2 -Texts $T -Jobs $J -Eta @{ j1 = '17:10'; j2 = 'after #1'; j3 = 'next' } -Now $tnow -CutOff $C)
+$r3 = @($RC | Where-Object { $_.key -eq 's:i-3' })[0]
+$rg1 = @($RC | Where-Object { $_.key -eq 'c:gone-1' })[0]
+$rg2 = @($RC | Where-Object { $_.key -eq 'c:gone-2' })[0]
+$rbn = @($RC | Where-Object { $_.key -eq 's:b-new' })[0]
+$firstCut = [array]::IndexOf(@($RC.key), 'c:gone-2')
+Check 'cut off: an open idle chat says when the limit resets; a working one has moved on' (
+    $r3.status -eq 'cutoff' -and $r3.rank -eq 0.5 -and $r3.stateText -eq "cut off - resets $($resetAt.ToString('HH:mm'))" -and $rbn.status -eq 'busy') "$($r3.status) $($r3.stateText) / $($rbn.status)"
+Check 'one not open gets a row of its own - a 529 says what it waits on - and a queued continue replaces it' (
+    $rg1.kind -eq 'cutoff' -and $rg1.project -eq 'eleven' -and $rg2.stateText -eq '529 - waits for Claude' -and -not @($RC | Where-Object { $_.key -eq 'c:closed-1' }) -and
+    $firstCut -gt [array]::IndexOf(@($RC.key), 's:w-new') -and $firstCut -lt [array]::IndexOf(@($RC.key), 's:b-new')) ($RC.key -join ',')
+Check 'and when the limit is over it says so' ((Format-ChatOverlayCutOff ([pscustomobject]@{ Why = 'limit'; ResetsAt = $tnow.AddMinutes(-5) }) $tnow) -eq 'cut off - limit over')
+# the scan the overlay runs every minute reads a transcript again only once it moved
+$cutCache = @{}
+$script:ChatqCutOffReads = 0
+$cut1 = @(Get-ChatqCutOffChats @() -Cache $cutCache)
+$reads1 = $script:ChatqCutOffReads
+$cut2 = @(Get-ChatqCutOffChats @() -Cache $cutCache)
+$reads2 = $script:ChatqCutOffReads - $reads1
+# the new chat the limit cut above: its limit record has no cwd of its own
+$cutNl = @($cut1 | Where-Object { $_.Id -eq $nl.sessionId })[0]
+Check 'the cut-off scan reads what moved and nothing else, and says where each chat ran' (
+    $cut1.Count -ge 1 -and $cut2.Count -eq $cut1.Count -and $reads1 -ge 1 -and $reads2 -eq 0 -and $cutNl.Path -eq $nl.path -and $cutNl.Cwd -eq $newDir) "$($cut1.Count) chats, $reads1 then $reads2 reads, $($cutNl.Cwd)"
+# one working now is neither read nor listed - and, forgotten by the cache,
+# is read on the next pass that does not skip it
+$r0 = $script:ChatqCutOffReads
+$cutSkip = @(Get-ChatqCutOffChats @() -Cache $cutCache -Skip @($nl.sessionId))
+$readsSkip = $script:ChatqCutOffReads - $r0
+$null = @(Get-ChatqCutOffChats @() -Cache $cutCache)
+# it moved on: read again, only it, and off the list
+$okRec = [ordered]@{ type = 'assistant'; uuid = [guid]::NewGuid().ToString(); timestamp = (Get-Date).ToUniversalTime().ToString('o'); sessionId = $nl.sessionId
+    message = [ordered]@{ model = 'claude-fake-1'; role = 'assistant'; content = @([ordered]@{ type = 'text'; text = 'carried on' }) } } | ConvertTo-Json -Compress -Depth 6
+[System.IO.File]::AppendAllText($nl.path, $okRec + "`n", $utf8)
+$r0 = $script:ChatqCutOffReads
+$cutMoved = @(Get-ChatqCutOffChats @() -Cache $cutCache)
+$readsMoved = $script:ChatqCutOffReads - $r0
+Check 'one working is neither read nor listed; one that moved on is read once more, and leaves' (
+    $readsSkip -eq 0 -and $cutSkip.Count -eq $cut1.Count - 1 -and -not @($cutSkip | Where-Object { $_.Id -eq $nl.sessionId }) -and
+    $readsMoved -eq 1 -and $cutMoved.Count -eq $cut1.Count - 1 -and -not @($cutMoved | Where-Object { $_.Id -eq $nl.sessionId })) "skip: $readsSkip reads, $($cutSkip.Count); moved: $readsMoved reads, $($cutMoved.Count) of $($cut1.Count)"
 
 # commands, the lock, and the handoffs
 $script:ChatOverlayStopWaitMs = 400
@@ -1513,6 +1836,17 @@ Send-ChatOverlayCommand 'restart'
 $why = Invoke-ChatOverlayCollectLoop (New-ChatOverlayContext) -IntervalMs 10 -MaxCycles 3
 $why2 = Invoke-ChatOverlayCollectLoop (New-ChatOverlayContext) -IntervalMs 10 -MaxCycles 2
 Check 'the collector loop ends on a restart, or after its passes' ($why -eq 'restart' -and $why2 -eq 'max') "$why $why2"
+# chatconsole: a running overlay is told; else one starts with the console
+# open - a command left for it would be swept away as it takes its lock
+Remove-Item -LiteralPath $script:ChatOverlayCmdPath -Force -EA SilentlyContinue
+$ovLock = [System.IO.File]::Open($script:ChatOverlayLockPath, 'OpenOrCreate', 'ReadWrite', 'None')
+try { chatconsole *> $null; $cmdsC = [System.IO.File]::ReadAllText($script:ChatOverlayCmdPath) } finally { $ovLock.Dispose() }
+Remove-Item -LiteralPath $script:ChatOverlayCmdPath -Force -EA SilentlyContinue
+$script:OvSpawned = 0
+chatconsole *> $null
+$launchC = Get-ChatOverlayLaunch -Open console
+Check 'chatconsole: a running overlay is told to open it; otherwise one starts with it open' (
+    $cmdsC -match ' console\n' -and $script:OvSpawned -eq 1 -and $launchC.Command -like "*Start-ChatOverlayHost -Open 'console'*") "$cmdsC / $($script:OvSpawned)"
 Check 'and the snapshot it saves has no BOM and keeps Hangul' ((Test-Path -LiteralPath $script:ChatOverlayPath) -and
     ([System.IO.File]::ReadAllBytes($script:ChatOverlayPath)[0] -eq [byte][char]'{') -and
     ([System.IO.File]::ReadAllText($script:ChatOverlayPath, $utf8).Contains($tCustom)))
@@ -1530,6 +1864,13 @@ Check '-AutoStart on is kept in config.json, and read at shell start' ((Get-Chat
 chatoverlay -AutoStart off *> $null
 chatoverlay -Hotkey 'Ctrl+Hyper+Q' *> $null
 Check 'a hotkey it cannot read is refused, not saved' ((Get-ChatOverlayConfig).hotkey -eq 'Ctrl+Alt+Shift+O')
+$chkDefault = (Get-ChatOverlayConfig).consoleHotkey
+chatoverlay -ConsoleHotkey none *> $null
+$chkNone = (Get-ChatOverlayConfig).consoleHotkey
+chatoverlay -ConsoleHotkey 'Ctrl+Hyper+Q' *> $null
+Check 'the console''s hotkey: Ctrl+Alt+Shift+Q unless set, none for no key, nonsense refused' (
+    $chkDefault -eq 'Ctrl+Alt+Shift+Q' -and $chkNone -eq 'none' -and (Get-ChatOverlayConfig).consoleHotkey -eq 'none') "$chkDefault $chkNone"
+Set-ChatOverlayConfig @{ consoleHotkey = 'Ctrl+Alt+Shift+Q' }
 chatoverlay -Theme light -Opacity 85 *> $null
 $oc = Get-ChatOverlayConfig
 chatoverlay -Opacity 5 *> $null
@@ -1591,6 +1932,66 @@ Check 'the buttons come after the pointer rests on the panel, and stay while it 
     (& $sh $false $false $false $true $false 0 99999))
 $bigSnap = [pscustomobject]@{ counts = [pscustomobject]@{ waiting = 12; needsInput = 3; busy = 40; running = 1; idle = 88; queued = 9 }; header = [pscustomobject]@{ usage = @() } }
 Check 'the tray tooltip never reaches the 64 characters that throw' ((Format-ChatOverlayTooltip $bigSnap).Length -le 63) (Format-ChatOverlayTooltip $bigSnap)
+
+# the console's pure parts
+$wNow = ConvertFrom-ChatConsoleWhen 'now' ''
+$wTurn = ConvertFrom-ChatConsoleWhen 'turn' ''
+$wIn = ConvertFrom-ChatConsoleWhen 'in' '2h'
+$wAtBad = ConvertFrom-ChatConsoleWhen 'at' 'soonish'
+$wInNone = ConvertFrom-ChatConsoleWhen 'in' ' '
+Check 'console When: now is first and looked at every 30 s, in turn is neither, at/in a time - or why not' (
+    $wNow.First -and $wNow.SendNow -and -not $wNow.NotBefore -and -not $wTurn.First -and -not $wTurn.SendNow -and
+    [Math]::Abs(($wIn.NotBefore - (Get-Date).AddHours(2)).TotalMinutes) -lt 1 -and $wAtBad.Error -like "'soonish' is not a time*" -and $wInNone.Error -like 'give a time*') "$($wAtBad.Error) / $($wInNone.Error)"
+$chatsC = @(
+    [pscustomobject]@{ Title = 'Card layout redesign'; Project = 'parser' }
+    [pscustomobject]@{ Title = 'Rate limiter'; Project = 'api' }
+    [pscustomobject]@{ Title = 'Release notes'; Project = 'parser' }
+)
+Check 'console search: every word, in the title or the project, any case; a cap' (
+    @(Select-ChatConsoleChats $chatsC 'PARSER card').Count -eq 1 -and @(Select-ChatConsoleChats $chatsC 'parser').Count -eq 2 -and
+    @(Select-ChatConsoleChats $chatsC '').Count -eq 3 -and @(Select-ChatConsoleChats $chatsC '' 2).Count -eq 2 -and -not @(Select-ChatConsoleChats $chatsC 'nothing').Count)
+$pNow = [pscustomobject]@{ Error = $null; NotBefore = $null; First = $true; SendNow = $true }
+$pTurn = [pscustomobject]@{ Error = $null; NotBefore = $null; First = $false; SendNow = $false }
+$tn = Get-Date '2026-09-24T12:00:00'
+$pv1 = Get-ChatConsoleSendPreview @{ Kind = 'chat'; Live = $null } $pNow $null 3 $true $tn
+$pv2 = Get-ChatConsoleSendPreview @{ Kind = 'chat'; Live = 'busy' } $pNow ([pscustomobject]@{ Until = $tn.AddMinutes(59); Type = 'five_hour' }) 0 $false $tn
+$pv3 = Get-ChatConsoleSendPreview @{ Kind = 'new'; Live = $null } $pTurn $null 2 $true $tn
+$pv4 = Get-ChatConsoleSendPreview @{ Kind = 'chat'; Live = 'idle' } $pNow ([pscustomobject]@{ Until = $tn; Type = 'overloaded' }) 0 $true $tn
+$pv5 = Get-ChatConsoleSendPreview $null $pNow $null 0 $true $tn
+Check 'console preview: what Send will do - soon, a limit, a busy chat, behind others, a new chat, a 529, the watcher' (
+    $pv1 -eq 'sends within a few seconds' -and $pv2 -eq 'limited until 12:59 - sends 13:00 - that chat is working in VS Code - it goes once the chat is idle, looked at every 30 s - the watcher starts for it' -and
+    $pv3 -like 'after the 2 queued ahead of it - a new chat*' -and $pv4 -like 'Claude is overloaded*open in VS Code*' -and $pv5 -like 'pick a chat*') "$pv1 | $pv2 | $pv3 | $pv4"
+# a refused login is no limit: it says what the CLI said, not "limited until"
+$pvL = Get-ChatConsoleSendPreview @{ Kind = 'chat'; Live = $null } $pNow ([pscustomobject]@{ Until = $tn.AddMinutes(15); Type = 'login needed'; Why = 'login refused: OAuth token has expired. (401)' }) 0 $true $tn
+$pvL2 = Get-ChatConsoleSendPreview @{ Kind = 'chat'; Live = $null } $pNow ([pscustomobject]@{ Until = $tn.AddMinutes(15); Type = 'login needed'; Why = 'probe' }) 0 $true $tn
+$pvP = Get-ChatConsoleSendPreview @{ Kind = 'chat'; Live = $null } $pNow ([pscustomobject]@{ Until = $tn.AddMinutes(10); Type = 'probe failed'; Why = 'no claude CLI found' }) 0 $true $tn
+Check 'console preview: a refused login says what the CLI said, an older block says login refused, a failed probe when it looks again - never "limited until"' (
+    $pvL -like 'login refused: OAuth token has expired. (401) - log in or check the subscription*' -and $pvL2 -like 'login refused - log in*' -and
+    $pvP -eq 'the limit could not be checked - looked at again 12:10' -and "$pvL $pvL2 $pvP" -notmatch 'limited until') "$pvL | $pvL2 | $pvP"
+# the limit the preview names, from what the collector holds - nothing read
+$soon = (Get-Date).AddMinutes(40)
+$later = (Get-Date).AddMinutes(95)
+$bUsage = Get-ChatConsoleBlock @{ Ctx = @{ Blocks = @{}; CutOff = @() }; Snap = [pscustomobject]@{ header = [pscustomobject]@{ usage = @(
+                [pscustomobject]@{ provider = 'Claude'; windows = @([pscustomobject]@{ label = '5h'; limited = $true; resetsAt = ([DateTimeOffset]$soon).ToUnixTimeMilliseconds() }) }) } } } 'claude'
+$bCut = Get-ChatConsoleBlock @{ Ctx = @{ Blocks = $null; CutOff = @(
+            [pscustomobject]@{ Why = 'limit'; ResetsAt = $soon }, [pscustomobject]@{ Why = 'limit'; ResetsAt = $later }, [pscustomobject]@{ Why = 'overloaded'; ResetsAt = $null }) }
+    Snap = [pscustomobject]@{ header = [pscustomobject]@{ usage = @() } } } 'claude'
+$bNone = Get-ChatConsoleBlock @{ Ctx = @{ Blocks = @{}; CutOff = @([pscustomobject]@{ Why = 'limit'; ResetsAt = $later }) }; Snap = [pscustomobject]@{ header = [pscustomobject]@{ usage = @() } } } 'codex'
+$bLogin = Get-ChatConsoleBlock @{ Ctx = @{ Blocks = @{ claude = [pscustomobject]@{ Until = $soon; Type = 'login needed'; Source = 'login refused: OAuth token has expired. (401)' } }; CutOff = @() }
+    Snap = [pscustomobject]@{ header = [pscustomobject]@{ usage = @() } } } 'claude'
+Check 'console: the limit ahead from a usage window marked limited, else the latest reset of the chats it cut off; Codex not from Claude''s; the watcher''s block with its words' (
+    [Math]::Abs(($bUsage.Until - $soon).TotalSeconds) -lt 1 -and $bUsage.Type -eq '5h' -and [Math]::Abs(($bCut.Until - $later).TotalSeconds) -lt 1 -and -not $bNone -and
+    $bLogin.Type -eq 'login needed' -and $bLogin.Why -eq 'login refused: OAuth token has expired. (401)') "$($bUsage.Until) $($bCut.Until) $bNone $($bLogin.Why)"
+$js1 = Get-ChatConsoleJobStatus ([pscustomobject]@{ state = 'queued' }) '13:01'
+$js2 = Get-ChatConsoleJobStatus ([pscustomobject]@{ state = 'needs-input'; result = [pscustomobject]@{ reason = 'Edit denied' } }) $null
+$js3 = Get-ChatConsoleJobStatus ([pscustomobject]@{ state = 'failed'; result = [pscustomobject]@{ reason = 'chat gone' } }) $null
+Check 'console queue: each job says where it stands, in its colour' ($js1.Text -eq 'sends 13:01' -and $js1.Tone -eq 'queued' -and $js2.Text -eq 'needs you - Edit denied' -and $js2.Tone -eq 'waiting' -and $js3.Text -eq 'failed - chat gone' -and $js3.Tone -eq 'error') "$($js1.Text) | $($js2.Text) | $($js3.Text)"
+$scrC = @([pscustomobject]@{ X = 0; Y = 0; Width = 1536; Height = 816; Primary = $true })
+$plKeep = Get-ChatConsolePlacement ([pscustomobject]@{ x = 100; y = 80; w = 900; h = 600 }) $scrC
+$plGone = Get-ChatConsolePlacement ([pscustomobject]@{ x = 4000; y = 80; w = 900; h = 600 }) $scrC
+$plNew = Get-ChatConsolePlacement $null $scrC
+Check 'console placement: where it was left while it shows, else the main screen''s middle' (
+    $plKeep.X -eq 100 -and $plKeep.W -eq 900 -and $plGone.X -eq 278 -and $plGone.Y -eq 68 -and $plNew.W -eq 980 -and $plNew.H -eq 680) "$($plGone.X),$($plGone.Y) $($plNew.W)x$($plNew.H)"
 $in90 = [DateTimeOffset]::Now.AddMinutes(90.5).ToUnixTimeMilliseconds()
 Check 'reset countdowns' ((Format-ChatOverlayReset $in90) -eq '1h 30m' -and (Format-ChatOverlayReset ($nowMs - 1000)) -eq 'reset' -and
     (Format-ChatOverlayReset ([DateTimeOffset]::Now.AddDays(3).ToUnixTimeMilliseconds())) -match '^[A-Z][a-z]{2} \d\d:\d\d$') (Format-ChatOverlayReset $in90)
@@ -1839,7 +2240,7 @@ $ex = if ($wp.Count -ge 5) { [int64]$wp[4] } else { 0 }
 Check 'the panel: 8 rows and "+2 more", or one line when nothing is open' ($wp[0] -eq '11' -and $wp[1] -eq 'True' -and $wp[2] -eq '3' -and $wp[3] -eq 'True') "$wpfOut"
 Check 'shown, a tool window that never activates and lets clicks through, and no taskbar button' ((($ex -band 0x80800A0) -eq 0x80800A0) -and -not ($ex -band 0x40000)) ('0x{0:X}' -f $ex)
 $cex = if ($wp.Count -ge 11) { [int64]$wp[10] } else { 0 }
-Check 'six buttons in a window of their own, out of sight until the pointer comes' ($wp[5] -eq '6' -and $wp[6] -eq 'False') "$wpfOut"
+Check 'seven buttons in a window of their own - the console''s among them - out of sight until the pointer comes' ($wp[5] -eq '7' -and $wp[6] -eq 'False') "$wpfOut"
 Check 'that window, shown, takes clicks but never focus, and has no taskbar button' ((($cex -band 0x8080080) -eq 0x8080080) -and -not ($cex -band 0x20) -and -not ($cex -band 0x40000)) ('0x{0:X}' -f $cex)
 Check 'the grip at the left end, close at the corner' ($wp[14] -eq 'Drag to move' -and $wp[17] -like 'Close*') "$wpfOut"
 Check 'the buttons sit on the panel''s top edge, flush right, and stay put pass after pass - placed by their size, not where they are' ($wp[15] -eq 'True') "$wpfOut"
@@ -1849,6 +2250,127 @@ Check 'usage drawn as a line - name, the windows, when it is from - and as bars,
 Check 'the light theme redraws the frame and keeps the settings box open' ($wp[7] -eq '#F2FAFAFB' -and $wp[8] -eq 'True') "$wpfOut"
 Check 'the opacity slider sets the panel''s, and config.json gets it once it rests' ($wp[9] -eq 'True') "$wpfOut"
 Check 'collapsed: one line of counts and usage, and the chevron offers to expand' ($wp[11] -eq '1' -and $wp[12] -eq ('5h 42%/no chats open') -and $wp[13] -eq 'Expand') "$wpfOut"
+
+# the console, built and shown off every screen, never activated, and driven
+# the way a user would: its lists, a search, a chat picked, a file dropped, a
+# screenshot pasted, Send, a theme switch, closing it
+$con = @"
+`$env:CHATQ_OVERLAY = '1'
+. '$(Join-Path $sb 'tool\VS-code-chat-manager.ps1')'
+Set-StrictMode -Off
+`$script:ChatqSpawn = { `$true }
+`$script:ChatConsoleNoSync = `$true
+`$script:ChatConsoleClipboardSeam = { [pscustomobject]@{ Files = @(); Image = [byte[]](137, 80, 78, 71, 13, 10) } }
+Initialize-ChatOverlayNative
+`$H = New-ChatOverlayHostState
+`$script:ChatOverlayHost = `$H
+`$H.Ctx = New-ChatOverlayContext
+`$H.State = [pscustomobject]@{ x = `$null; y = `$null; locked = `$true; hidden = `$false }
+New-ChatOverlayWindow `$H
+`$H.Snap = [pscustomobject]@{ header = [pscustomobject]@{ usage = @(); notes = @() }; counts = [pscustomobject]@{ queued = 0; running = 0; cutOff = 1 }; rows = @(
+    [pscustomobject]@{ key = 's:$idCard'; kind = 'session'; status = 'idle'; chat = 'idle'; rank = 3; project = 'A'; title = 'Card'; stateText = 'idle 1m'; sessionId = '$idCard'; cwd = '$projA'; job = `$null; prompt = `$null }
+    [pscustomobject]@{ key = 'c:c1'; kind = 'cutoff'; status = 'cutoff'; chat = 'cutoff'; rank = 0.5; project = 'api'; title = 'Rate limiter'; stateText = 'cut off - resets 13:00'; sessionId = 'c1'; cwd = 'C:\p'; path = 'C:\p\x.jsonl'; job = `$null; prompt = `$null }) }
+New-ChatConsoleWindow `$H
+`$C = `$H.Con
+`$C.Win.ShowActivated = `$false
+`$C.Win.Show()
+`$C.Win.Left = -32000
+`$C.Win.Top = -32000
+`$ex = [ChatOverlayNative]::GetExStyle(`$C.Hwnd)
+`$C.IndexParsed = `$true
+`$C.Index = @(Get-ChatIndex)
+Update-ChatConsole `$H
+# the index read in a runspace of its own, its rows taken when ready - the
+# timer that would take them needs a message loop this test does not run
+`$idxStarted = [bool]`$C.IndexRead
+for (`$i = 0; `$i -lt 200 -and `$C.IndexRead -and -not `$C.IndexRead.Async.IsCompleted; `$i++) { Start-Sleep -Milliseconds 50 }
+Complete-ChatConsoleIndexRead `$H
+`$idxRead = `$idxStarted -and -not `$C.IndexRead -and @(`$C.Index).Count -gt 0 -and @(`$C.Index).Count -eq @(Get-ChatIndex).Count -and `$C.IndexStamp -eq (Get-ChatIndexStamp)
+`$idxSay = "`$idxStarted `$(@(`$C.Index).Count) `$(`$C.IndexStamp)"
+`$kinds = (@(`$C.ChatItems | ForEach-Object Kind | Sort-Object -Unique) -join ',')
+`$C.SearchBox.Text = 'limiter'
+`$searched = @(`$C.ChatItems).Count
+`$C.SearchBox.Text = ''
+Select-ChatConsoleTarget `$H @(`$C.ChatItems | Where-Object { `$_.Id -eq '$idCard' })[0]
+`$to = (@(`$C.To.Children[0].Inlines) | ForEach-Object { `$_.Text }) -join ''
+`$f = Join-Path '$sb' 'console-drop.txt'
+[IO.File]::WriteAllText(`$f, 'x')
+Add-ChatConsoleDrop `$H @(`$f, '$sb')
+for (`$i = 0; `$i -lt 60 -and @(`$C.Staged | Where-Object { `$_.Task -and -not `$_.Task.IsCompleted }).Count; `$i++) { Start-Sleep -Milliseconds 50 }
+Update-ChatConsoleStaging `$H
+`$folderSaid = `$C.Status.Text -like '*is a folder*'
+Invoke-ChatConsolePaste `$H (Get-ChatConsoleClipboard)
+`$staged = (@(`$C.Staged | ForEach-Object Name | Sort-Object) -join ',')
+`$C.Prompt.Text = 'from the console'
+Invoke-ChatConsoleSend `$H
+`$j = @(Get-ChatqJobs | Where-Object { (Read-ChatqPrompt `$_) -eq 'from the console' })[0]
+`$files = (@(Get-ChatqAttachments `$j | ForEach-Object Name | Sort-Object) -join ',')
+`$sent = [bool](`$j -and `$j.sendNow -and `$j.first -and `$j.sessionId -eq '$idCard' -and `$files -eq 'clip.png,console-drop.txt' -and `$C.Prompt.Text -eq '' -and -not `$C.Staged.Count -and
+    -not @(Get-ChildItem -LiteralPath `$script:ChatConsoleDraftDir -EA SilentlyContinue).Count -and `$C.Status.Text -like 'queued #*')
+# an edit to the queued prompt outlives a redraw of the queue
+`$C.Sel = `$j.id
+`$C.Sigs.Queue = `$null
+Update-ChatConsoleQueue `$H
+if (`$C.EditBox) { `$C.EditBox.Text = 'edited in place' }
+`$C.Sigs.Queue = `$null
+Update-ChatConsoleQueue `$H
+`$editKept = [bool](`$C.EditBox -and `$C.EditBox.Text -eq 'edited in place')
+# Remove asks first, and the second half of a double-click is no answer
+Invoke-ChatConsoleJobAction `$H `$j.id 'remove'
+Invoke-ChatConsoleJobAction `$H `$j.id 'remove'
+`$askHeld = [bool](Find-ChatqJob `$j.id) -and [bool]`$C.Confirm[`$j.id]
+`$C.Confirm[`$j.id] = (Get-Date).AddSeconds(-1)
+Invoke-ChatConsoleJobAction `$H `$j.id 'remove'
+`$removed = -not (Find-ChatqJob `$j.id)
+# Continue twice before the list redraws: one job
+`$ci = [pscustomobject]@{ Id = '$idCard'; Title = 'Card'; Path = `$null; Cwd = '$projA' }
+Invoke-ChatConsoleContinue `$H @(`$ci)
+Invoke-ChatConsoleContinue `$H @(`$ci)
+`$conts = @(Get-ChatqJobs | Where-Object { `$_.kind -eq 'continue' -and `$_.sessionId -eq '$idCard' -and `$_.state -eq 'queued' })
+`$contOnce = `$conts.Count -eq 1 -and `$C.Status.Text -like '*1 had one already*'
+`$contSay = "`$(`$conts.Count) - `$(`$C.Status.Text)" -replace '\|', '/'
+foreach (`$x in `$conts) { `$null = Remove-ChatqJob `$x 'test' }
+# a Codex chat: no mode or model offered, and none sent even if picked before
+`$cxItem = @(`$C.ChatItems | Where-Object { `$_.Provider -eq 'codex' })[0]
+`$codexOpts = `$false
+`$codexSent = `$false
+if (`$cxItem) {
+    `$C.Mode = 'plan'
+    `$C.Model = 'opus'
+    Select-ChatConsoleTarget `$H `$cxItem
+    `$codexOpts = `$C.Opts.Children.Count -eq 2
+    `$C.Prompt.Text = 'to codex'
+    Invoke-ChatConsoleSend `$H
+    `$cj = @(Get-ChatqJobs | Where-Object { (Read-ChatqPrompt `$_) -eq 'to codex' })[0]
+    `$codexSent = [bool](`$cj -and `$cj.provider -eq 'codex' -and -not `$cj.mode -and -not `$cj.runModel)
+    if (`$cj) { `$null = Remove-ChatqJob `$cj 'test' }
+    `$C.Mode = ''
+    `$C.Model = ''
+    Select-ChatConsoleTarget `$H @(`$C.ChatItems | Where-Object { `$_.Id -eq '$idCard' })[0]
+}
+`$C.Prompt.Text = 'kept across a theme'
+`$H.Ctx.Config.theme = 'light'
+Update-ChatOverlayTheme `$H
+`$kept = `$C.Prompt.Text -eq 'kept across a theme' -and `$C.Win.Background.Color.ToString() -eq '#FFF6F8FA'
+Hide-ChatConsole `$H
+`$st = Read-ChatConsoleState
+`$saved = `$st.draft.text -eq 'kept across a theme' -and `$st.draft.target.Id -eq '$idCard' -and -not `$C.Win.IsVisible
+if (`$j -and (Find-ChatqJob `$j.id)) { `$null = Remove-ChatqJob `$j 'test' }
+'{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}|{8}|{9}|{10}|{11}|{12}|{13}|{14}|{15}|{16}|{17}|{18}' -f `$ex, `$kinds, `$searched, `$to, `$staged, `$sent, `$kept, `$saved, `$folderSaid, `$files, `$editKept, `$askHeld, `$removed, `$contOnce, `$codexOpts, `$codexSent, `$contSay, `$idxRead, `$idxSay
+"@
+$conOut = @(& (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') -NoProfile -NonInteractive -STA -EncodedCommand ([Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($con))) 2>&1) | Select-Object -Last 1
+$cp = "$conOut" -split '\|'
+$cex = if ($cp.Count -ge 1 -and $cp[0] -match '^\d+$') { [int64]$cp[0] } else { -1 }
+Check 'the console is a window of its own kind: it can take focus, and is no tool window, nor always on top' ($cex -ge 0 -and -not ($cex -band 0x80) -and -not ($cex -band 0x08000000) -and -not ($cex -band 0x8)) "$conOut"
+Check 'it lists the chats the limit cut off and those open in VS Code; the search narrows them' ($cp[1] -like '*cutoff*' -and $cp[1] -like '*open*' -and $cp[2] -eq '1') "$conOut"
+Check 'a chat picked is the one written to; a file dropped and a screenshot pasted go with it, a folder does not' ($cp[3] -like 'To*Card*' -and $cp[4] -eq 'clip.png,console-drop.txt' -and $cp[8] -eq 'True') "$conOut"
+Check 'Send makes the job chatq would - first, sent now, files moved in - and clears the box for the next' ($cp[5] -eq 'True') "$conOut"
+Check 'a theme switch keeps what is typed; closing it hides it and keeps the draft for next time' ($cp[6] -eq 'True' -and $cp[7] -eq 'True') "$conOut"
+Check 'a queued prompt being edited outlives a redraw of the queue' ($cp[10] -eq 'True') "$conOut"
+Check 'Remove asks, a double-click does not answer, a second click does' ($cp[11] -eq 'True' -and $cp[12] -eq 'True') "$conOut"
+Check 'Continue clicked twice queues one continue' ($cp[13] -eq 'True') "$($cp[16])"
+Check 'the index is read in a runspace of its own, never on the window''s thread, and its rows taken when ready' ($cp[17] -eq 'True') "$($cp[18])"
+Check 'a Codex chat is offered no mode or model, and is sent none' ($cp[14] -eq 'True' -and $cp[15] -eq 'True') "$conOut"
 $script:ChatOverlayUsageSeam = $null
 $script:ChatqAliveSeam = $null
 Remove-Item -LiteralPath $sessDir -Recurse -Force -EA SilentlyContinue

@@ -1,7 +1,7 @@
 {
     "name": "chat-manager-reload",
     "displayName": "VS Code chat manager - reload",
-    "description": "Offers to reload the window after VS-code-chat-manager deletes a chat, or runs a queued prompt into one this window still has open, so the panel shows what changed.",
+    "description": "Offers to reload the window after VS-code-chat-manager deletes a chat, or runs a queued prompt into one this window still has open - and after a queued run takes that reload by itself while you are away - so the panel shows what changed.",
     "version": "2.0.0",
     "publisher": "phal40lax78",
     "license": "MIT",
@@ -27,7 +27,12 @@
                 "chatManagerReload.autoReload": {
                     "type": "boolean",
                     "default": false,
-                    "markdownDescription": "Reload without asking after a delete. Off by default: a reload restarts every extension in the window, so one taken mid-answer loses that answer. Never applies while a chat in the workspace is still working (a turn, a permission prompt, a workflow or background agent), nor to a queued run, which can finish at any hour while another chat in the window is busy."
+                    "markdownDescription": "Reload without asking after a delete. Off by default: a reload restarts every extension in the window, so one taken mid-answer loses that answer. Never applies while a chat in the workspace is still working (a turn, a permission prompt, a workflow or background agent). A queued run has its own setting, `autoReloadAfterRun`."
+                },
+                "chatManagerReload.autoReloadAfterRun": {
+                    "type": "boolean",
+                    "default": true,
+                    "markdownDescription": "Reload without asking after a queued prompt ran into a chat this window has open - but only in a window whose one folder is that chat's, when nobody had used the PC for `quietMinutes` (5 by default, see `chatqnotify -QuietMinutes`; 0 means never away) and no other chat in the folder was working or written in that time as the run ended. Otherwise the window asks, as with this off. A window opened after the run already shows it, and neither asks nor reloads."
                 }
             }
         }

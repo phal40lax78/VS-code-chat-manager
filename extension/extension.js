@@ -41,6 +41,16 @@ function isMine(req) {
     });
 }
 
+// The script judges one folder's chats, the job's own. A window whose only
+// folder is that one holds nothing it did not judge; a multi-root window, or
+// one opened on a parent folder, may hold a chat elsewhere mid-answer - so
+// only the first may reload without asking.
+function isExactlyMine(req) {
+    const folders = vscode.workspace.workspaceFolders || [];
+    if (!req.cwd || folders.length !== 1) return false;
+    return path.resolve(req.cwd).toLowerCase() === path.resolve(folders[0].uri.fsPath).toLowerCase();
+}
+
 // What to say, by what happened. A request written before 'kind' existed is a
 // delete - that was the only thing that wrote one. 'busy' is the script's
 // judgement, made as it wrote the request, that a chat in this workspace was
@@ -51,6 +61,9 @@ function message(req) {
     if (req.kind === 'ran') {
         return 'A queued prompt ran in ' + what + ', which this window still has open. Reload to show it?';
     }
+    if (req.kind === 'new') {
+        return 'A new chat, ' + what + ', was started in this folder by chatq. Reload to pick it up?';
+    }
     const done = (req.kind === 'archived' ? 'Archived ' : 'Deleted ') + what + '.';
     if (req.busy === true) {
         return done + ' A chat in this workspace is still working, and reloading now would cut it off - reload once it finishes.';
@@ -58,16 +71,23 @@ function message(req) {
     return done + ' Reload to refresh the chat list?';
 }
 
-// Never automatic for a queued run: it can finish at 3 a.m. with another
-// chat in this window mid-answer, and a reload would lose that answer. Nor
-// while a chat is working, for the same reason.
-function reloadsItself(req, autoReload) {
-    return req.kind !== 'ran' && req.busy !== true && !!autoReload;
+// A queued run can finish at 3 a.m. with another chat in this window
+// mid-answer, and a reload would lose that answer - or while you are typing
+// in it. So it reloads by itself only on the script's word, given as the run
+// ended, that nobody had used the PC for a while (away) and no other chat in
+// the folder was working (busy false), and only in a window that is exactly
+// that folder. Unjudged is a no. The new chat a queued run started is never
+// reloaded for by itself: the script judges neither for it. A delete reloads
+// by itself only with autoReload, and never while a chat works.
+function reloadsItself(req, autoReload, afterRun, exact) {
+    if (req.kind === 'ran') return afterRun !== false && req.away === true && req.busy === false && exact === true;
+    if (req.kind === 'new') return false;
+    return req.busy !== true && !!autoReload;
 }
 
 async function offer(context, req) {
-    const auto = reloadsItself(req,
-        vscode.workspace.getConfiguration('chatManagerReload').get('autoReload'));
+    const cfg = vscode.workspace.getConfiguration('chatManagerReload');
+    const auto = reloadsItself(req, cfg.get('autoReload'), cfg.get('autoReloadAfterRun'), isExactlyMine(req));
 
     // Marked seen BEFORE reloading: the file is still on disk afterwards, so
     // without this the same request would prompt again on every reload.
@@ -97,6 +117,11 @@ function check(context, file, onlyRecent) {
         // was about was rebuilt from disk when this window opened
         const at = Date.parse(req.at || '');
         if (!at || Date.now() - at > 10 * 60 * 1000) return;
+        // a window just opened has read every chat from disk, the run - or
+        // the new chat it started - included, so it has nothing to reload
+        // for; and a run's away verdict, given as it ended, is stale with
+        // someone opening windows
+        if (req.kind === 'ran' || req.kind === 'new') { context.globalState.update(SEEN_KEY, req.id); return; }
     }
     offer(context, req);
 }
@@ -120,5 +145,5 @@ function deactivate() { }
 module.exports = {
     activate, deactivate,
     _readRequest: readRequest, _isMine: isMine, _signalFiles: signalFiles, _message: message,
-    _reloadsItself: reloadsItself
+    _reloadsItself: reloadsItself, _isExactlyMine: isExactlyMine, _check: check
 };

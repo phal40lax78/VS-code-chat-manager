@@ -1,5 +1,76 @@
 # Changelog
 
+## 0.5.0 — chatq in a window
+
+- **`chatconsole`**, the overlay's window for chatq: pick a chat - cut off,
+  open in VS Code, recent, or found by search - write to it, and send it now
+  or queue it. Also the speech bubble on the overlay's buttons, **Open
+  console** in the tray, and **Ctrl+Alt+Shift+Q** (`-ConsoleHotkey`). It
+  takes the keyboard only when you open it, and closing it keeps the draft -
+  the chat, the text, the files, the choices - across restarts too.
+- **Files by drag and paste.** Drop files on the prompt, or paste a
+  screenshot or files copied in Explorer with Ctrl+V; each is copied aside at
+  once, off the window's thread, and moves into the job on Send.
+- **Send now.** The job goes to the front and runs within seconds; a chat
+  working in VS Code is looked at every 30 s rather than every 5 minutes. A
+  line says beforehand what Send will do: a limit, a busy chat, a reload.
+- **New chats.** + New chat starts a Claude chat in a folder, named by you or
+  by the prompt's first line. Its session id is chosen when it is queued and
+  handed to `claude -p --session-id` with `--name` (spike S25), so a retry
+  after a limit continues that same chat, never a second one. The extension
+  offers a window on that folder a reload to pick it up; whether VS Code's
+  chat list then shows it is still to be checked (S25).
+- **Cut off, marked.** The overlay colours chats the limit or a 529 stopped
+  orange - `cut off - resets 13:00` - and gives one not open a row of its
+  own; the console continues one, or all of them. It looks a week back for
+  a limit still ahead, and otherwise at the last 12 hours; it looks again
+  at once when a job or a chat's state changes, never reads a chat that is
+  working, and reads a transcript again only once it changed.
+- **The queue as a console.** Each job says where it stands; pick one for
+  its reply, its log, and Try now, First, Remove, Cancel, Requeue or Write to
+  this chat; a waiting prompt can be edited in place.
+- **One job core.** `chatq`, `chatqrm`, `chatqrun`, `chatqlog` and the
+  console make and change jobs through the same functions, and the commands
+  print exactly what they did. The index is now written whole and swapped
+  in, so a reader never sees half of it.
+- **Fixed:** `chatqlog` on a job still running failed with "being used by
+  another process" - the run holds its log open. `chatqrm -Force` on a job
+  that ended meanwhile, with no watcher left, marked it failed and lost its
+  result; it now says it had already ended.
+- **No Reload to click on coming back.** A chat open in a VS Code window never
+  shows a chatq run until that window reloads, and until now the window only
+  ever asked. It reloads by itself now when, as the run ended, nobody had used
+  the PC for `quietMinutes` (5 — the same clock that sends the alert to the
+  phone) and no other chat in the folder was working or had been written in
+  that time. It still asks at the PC (you may be typing in that very window),
+  on an idle clock that cannot be read or `quietMinutes` 0, and in a window
+  with more than one folder or opened on a parent one, since only the chat's
+  own folder was judged. A window opened after the run already shows it, so
+  it neither asks nor reloads - nor for a new chat a run started, which it
+  lists already. A new chat is never reloaded for by itself.
+- **The chat the run just wrote no longer counts as busy** for having just
+  been written. What Claude says of its own open process still counts: after
+  the run that can only be a window's, and it may be mid-answer.
+- The busy check asks the job's own Claude home (`CLAUDE_CONFIG_DIR`) for its
+  open sessions, not the watcher's.
+- **A refused login says what Claude said.** Every 401 and 403 read as
+  `Claude is logged out · run claude, then /login`, and nothing kept what
+  Claude had actually said. A subscription that has run out is refused the
+  same way, so on 2026-09-23 a lapsed plan was reported as a lost login, and
+  afterwards there was no telling which it had been. The alert now quotes the
+  API's own message — `Claude login refused: OAuth token has expired. (401) ·
+  run claude, then /login, or check the subscription` — and so do
+  `data/logs/watcher.log`, the `chatqlist` status line, the console's line
+  before Send (which had called it "limited until") and the job's result.
+  Codex the same, with `codex login`.
+- **The watcher log keeps the whole error too**, on an `error text:` line of
+  its own, type and all — the message alone does not say what kind of refusal
+  it was.
+- **The extension** has words for a new chat, and reloads by itself after a
+  queued run as above; `chatManagerReload.autoReloadAfterRun: false` makes it
+  always ask. Copy its files over the installed ones to update it (see the
+  README for the update line).
+
 ## 0.4.0 — every running chat at a glance
 
 - **`chatoverlay`** keeps a small panel in the top-right corner, above other

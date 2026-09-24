@@ -1,0 +1,340 @@
+{
+    // Path to dotnet.exe used by .vscode/tasks.json (invoke_dotnet.ps1).
+    // Resolved via ${config:asRadarViewer.dotnetPath}.
+    "asRadarViewer.dotnetPath": "C:\\Program Files\\dotnet\\dotnet.exe",
+
+    "files.associations": {
+        "tuple": "cpp",
+        "array": "cpp",
+        "atomic": "cpp",
+        "cctype": "cpp",
+        "clocale": "cpp",
+        "cmath": "cpp",
+        "cstdarg": "cpp",
+        "cstddef": "cpp",
+        "cstdint": "cpp",
+        "cstdio": "cpp",
+        "cstdlib": "cpp",
+        "cstring": "cpp",
+        "ctime": "cpp",
+        "cwchar": "cpp",
+        "cwctype": "cpp",
+        "deque": "cpp",
+        "unordered_map": "cpp",
+        "unordered_set": "cpp",
+        "vector": "cpp",
+        "exception": "cpp",
+        "algorithm": "cpp",
+        "functional": "cpp",
+        "iterator": "cpp",
+        "map": "cpp",
+        "memory": "cpp",
+        "memory_resource": "cpp",
+        "numeric": "cpp",
+        "optional": "cpp",
+        "random": "cpp",
+        "set": "cpp",
+        "string": "cpp",
+        "string_view": "cpp",
+        "system_error": "cpp",
+        "type_traits": "cpp",
+        "utility": "cpp",
+        "fstream": "cpp",
+        "initializer_list": "cpp",
+        "iomanip": "cpp",
+        "iosfwd": "cpp",
+        "iostream": "cpp",
+        "istream": "cpp",
+        "limits": "cpp",
+        "new": "cpp",
+        "ostream": "cpp",
+        "sstream": "cpp",
+        "stdexcept": "cpp",
+        "streambuf": "cpp",
+        "cinttypes": "cpp",
+        "typeinfo": "cpp",
+        "*.key": "plaintext",
+        "*.pem": "plaintext",
+        "*.cert": "plaintext",
+        "*.secret": "plaintext",
+        "function.h": "c"
+    },
+    "C_Cpp.default.configurationProvider": "ms-vscode.cpptools",
+    "C_Cpp.intelliSenseEngine": "default",
+
+    // ============================================================================
+    // 코드 프라이버시 및 보안 설정 (코드 외부 공유 방지)
+    // ============================================================================
+    // 참고: Copilot 코드 공유 차단은 VS Code 설정이 아닌 GitHub 계정/조직의
+    // Copilot Privacy 옵션에서 제어합니다. 아래는 보조적 제어만 포함.
+
+    // 2. Copilot 기능 유지하면서 데이터 최소화
+    "github.copilot.enable": {
+        "*": true,
+        "c": true,
+        "cpp": true,
+        "h": true,
+        "hpp": true,
+        "makefile": true,
+        "cmake": true,
+        "python": true,
+        "json": true,
+        "yaml": false,
+        "plaintext": false
+    },
+    
+    // 3. 텔레메트리 및 데이터 수집 완전 비활성화
+    // telemetryLevel: "off"이 enableTelemetry/enableCrashReporter를 모두 포괄함
+    "telemetry.telemetryLevel": "off",
+    "redhat.telemetry.enabled": false,
+
+    // 4. 자동 업데이트 및 외부 통신 제한
+    "extensions.autoUpdate": false,
+    "extensions.autoCheckUpdates": false,
+    "update.mode": "manual",
+    "update.enableWindowsBackgroundUpdates": false,
+    
+    // 5. 설정 동기화 비활성화 (코드가 Microsoft 서버에 저장되는 것 방지)
+    "settingsSync.enabled": false,
+    "settingsSync.keybindingsPerPlatform": false,
+    
+    // 6. 워크스페이스 보안 설정
+    "security.workspace.trust.enabled": true,
+    "security.workspace.trust.banner": "always",
+    "security.workspace.trust.startupPrompt": "always",
+    "security.workspace.trust.emptyWindow": false,
+    
+    // ============================================================================
+    // AI 어시스턴트 기능 최적화 설정 (기능성 유지)
+    // ============================================================================
+    
+    // 7. Copilot Chat 및 어시스턴트 기능 활성화
+    "github.copilot.chat.enabled": true,
+    "github.copilot.editor.enableAutoCompletions": true,
+    "github.copilot.editor.enableCodeActions": true,
+    
+    // 8. IntelliSense 및 자동완성 최적화
+    "editor.inlineSuggest.enabled": true,
+    "editor.inlineSuggest.showToolbar": "onHover",
+    "editor.suggestOnTriggerCharacters": true,
+    "editor.acceptSuggestionOnCommitCharacter": true,
+    "editor.acceptSuggestionOnEnter": "on",
+    "editor.tabCompletion": "on",
+    
+    // 9. C/C++ 특화 설정 (임베디드 개발용)
+    "C_Cpp.autocomplete": "default",
+    "C_Cpp.errorSquiggles": "enabled",
+    "C_Cpp.dimInactiveRegions": true,
+    "C_Cpp.enhancedColorization": "enabled",
+    
+    // 10. 파일 제외 설정 (민감한 파일이 인덱싱되지 않도록)
+    "files.exclude": {
+        "**/build/**": true,
+        "**/.git": true,
+        "**/.svn": true,
+        "**/.hg": true,
+        "**/CVS": true,
+        "**/.DS_Store": true,
+        "**/Thumbs.db": true,
+        "**/*.user": true,
+        "**/*.suo": true,
+        "**/*.userosscache": true,
+        "**/*.sln.docstates": true,
+        "**/*.elf": true,
+        "**/*.hex": true,
+        "**/*.bin": true,
+        "**/*.map": true,
+        "**/*.lst": true,
+        "**/*.log": true,
+        "**/*.cydsn": true,
+        "**/*.cyprj": true,
+        "**/*.tmp": true,
+        "**/*.cache": true
+    },
+    
+    // 11. 검색 제외 설정 (빌드 파일 등 제외)
+    "search.exclude": {
+        "**/build": true,
+        "**/node_modules": true,
+        "**/bower_components": true,
+        "**/*.code-search": true
+    },
+    
+    // 12. 워치 제외 설정 (성능 최적화)
+    "files.watcherExclude": {
+        "**/build/**": true,
+        "**/.git/objects/**": true,
+        "**/.git/subtree-cache/**": true,
+        "**/node_modules/*/**": true
+    },
+
+    // ============================================================================
+    // 추가 보안 및 프라이버시 강화 설정
+    // ============================================================================
+    
+    // 13. 네트워크 및 원격 접근 차단
+    "remote.downloadExtensionsLocally": true,
+    "extensions.ignoreRecommendations": true,
+    "workbench.enableExperiments": false,
+    "workbench.settings.enableNaturalLanguageSearch": false,
+    
+    // 14. 코드 분석 로컬 전용 설정
+    "C_Cpp.intelliSenseUpdateDelay": 1000,
+    "C_Cpp.workspaceParsingPriority": "highest",
+    "C_Cpp.loggingLevel": "Error",
+    "C_Cpp.configurationWarnings": "disabled",
+    
+    // 15. 임베디드 개발 특화 설정
+    "cortex-debug.enableTelemetry": false,
+    "cortex-debug.showRTOS": true,
+    "cortex-debug.variableUseNaturalFormat": false,
+    
+    // 16. 추가 임베디드 파일 제외 설정은 기존 files.exclude에 통합됨
+    
+    // 17. 에디터 보안 설정
+    "editor.suggest.localityBonus": true,
+    "editor.wordBasedSuggestions": "off",
+    "editor.quickSuggestions": {
+        "other": true,
+        "comments": false,
+        "strings": false
+    },
+    
+    // 18. Git 보안 설정
+    "git.openRepositoryInParentFolders": "never",
+    "git.autoRepositoryDetection": false,
+    "git.fetchOnPull": false,
+    "git.autofetch": false,
+    "git.confirmSync": true,
+    
+    // 19. 디버깅 보안 설정
+    "debug.allowBreakpointsEverywhere": false,
+    "debug.openDebug": "neverOpen",
+    "debug.showBreakpointsInOverviewRuler": false,
+    "debug.console.acceptSuggestionOnEnter": "off",
+    
+    // ============================================================================
+    // 추가 강화 보안 설정 (2025년 최신 업데이트)
+    // ============================================================================
+    
+    // 21. 코드 스캔 및 분석 로컬 전용 설정
+    "security.allowedUNCHosts": [],
+    "security.restrictUNCAccess": true,
+    
+    // 22. 자동 저장 및 백업 로컬 전용
+    "files.autoSave": "afterDelay",
+    "files.autoSaveDelay": 1000,
+    "files.hotExit": "onExitAndWindowClose",
+    
+    // 23. 코드 스니펫 및 추천 로컬 전용 (중복 제거됨)
+    "editor.snippetSuggestions": "top",
+    "editor.suggest.snippetsPreventQuickSuggestions": false,
+    
+    // 24. 확장 프로그램 제한 설정 (중복 제거됨)
+    "extensions.closeExtensionDetailsOnViewChange": true,
+    
+    // 25. 민감한 데이터 감지 및 경고 (files.associations 통합됨 — 상단 블록 참조)
+
+    // 26. URL 열기 보안 설정
+    "workbench.externalUriOpeners": {},
+    "workbench.trustedDomains.promptInTrustedWorkspace": true,
+    
+    // 27. 원격 개발 비활성화
+    "remote.autoForwardPorts": false,
+    "remote.autoForwardPortsSource": "output",
+    "remote.portsAttributes": {},
+    
+    // 28. 코드 렌즈 및 인라인 힌트 설정
+    "editor.codeLens": false,
+    "editor.inlayHints.enabled": "on",  // 인라인 힌트 활성화 (타입, 매개변수 등)
+    
+    // 29. 실험적 기능 모두 비활성화 (cloudChanges 추가)
+    "workbench.cloudChanges.autoResume": "off",
+    "workbench.cloudChanges.continueOn": "off",
+    
+    // 30. 추가 임베디드 개발 보안 (registerUseNaturalFormat 추가)
+    "cortex-debug.registerUseNaturalFormat": false,
+    
+    // ============================================================================
+    // IAR + JLINK 빌드 및 디버깅 상태바 버튼 설정
+    // ============================================================================
+    "actionButtons": {
+        "defaultColor": "#ffffff",
+        "loadNpmCommands": false,
+        "reloadButton": null,
+        "commands": [
+            {
+                "cwd": "${workspaceFolder}",
+                "name": "$🧹 Clean",
+                "color": "#ff6347",
+                "singleInstance": true,
+                "command": "workbench.action.tasks.runTask",
+                "args": ["Clean"],
+                "tooltip": "IAR 프로젝트 클린"
+            },
+            {
+                "cwd": "${workspaceFolder}",
+                "name": "$🔨 Build",
+                "color": "#32cd32",
+                "singleInstance": true,
+                "command": "workbench.action.tasks.runTask",
+                "args": ["Build"],
+                "tooltip": "IAR 프로젝트 빌드"
+            },
+            {
+                "cwd": "${workspaceFolder}",
+                "name": "$(cloud-download) Program",
+                "color": "#00bfff",
+                "singleInstance": true,
+                "command": "workbench.action.tasks.runTask",
+                "args": ["Program"],
+                "tooltip": "펌웨어 다운로드"
+            },
+            {
+                "cwd": "${workspaceFolder}",
+                "name": "$(rocket) Program+Run",
+                "color": "#1e90ff",
+                "singleInstance": true,
+                "command": "workbench.action.tasks.runTask",
+                "args": ["Program+Run"],
+                "tooltip": "빌드 → 다운로드 → 리셋"
+            },
+            {
+                "cwd": "${workspaceFolder}",
+                "name": "$🗑️ Erase",
+                "color": "#ff8c00",
+                "singleInstance": true,
+                "command": "workbench.action.tasks.runTask",
+                "args": ["Erase"],
+                "tooltip": "플래시 메모리 삭제"
+            },
+            {
+                "cwd": "${workspaceFolder}",
+                "name": "$(debug-alt) Erase+Program",
+                "color": "#9370db",
+                "singleInstance": true,
+                "command": "workbench.action.tasks.runTask",
+                "args": ["Erase+Program"],
+                "tooltip": "플래시 삭제 → 다운로드 (리셋 없음)"
+            },
+            {
+                "cwd": "${workspaceFolder}",
+                "name": "$(zap) Erase+Program+Run",
+                "color": "#ff1493",
+                "singleInstance": true,
+                "command": "workbench.action.tasks.runTask",
+                "args": ["Erase+Program+Run"],
+                "tooltip": "플래시 삭제 → 다운로드 → 리셋"
+            },
+            {
+                "cwd": "${workspaceFolder}",
+                "name": "$(debug-restart) Reset",
+                "color": "#ffd700",
+                "singleInstance": true,
+                "command": "workbench.action.tasks.runTask",
+                "args": ["Reset"],
+                "tooltip": "MCU 리셋"
+            }
+        ]
+    }
+}
