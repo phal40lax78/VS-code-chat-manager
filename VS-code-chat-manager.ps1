@@ -239,6 +239,14 @@ FILES   everything in data/ beside this script, nothing anywhere else
 # handing back what you already had.
 $script:ChatVersion = '0.6.0'
 
+# The tool's folder and this file, read here once and never inside a function:
+# data/ sits in that folder, and the profile line, the watcher and the overlay
+# all load this file by that path. $PSScriptRoot and $PSCommandPath inside a
+# function name the file that function is written in, which need not be this
+# one. Empty under iex, where no file is behind the code.
+$script:ChatRoot = $PSScriptRoot
+$script:ChatScriptPath = $PSCommandPath
+
 $script:ChatPreview = 3
 $script:ChatClaudeHome = if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { Join-Path $HOME '.claude' }
 $script:ChatCodexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $HOME '.codex' }
@@ -258,18 +266,18 @@ elseif ($env:APPDATA) { Join-Path $env:APPDATA 'Code\User' }
 elseif ($script:ChatIsMac) { Join-Path $HOME 'Library/Application Support/Code/User' }
 else { Join-Path $HOME '.config/Code/User' }
 $script:ChatWorkspaceNames = @{}
-$script:ChatIndexPath = Join-Path (Join-Path $PSScriptRoot 'data') 'chat-index.csv'
-$script:ChatTombPath = Join-Path (Join-Path $PSScriptRoot 'data') 'rewritten.txt'
+$script:ChatIndexPath = Join-Path (Join-Path $script:ChatRoot 'data') 'chat-index.csv'
+$script:ChatTombPath = Join-Path (Join-Path $script:ChatRoot 'data') 'rewritten.txt'
 # what the last chatinstall put in the profile. The file gets overwritten by an
 # update, so its own version says what just landed and this says what it replaced.
-$script:ChatVersionPath = Join-Path (Join-Path $PSScriptRoot 'data') 'version.txt'
+$script:ChatVersionPath = Join-Path (Join-Path $script:ChatRoot 'data') 'version.txt'
 # read by the optional VS Code extension in extension/, which is the only thing
 # able to run reloadWindow - no CLI flag, URL or toast button can reach it
-$script:ChatReloadPath = Join-Path (Join-Path $PSScriptRoot 'data') 'reload-request'
+$script:ChatReloadPath = Join-Path (Join-Path $script:ChatRoot 'data') 'reload-request'
 # the overlay's open chip asks the same extension to show one chat, in a file
 # of its own: one request per file, so a run's request and a click's never
 # overwrite each other
-$script:ChatOpenPath = Join-Path (Join-Path $PSScriptRoot 'data') 'open-request'
+$script:ChatOpenPath = Join-Path (Join-Path $script:ChatRoot 'data') 'open-request'
 # how long after either request the next run into its chat waits, while the
 # window shows it (Get-ChatShowHold): the extension acts on one by itself for
 # 20 s (its timing.judgedMaxAge), and polls every 2
@@ -1470,7 +1478,7 @@ function Remove-ChatSession {
 # state in its own databases, so only its CLI can archive one properly). The
 # panel's list is left to forget it the same way it forgets a deleted chat.
 
-$script:ChatArchiveDir = Join-Path (Join-Path $PSScriptRoot 'data') 'archive'
+$script:ChatArchiveDir = Join-Path (Join-Path $script:ChatRoot 'data') 'archive'
 
 function Move-ChatItem {
     # Move-Item, else copy-then-delete: a folder cannot be moved across drives,
@@ -2477,7 +2485,7 @@ function chatinstall {
     param([switch]$Force)
     Set-StrictMode -Off
 
-    $me = $PSCommandPath
+    $me = $script:ChatScriptPath
     if (-not $me) {
         Write-Host '  cannot tell where this file is' -ForegroundColor Yellow
         Write-Host '  dot-source it by path first:  . C:\path\to\VS-code-chat-manager.ps1' -ForegroundColor DarkGray
@@ -2531,7 +2539,7 @@ function chatinstall {
         if ($stale -gt 0) {
             Write-Host "    replaced $stale line$(if ($stale -ne 1) { 's' }) from an older location" -ForegroundColor DarkGray
         }
-        # Reaching this line means the file was dot-sourced - $PSCommandPath is
+        # Reaching this line means the file was dot-sourced - its path is
         # empty otherwise and it returns above - so the commands are already
         # defined right here. Saying "open a new terminal" sent people off to
         # reopen a shell that was already working.
@@ -2673,7 +2681,7 @@ function chatuninstall {
         Write-Host '  nothing in the profile to remove' -ForegroundColor DarkGray
     }
 
-    $here = if ($PSCommandPath) { Split-Path $PSCommandPath -Parent } else { $null }
+    $here = if ($script:ChatScriptPath) { $script:ChatRoot } else { $null }
     if ($All) {
         if (-not $here) {
             Write-Host '  cannot tell where this file is - delete the folder by hand' -ForegroundColor Yellow
@@ -2730,7 +2738,7 @@ function chat {
     Write-Host '  Get-Help chatfind -Full           full help, examples and notes'
     Write-Host ''
     Write-Host "  VS-code-chat-manager $script:ChatVersion" -ForegroundColor DarkGray
-    Write-Host "  $PSCommandPath" -ForegroundColor DarkGray
+    Write-Host "  $script:ChatScriptPath" -ForegroundColor DarkGray
     Write-Host ''
 }
 
@@ -3229,7 +3237,7 @@ $script:ChatqIsWindows = [System.Environment]::OSVersion.Platform -eq 'Win32NT'
 
 # Every runtime file lives in data/ beside the script, never in AppData or
 # TEMP - the folder is the whole installation, and deleting it is the uninstall.
-$script:ChatqData = Join-Path $PSScriptRoot 'data'
+$script:ChatqData = Join-Path $script:ChatRoot 'data'
 $script:ChatqQueueDir = Join-Path $script:ChatqData 'queue'
 $script:ChatqLogDir = Join-Path $script:ChatqData 'logs'
 $script:ChatqConfigPath = Join-Path $script:ChatqData 'config.json'
@@ -3243,7 +3251,7 @@ $script:ChatqBoardPath = Join-Path $script:ChatqData 'queue.md'
 $script:ChatqRestartPath = Join-Path $script:ChatqData 'restart'
 # tests only: a scriptblock that stands in for launching a real watcher
 $script:ChatqSpawn = $null
-$script:ChatqScriptPath = $PSCommandPath
+$script:ChatqScriptPath = $script:ChatScriptPath
 
 # This file stays pure ASCII. Windows PowerShell 5.1 reads a .ps1 without a BOM
 # in the ANSI code page - 949 on a Korean machine - so a literal middle dot or
