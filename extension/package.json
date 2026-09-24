@@ -1,8 +1,8 @@
 {
     "name": "chat-manager-reload",
     "displayName": "VS Code chat manager - reload",
-    "description": "Offers to reload the window after VS-code-chat-manager deletes a chat, or runs a queued prompt into one this window still has open - and after a queued run takes that reload by itself while you are away - so the panel shows what changed.",
-    "version": "2.0.0",
+    "description": "Shows a chat up to date after VS-code-chat-manager runs a queued prompt into it, or the overlay's open chip asks for it - redrawing only the window's web views, or in a tab of its own - and offers to reload the window after a delete, so the panel shows what changed.",
+    "version": "2.1.0",
     "publisher": "phal40lax78",
     "license": "MIT",
     "engines": {
@@ -22,7 +22,7 @@
                 "chatManagerReload.signalFile": {
                     "type": "string",
                     "default": "",
-                    "markdownDescription": "Path to the tool's `data/reload-request`. Empty means `~/Tools/VS-code-chat-manager/data/reload-request`. Set this if `VS-code-chat-manager.ps1` lives somewhere else - `data/` follows the script, so the path moves with it. `chatinstall` prints the line to paste when it is not the default."
+                    "markdownDescription": "Path to the tool's `data/reload-request`. Empty means `~/Tools/VS-code-chat-manager/data/reload-request`. Set this if `VS-code-chat-manager.ps1` lives somewhere else - `data/` follows the script, so the path moves with it. The overlay's `open-request` beside it moves too. `chatinstall` prints the line to paste when it is not the default."
                 },
                 "chatManagerReload.autoReload": {
                     "type": "boolean",
@@ -32,7 +32,12 @@
                 "chatManagerReload.autoReloadAfterRun": {
                     "type": "boolean",
                     "default": true,
-                    "markdownDescription": "Reload without asking after a queued prompt ran into a chat this window has open - but only in a window whose one folder is that chat's, when nobody had used the PC for `quietMinutes` (5 by default, see `chatqnotify -QuietMinutes`; 0 means never away) and no other chat in the folder was working or written in that time as the run ended. Otherwise the window asks, as with this off. A window opened after the run already shows it, and neither asks nor reloads."
+                    "markdownDescription": "Show the chat fresh without asking after a queued prompt ran into a chat this window has open (with `showFresh` off: reload the window) - but only in a window whose one folder is that chat's, when nobody had used the PC for `quietMinutes` (5 by default, see `chatqnotify -QuietMinutes`; 0 means never away), no other chat in the folder was working or written in that time as the run ended, and that judgement is at most 20 seconds old. Otherwise the window asks, as with this off. A window opened after the run already shows it, and neither asks nor acts."
+                },
+                "chatManagerReload.showFresh": {
+                    "type": "boolean",
+                    "default": true,
+                    "markdownDescription": "After a queued run, redraw instead of reloading: the chat's old idle process is ended and the window runs **Developer: Reload Webviews**, showing the chat where you read it - only when no chat in the window is working, since that cuts a working chat off as a reload would. Otherwise the chat opens fresh in an editor tab of its own, which touches no other chat. Terminals, editors and other extensions keep running either way. Off brings back the window reload of 0.5.0. Needs the Claude Code extension."
                 }
             }
         }

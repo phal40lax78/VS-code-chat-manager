@@ -7,11 +7,19 @@
 #   FAKE_STDERR    bytes of noise to write to stderr first (pipe-deadlock test)
 #   FAKE_SLEEP     seconds to hang before answering (timeout test)
 #   FAKE_AGENTS    what `claude agents --json` prints (live chats)
+#   FAKE_AGENTS_SEEN  a file a line is added to each time `claude agents` runs
 #   FAKE_NEW_CHAT  with --session-id, write the new chat's transcript where
 #                  Claude Code would, as a real first run does - under
 #                  CLAUDE_CODE_PROJECT_DIR_NAME when set - and refuse an id
 #                  already on disk
 #   FAKE_ARCHIVE_FAIL  make `codex archive` / `unarchive` fail
+#   FAKE_REGISTER  a registry file (sessions/<pid>.json) to write while the
+#                  run goes on, from FAKE_REGISTER_BODY with {{NOW}} replaced
+#                  by the time in Unix ms: a window opening the chat meanwhile.
+#                  With FAKE_AGENTS_FILE, the same entry goes there too, as
+#                  what `claude agents --json` lists from then on
+#   FAKE_AGENTS_FILE  once it exists, what `claude agents --json` prints,
+#                  ahead of FAKE_AGENTS
 # Output goes out as raw UTF-8 bytes: Write-Output would encode it in the
 # console code page, which is exactly the bug class these tests exist for.
 
@@ -52,8 +60,11 @@ if ($argv.Count -and $argv[0] -in 'archive', 'unarchive') {
 
 if ($argv.Count -and $argv[0] -eq 'agents') {
     # claude agents --json: FAKE_AGENTS, or nobody live
+    if ($env:FAKE_AGENTS_SEEN) { [IO.File]::AppendAllText($env:FAKE_AGENTS_SEEN, "agents`n", $utf8) }
     $o = [Console]::OpenStandardOutput()
-    $b = $utf8.GetBytes($(if ($env:FAKE_AGENTS) { $env:FAKE_AGENTS } else { '[]' }) + "`n")
+    $said = if ($env:FAKE_AGENTS_FILE -and (Test-Path -LiteralPath $env:FAKE_AGENTS_FILE)) { [IO.File]::ReadAllText($env:FAKE_AGENTS_FILE, $utf8) }
+    elseif ($env:FAKE_AGENTS) { $env:FAKE_AGENTS } else { '[]' }
+    $b = $utf8.GetBytes($said + "`n")
     $o.Write($b, 0, $b.Length); $o.Flush()
     exit 0
 }
@@ -118,6 +129,13 @@ if ($i -ge 0 -and $i + 1 -lt $argv.Count) {
         $env:FAKE_NEW_TRANSCRIPT = Join-Path $pdir "$session.jsonl"
         [IO.File]::WriteAllText($env:FAKE_NEW_TRANSCRIPT, ($recs -join "`n") + "`n", $utf8)
     }
+}
+
+if ($env:FAKE_REGISTER -and $env:FAKE_REGISTER_BODY) {
+    $now = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+    $entry = $env:FAKE_REGISTER_BODY.Replace('{{NOW}}', "$now")
+    [IO.File]::WriteAllText($env:FAKE_REGISTER, $entry, $utf8)
+    if ($env:FAKE_AGENTS_FILE) { [IO.File]::WriteAllText($env:FAKE_AGENTS_FILE, "[$entry]", $utf8) }
 }
 
 if ($env:FAKE_LAND -and (Test-Path -LiteralPath $env:FAKE_LAND)) {

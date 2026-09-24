@@ -1,5 +1,89 @@
 # Changelog
 
+## 0.6.0 — show the chat fresh
+
+- **Show it, not Reload.** A chat a VS Code window still holds shows a
+  queued run only once that window redraws it. 0.5.0 reloaded the whole
+  window for that; now the window redraws only its web views (**Developer:
+  Reload Webviews**) and opens the chat where you read it - the side bar
+  here. It does this by itself under 0.5.0's rules: you away, nothing in the
+  folder working, a window on exactly that folder, and that judgement at
+  most 20 s old. Otherwise the notification offers **Show it**. The click
+  ends the chat's old idle process and judges the folder again, right then;
+  with a chat working it opens the chat fresh in an editor tab of its own
+  instead, and nothing is cut off. Terminals, editors and other extensions
+  keep running either way. Whether other web views (a Codex chat, a
+  preview) and an unsent draft come through is still to be checked (S30
+  items 14 and 2).
+- **The old process.** Reload Webviews alone is not enough: the chat's old
+  `claude` process keeps the old memory. While you are away, chatq ends it
+  as the run finishes, so your next message there starts from disk even if
+  nothing redraws the view. While you are at the PC it is left alone until
+  you click Show it - what a side bar does when the chat on screen loses its
+  process is still to be checked (S30).
+- **The overlay's open chip.** Move onto a Claude row and rest a second, and
+  a small **open** appears at its right end - a window of its own, like the
+  buttons', that takes no focus and is in neither Alt+Tab nor the taskbar;
+  the rest of the panel stays click-through. It shows once per visit to a
+  row, and a pointer it came up under has to move off it before a click
+  counts. A click shows the chat up to date in its window, the same way,
+  and brings that window forward with `code -n <folder>` - or opens one
+  there, which shows the chat as it starts. The tray says when it could not:
+  a queued prompt running in that chat, a terminal holding it, a window with
+  other folders open, no `code` command. A window on exactly the folder is
+  told from its title, a profile's name after the folder's included.
+- **The overlay's buttons can be pointed at directly.** They came up only
+  after the pointer rested on the panel, so reaching them meant going to the
+  panel, waiting, and crossing to them before they went. Resting on the spot
+  they go - above the panel, or below it near the screen's top - brings them
+  too, and the gap between them and the panel counts as theirs. The same
+  350 ms rest applies: a pointer passing over that corner on its way to the
+  window underneath must not find buttons that take its click. No rest
+  counts while a mouse button is held, so a tab or a file dragged across
+  that corner in the app below is never dropped onto them.
+- **What is never ended.** Only a VS Code window's process is ever ended -
+  its registry entry says `claude-vscode` and its parent is `Code.exe` -
+  never a terminal's, and never one busy, waiting, or with a workflow or
+  background agent in flight; its registry file is read again just before.
+  A chat open in a terminal is never shown in VS Code as well: that would be
+  a second writer, and the alert says to type there. `liveIdle: stop` now
+  goes through the same checks, and with background work in flight it
+  waits, as for a busy chat. Ending a process ends the background shells it
+  runs too, dev servers included. Background work is told apart by who
+  started it - each transcript record names its writer, `claude-vscode` for
+  the window, `sdk-cli` for a `claude -p` run - never by when: a workflow
+  the window's own process started holds it whenever it began, even during
+  a queued run, and one a finished queued run left behind never holds it.
+- **Never beside a run.** A queued prompt going into the chat, or any
+  `claude -p` writing into it, makes Show it and the chip leave it alone
+  and say so: showing it then would load it part way through. After a run's
+  or the chip's request, the next queued run into that chat waits 30 s
+  while the window shows it; a run into a chat a window opened while the
+  run went on is followed by the same Show it, since that window loaded it
+  part way.
+- **The window's other idle chats.** Reload Webviews ends their processes
+  as well; each starts again, from disk, when you open it.
+- **The alert** says what to do by what became of the old process: `Show it
+  in VS Code to see the run`, `... before typing in this chat` when it was
+  left running, or to type in the terminal that holds it.
+- **The extension** is 2.1.0, with `chatManagerReload.showFresh` (on); off,
+  or without the Claude Code extension, it reloads as 0.5.0 did. The overlay
+  asks through a file of its own, `data/open-request`, so a click and a
+  run's request never overwrite each other. **Update the extension too:** a
+  2.0.0 one would now offer a reload after `liveIdle: stop` runs as well.
+- **Unchanged:** deletes, archives and new chats still reload the window.
+  Whether Reload Webviews would do for them is S30.
+- **Fixed:** the command lines chatq builds for its own child processes -
+  the toast on PowerShell 7, the watcher, the console's index sync, the
+  overlay - doubled only `'`. PowerShell also ends a quoted string on a
+  curly quote, so a reply's excerpt with one could end the string early; all
+  four are doubled now.
+- **Fixed:** a new index that could not be swapped in was dropped without a
+  word. Anything reading the index at that moment - the overlay's console,
+  its 10-minute sync, a virus scan - fails the swap, and a restored or new
+  chat then stayed missing from Tab until the next sync. The swap now tries
+  five times over about 0.4 s, then warns.
+
 ## 0.5.0 — chatq in a window
 
 - **`chatconsole`**, the overlay's window for chatq: pick a chat - cut off,

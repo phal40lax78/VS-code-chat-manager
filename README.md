@@ -190,6 +190,10 @@ with it. Every delete ends by saying whether now is a safe moment —
 `all project chat is idle - safe to reload now` — and `-WaitForIdle` blocks until
 it is. The window's Reload offer says the same (see
 [the extension](#chats-open-in-vs-code-and-the-extension)).
+**Developer: Reload Webviews**, which shows a queued run's chat fresh, is
+lighter - terminals, editors and other extensions keep running - but it
+restarts the window's Claude chats too, so it cuts a working one off just
+the same. It waits on the same judgement.
 
 What counts as a chat still working, in this project:
 - **Claude says so.** `claude agents --json` lists every chat open in a window as
@@ -424,8 +428,9 @@ A small panel in the top-right corner that stays above other windows:
 **It stays out of the way.** It never takes focus, and clicks go through it.
 Rest the pointer on it for a moment and a row of buttons appears on its top
 edge, outside the panel, flush with its top-right corner - or under the
-panel when it sits too near the top of the screen for them. A pointer just
-passing over on its way to the window underneath brings up nothing. Left to
+panel when it sits too near the top of the screen for them. Resting on that
+spot itself does it too, so you can point straight at the buttons. A pointer
+just passing over on its way to the window underneath brings up nothing. Left to
 right, with × at the corner as on any window:
 - **the grip** (six dots): hold it and drag to move the panel;
 - **collapse** (a chevron): folds the panel to one line - how many chats wait,
@@ -443,7 +448,32 @@ right, with × at the corner as on any window:
 - **×**: closes the overlay. `chatoverlay` starts it again.
 
 The panel itself never takes a click; the buttons are a small window of their
-own, and they go when the pointer leaves. What you pick in the settings box
+own, and they go when the pointer leaves.
+
+**Open a chat from its row.** Move onto a Claude row and rest the pointer
+there for a second, and a small **open** appears at the row's right end - a
+window of its own like the buttons, taking no focus, in neither Alt+Tab nor
+the taskbar. A pointer sweeping across brings up nothing, it shows once per
+visit to a row, and a pointer it came up under has to move off it before a
+click counts, so a pointer parked there never opens anything by accident.
+Clicked, it:
+- ends the chat's old idle process, as a queued run's Show it does (see
+  [the extension](#chats-open-in-vs-code-and-the-extension)) - and any
+  background shell that process runs;
+- asks the window that has the chat to show it up to date;
+- brings that window forward with `code -n <folder>`: VS Code raises its own
+  window on that folder, or opens one, which shows the chat as it starts.
+  `-n` keeps it from reusing an unrelated window. `code` is found on PATH,
+  where VS Code's installers put it, or through `CHATQ_CODE`. Nothing moves
+  the pointer, types or activates a window.
+
+The tray says when it could not: a queued prompt running in that chat (open
+it once it finishes), a chat open in a terminal (never opened in VS Code as
+well), a window that also has other folders open (shown there, but not
+brought forward - `code -n` would open a second one; which windows are on
+exactly one folder is read from their titles, a profile's name after the
+folder's allowed for), a chat not started
+yet, or no `code` command. What you pick in the settings box
 is kept in `config.json`, like a setting made with `chatoverlay`; a collapsed
 panel stays collapsed across restarts.
 
@@ -550,13 +580,14 @@ in Explorer with **Ctrl+V** - each becomes a chip you can × out, copied into
   mode means with nobody there to answer.
 - A line saying what **Send** will do - within seconds; after the limit resets
   at 13:00; once that chat is idle, if it is working in VS Code (looked at
-  every 30 s); that the VS Code window shows the reply after a reload.
+  every 30 s); that the VS Code window shows the reply once it is shown
+  fresh.
 - **Send now** or **Queue**, or **Ctrl+Enter**.
 
 Send makes the same job `chatq` makes, and the watcher runs it the same way:
 in the background with `claude -p --resume`, into the chat's own history. A
-chat open in VS Code shows the reply once that window reloads - the extension
-offers it. A **new chat** runs `claude -p --session-id <id> --name <name>` in
+chat open in VS Code shows the reply once that window shows it fresh - the
+extension does it, or offers it. A **new chat** runs `claude -p --session-id <id> --name <name>` in
 its folder: the id is chosen when it is queued, so a retry after a limit
 continues that same chat and never starts a second one; a window on that
 folder is offered a reload to pick it up. Whether VS Code's chat list shows a
@@ -585,44 +616,60 @@ and `chatqrm` do the same from a shell.
 
 The panel shows one chat, but each VS Code window keeps a `claude` process alive
 for every chat opened in it, and clicking one switches back to that process
-rather than re-reading the transcript. So a chat still alive in a window won't
-show what chatq ran until the window reloads — the run *is* in the transcript.
+rather than re-reading the transcript. The side bar also keeps each chat's
+messages in its own page, and picking a chat again from its history shows
+that copy - even once the process is gone. So a chat still alive in a window
+won't show what chatq ran until the window redraws it — the run *is* in the
+transcript.
 
 - **The chat is busy** (you are typing in it, or Claude's own auto-continue is
   running it): chatq waits, checking every 5 minutes.
-- **The chat is idle:** it runs, and asks that window to reload — or reloads it
-  for you when you are away (below) — or, with `"liveIdle": "stop"` in
-  `data/config.json`, ends the idle process first.
+- **The chat is idle:** it runs, and asks that window to show the chat fresh
+  — or shows it for you when you are away (below). Its old idle process is
+  ended as the run finishes when you are away, and when you click **Show it**
+  otherwise, so the next message starts from the transcript on disk. With
+  `"liveIdle": "stop"` in `data/config.json` it is ended before the run
+  instead.
 
-Nothing outside VS Code can reload a window: `workbench.action.reloadWindow` runs
-from inside an extension only. `extension/` is that extension, and is optional:
+Nothing outside VS Code can redraw a window: Reload Webviews, the window
+reload and the Claude Code extension's own commands for opening a chat by
+its id run from inside an extension only. `extension/` is that extension,
+and is optional:
 
 ```powershell
-Copy-Item -Recurse "$HOME\Tools\VS-code-chat-manager\extension" "$HOME\.vscode\extensions\phal40lax78.chat-manager-reload-2.0.0"
+Copy-Item -Recurse "$HOME\Tools\VS-code-chat-manager\extension" "$HOME\.vscode\extensions\phal40lax78.chat-manager-reload-2.1.0"
 ```
 
 Reload once and it is live. To update it later, copy the files over the old
 ones: `Copy-Item -Force "$HOME\Tools\VS-code-chat-manager\extension\*"` into
-the same folder. A second `Copy-Item -Recurse` onto a folder that already exists
-would nest a copy inside it.
+the same folder - a `-2.0.0` folder takes 2.1.0's files just as well. A second
+`Copy-Item -Recurse` onto a folder that already exists would nest a copy
+inside it. Update it along with the script: a 2.0.0 extension offers a whole
+reload where 2.1.0 shows the chat fresh.
 
-After a delete, an archive, a queued run into a chat that window still holds,
-or a new chat started in its folder, *that* window — matched by its workspace
-folder — offers a **Reload** button (or, after a queued run while you are
-away, takes it by itself — below).
-If a chat in the project was still working when the delete ran
-([what counts](#reloading-safely)), it warns instead: *A chat in this workspace
-is still working, and reloading now would cut it off*, with **Reload anyway**.
-`chatManagerReload.signalFile` points it elsewhere if the script does not live
-in `~/Tools/VS-code-chat-manager`; `chatManagerReload.autoReload` skips the
-question after a delete — never while a chat is working, and never after a
-queued run or a new chat, which have rules of their own.
+**After a queued run into a chat the window still holds**, the window is
+asked to **show that chat fresh**. The request names the chat, so it goes to
+the window whose Claude process held it, wherever that window's folder is;
+failing that, to the window on the job's folder. Two ways:
+- **Reload Webviews** (**Developer: Reload Webviews**), then the chat opened
+  where you read it - the side bar here. It redraws only the window's web
+  views; terminals, editors and other extensions keep running. But it also
+  restarts the window's Claude chats: the other idle ones start again when
+  opened, and a working one would be cut off, as by a reload. So it is used
+  only in a window on exactly that one folder with no chat in it working
+  ([what counts](#reloading-safely)).
+- **A tab of its own** otherwise: the chat opens in a new editor tab, loaded
+  from disk, and no other chat is touched. If the chat already has a tab,
+  that tab only comes forward with the old view, so it is closed and opened
+  again - only when it is certainly that chat's tab; if not, you are told to
+  close it yourself.
 
-**After a queued run the window reloads by itself when you are away** — nobody
-has used the PC for `quietMinutes` (5, the same clock that decides whether the
-phone gets an alert), and no other chat in the folder is working or was written
-in that time, as the run ends. So you come back to a window that already shows
-the run. It asks instead:
+**It shows the chat by itself when you are away** — nobody has used the PC
+for `quietMinutes` (5, the same clock that decides whether the phone gets an
+alert), no other chat in the folder is working or was written in that time
+as the run ends, the window is on exactly that folder, and that judgement is
+at most 20 seconds old. So you come back to a window that already shows the
+run. It asks instead:
 - at the PC — you may be typing in that very window; an idle clock that cannot
   be read, or `quietMinutes` 0, counts as at the PC;
 - in a window with more than one folder, or opened on a parent folder — only
@@ -630,8 +677,55 @@ the run. It asks instead:
 - after a chat in the folder was written in the last `quietMinutes` — someone
   may be driving it from the phone, which the idle clock never sees.
 
-A window opened after the run already shows it, and neither asks nor reloads.
-`chatManagerReload.autoReloadAfterRun: false` makes it always ask.
+Asking, it offers **Show it**. The click checks the chats again, right then,
+and ends the chat's old idle process; a line in the status bar says so while
+it runs. With nothing working in an exact window it uses Reload Webviews;
+with another chat working, a tab of its own (the status bar says why). Where
+the old process could not be ended, only a reload shows the run, and it
+offers **Reload**. If the chat itself was still working as the run ended, it
+warns instead, with **Reload anyway** for once it finishes. If another queued
+prompt is going into the chat by the time you click, it leaves it alone and
+says so; that run's own Show it comes when it ends.
+
+**Never ended:** only a VS Code window's `claude` is ever ended - its entry in
+`~/.claude/sessions/` says `claude-vscode` and its parent process is
+`Code.exe` - and never one busy, waiting, or with a workflow or background
+agent in flight. Whose that work is comes from the transcript, where every
+record names its writer: a workflow the window's own chat started holds it,
+even one started while a queued run went on; one a finished queued run
+(`claude -p`) left behind died with that run and holds nothing. A chat a
+terminal's `claude` holds is not shown in VS Code at all, since that would
+make two writers; the alert and the window say to type in the terminal. Nor
+is one a queued prompt or any `claude -p` is going into right now. Ending a
+process ends the background shells it runs too - a dev server a chat started
+goes with it.
+
+**Never beside a run:** after a request to show a chat, the next queued run
+into it waits 30 seconds while the window shows it. And a window that opened
+the chat while a run went into it - loaded part way through - gets the same
+Show it after the run as one that held it from before.
+
+`chatManagerReload.showFresh: false`, or no Claude Code extension, brings back
+0.5.0's window reload. `chatManagerReload.autoReloadAfterRun: false` makes it
+always ask. A window opened after the run already shows it, and neither asks
+nor acts. The overlay's [open chip](#the-overlay) asks the same way, through
+`data/open-request`.
+
+The Claude Code extension also opens a chat from a
+`vscode://anthropic.claude-code/open?session=<id>` link, but VS Code asks
+before letting an outside program open one - a dialog on every run - so chatq
+goes through this extension instead.
+
+**After a delete, an archive, or a new chat started in its folder,** *that*
+window — matched by its workspace folder — offers a **Reload** button, as
+before. If a chat in the project was still working when the delete ran
+([what counts](#reloading-safely)), it warns instead: *A chat in this workspace
+is still working, and reloading now would cut it off*, with **Reload anyway**.
+`chatManagerReload.signalFile` points it elsewhere if the script does not live
+in `~/Tools/VS-code-chat-manager` (`open-request` is looked for beside it);
+`chatManagerReload.autoReload` skips the question after a delete — never while
+a chat is working, and never after a queued run or a new chat, which have
+rules of their own.
 
 A new chat a queued run started is only ever offered: the window asks, never
 reloads by itself for one, and a window opened after it lists it already.
@@ -661,7 +755,8 @@ Support/Code/User` on macOS, `~/.config/Code/User` on Linux.
 Everything it writes is in `data/` beside the script — the index, tombstones,
 the archive, the queue and its logs, the board, `config.json`, the
 overlay's `overlay.json` and `overlay-state.json`, and the console's
-`console-state.json` and the files waiting to go in `console/draft/`. No
+`console-state.json` and the files waiting to go in `console/draft/`, and
+the extension's `reload-request` and `open-request`. No
 registry keys,
 no AppData, no scheduled task; the one line in `$PROFILE` is the only thing
 outside the folder.

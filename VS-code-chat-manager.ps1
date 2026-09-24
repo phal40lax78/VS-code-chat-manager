@@ -220,6 +220,7 @@ FILES   everything in data/ beside this script, nothing anywhere else
     chat-index.csv                         what search and Tab run off
     rewritten.txt                          tombstones for the ghost watch
     reload-request                         read by the extension in extension/
+    open-request                           read by the extension: a chat the overlay asked to show
     queue/<id>.json + "#<n> <title>.md"   one job, its prompt (edit it freely)
     queue/<id>/                            that job's files, copied in
     logs/<id>.jsonl                        the raw run
@@ -236,7 +237,7 @@ FILES   everything in data/ beside this script, nothing anywhere else
 # and raw.githubusercontent.com serves a stale copy for minutes after a push, so
 # "updated" vs "unchanged" is the only way to tell a real upgrade from the CDN
 # handing back what you already had.
-$script:ChatVersion = '0.5.0'
+$script:ChatVersion = '0.6.0'
 
 $script:ChatPreview = 3
 $script:ChatClaudeHome = if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { Join-Path $HOME '.claude' }
@@ -265,6 +266,14 @@ $script:ChatVersionPath = Join-Path (Join-Path $PSScriptRoot 'data') 'version.tx
 # read by the optional VS Code extension in extension/, which is the only thing
 # able to run reloadWindow - no CLI flag, URL or toast button can reach it
 $script:ChatReloadPath = Join-Path (Join-Path $PSScriptRoot 'data') 'reload-request'
+# the overlay's open chip asks the same extension to show one chat, in a file
+# of its own: one request per file, so a run's request and a click's never
+# overwrite each other
+$script:ChatOpenPath = Join-Path (Join-Path $PSScriptRoot 'data') 'open-request'
+# how long after either request the next run into its chat waits, while the
+# window shows it (Get-ChatShowHold): the extension acts on one by itself for
+# 20 s (its timing.judgedMaxAge), and polls every 2
+$script:ChatShowHoldSeconds = 30
 
 # Caches and flags read before anything sets them. This file is dot-sourced
 # into whatever session the user already has, and under Set-StrictMode
@@ -356,12 +365,26 @@ function Save-ChatIndex {
                 Last = (@($_.Last) -join $script:ChatIndexSep)
             }
         } | Export-Csv -LiteralPath $tmp -NoTypeInformation -Encoding UTF8
-        # [NullString], not $null: PowerShell hands .NET an empty string for
-        # $null, and an empty backup path throws
-        if (Test-Path -LiteralPath $script:ChatIndexPath) { [System.IO.File]::Replace($tmp, $script:ChatIndexPath, [NullString]::Value) }
-        else { [System.IO.File]::Move($tmp, $script:ChatIndexPath) }
+        # A reader holding the index open - the overlay's console, another
+        # shell's Tab, a virus scan - fails the swap with a sharing violation.
+        # That was swallowed whole, so the old index stayed with no word: a
+        # restored chat Tab could not find until the next sync. Such a hold
+        # lasts milliseconds, so a few tries, then a warning.
+        for ($try = 1; ; $try++) {
+            try {
+                # [NullString], not $null: PowerShell hands .NET an empty string
+                # for $null, and an empty backup path throws
+                if (Test-Path -LiteralPath $script:ChatIndexPath) { [System.IO.File]::Replace($tmp, $script:ChatIndexPath, [NullString]::Value) }
+                else { [System.IO.File]::Move($tmp, $script:ChatIndexPath) }
+                break
+            }
+            catch {
+                if ($try -ge 5) { throw }
+                Start-Sleep -Milliseconds (40 * $try)
+            }
+        }
     }
-    catch {}
+    catch { Write-Warning "the chat index was not saved: $($_.Exception.Message)" }
 }
 
 function Remove-ChatIndexRow {
@@ -1762,7 +1785,13 @@ function Get-ChatBackgroundTasks {
     # it, so one from before the chat was last opened is gone whether or not
     # it ever reported. A background shell is left out on purpose - as often a
     # server that never ends, which would hold the chat busy for good.
-    param([string]$Path, [datetime]$Since = [datetime]::MinValue)
+    # -SkipPrint leaves out the starts a print-mode run wrote: claude -p stamps
+    # every record entrypoint sdk-cli - chatq's queued runs among them - where
+    # a window's says claude-vscode and a terminal's cli. That run has ended,
+    # and its work died with it. Only the caller can tell it has ended - no
+    # print-mode process of the chat still alive (Test-ChatPrintLive) - and a
+    # start the chat's own window made stays counted whenever it was made.
+    param([string]$Path, [datetime]$Since = [datetime]::MinValue, [switch]$SkipPrint)
     $open = [System.Collections.Generic.List[string]]::new()
     try { $fs = Open-ChatRead $Path } catch { return }   # can vanish mid-scan
     try {
@@ -1782,6 +1811,7 @@ function Get-ChatBackgroundTasks {
                     }
                     elseif ($r -and $r.PSObject.Properties['resumedAgentId']) { $id = $r.resumedAgentId }
                     if ($id) {
+                        if ($SkipPrint -and $o.PSObject.Properties['entrypoint'] -and [string]$o.entrypoint -eq 'sdk-cli') { continue }
                         $at = ConvertTo-ChatqDate $o.timestamp
                         if ((-not $at -or $at -ge $Since) -and -not $open.Contains([string]$id)) { $open.Add([string]$id) }
                         continue
@@ -1800,6 +1830,20 @@ function Get-ChatBackgroundTasks {
     return $open.ToArray()
 }
 
+function Test-ChatPrintLive {
+    # Is a print-mode claude of this chat alive - one not interactive, a
+    # claude -p going into it right now? While one is, what it starts is not
+    # dead work, and a window shown the chat fresh would load it part way.
+    # An entry naming no kind is taken for interactive, as everywhere else.
+    param([object[]]$Live, [string]$SessionId)
+    foreach ($e in @($Live)) {
+        if (-not $e -or [string](Get-ChatField $e 'SessionId') -ne $SessionId) { continue }
+        $k = [string](Get-ChatField $e 'Kind')
+        if ($k -and $k -ne 'interactive') { return $true }
+    }
+    return $false
+}
+
 function Test-ChatIdle {
     # $true idle, $false active, $null when it cannot be told - and $null stays
     # distinct, because "safe to reload" guessed wrong costs someone an answer.
@@ -1808,8 +1852,11 @@ function Test-ChatIdle {
     # What Claude says of that chat's own open process still counts - after
     # the run it can only be a window's, and that may be busy. -ConfigDir is
     # the Claude home whose open sessions to ask, a job's own when it has one.
+    # -Live is that list already asked for, so one judgement never asks twice.
+    # Background work a print-mode run started - a queued run's - is left out
+    # once no such run of that chat is alive: it died with its process.
     param([int]$Seconds = $script:ChatIdleSeconds, [switch]$AllProjects, [string]$Cwd = $PWD.Path, [string]$Except,
-        [string]$ConfigDir = $env:CLAUDE_CONFIG_DIR)
+        [string]$ConfigDir = $env:CLAUDE_CONFIG_DIR, [object[]]$Live)
     $files = @(Get-ChatProjectFiles -AllProjects:$AllProjects -Cwd $Cwd)
     if (-not $files) { return $null }
 
@@ -1819,7 +1866,9 @@ function Test-ChatIdle {
     # chats are also searched for work that has not reported back.
     $byId = @{}
     foreach ($f in $files) { if ($f.Extension -eq '.jsonl') { $byId[$f.BaseName] = $f } }
-    foreach ($s in @(Get-ChatqLiveSessions $ConfigDir)) {
+    $sessions = if ($PSBoundParameters.ContainsKey('Live')) { @($Live) } else { @(Get-ChatqLiveSessions $ConfigDir) }
+    foreach ($s in $sessions) {
+        if (-not $s) { continue }
         $f = $byId[[string]$s.SessionId]
         if (-not $f) { continue }
         if ($s.Status -in 'busy', 'waiting') { return $false }
@@ -1828,7 +1877,8 @@ function Test-ChatIdle {
         else { try { $since = (Get-Process -Id $s.Pid -EA Stop).StartTime } catch {} }
         # untouched since this process started: it has started nothing
         if ($f.LastWriteTime -lt $since) { continue }
-        if (@(Get-ChatBackgroundTasks $f.FullName $since).Count) { return $false }
+        $skip = -not (Test-ChatPrintLive $sessions ([string]$s.SessionId))
+        if (@(Get-ChatBackgroundTasks $f.FullName $since -SkipPrint:$skip).Count) { return $false }
     }
 
     # then the transcripts themselves - all there is to go on for Codex, or a
@@ -1882,25 +1932,85 @@ function Write-ChatReloadRequest {
     # Reload, and never reloads by itself. Away is $true when nobody had used
     # the PC for a while: after a queued run, only then may the window reload
     # without asking. $null is "not judged", for both.
-    param([string]$Title, [string]$Cwd = (Get-Location).Path, [string]$Kind = 'deleted', $Busy = $null, $Away = $null)
+    # A run into a chat names it too (-SessionId), so the window can show
+    # that chat fresh rather than reload: the Claude home it lives under
+    # (-ConfigHome), what became of its old process (-OldProcess, see
+    # Stop-ChatIdleProcess) and the VS Code windows that held it (-HostPids).
+    # Without -SessionId the request is what 0.5.0 wrote, byte for byte.
+    param([string]$Title, [string]$Cwd = (Get-Location).Path, [string]$Kind = 'deleted', $Busy = $null, $Away = $null,
+        [string]$SessionId, [string]$ConfigHome, [string]$OldProcess, [int[]]$HostPids = @())
+    $req = [ordered]@{
+        id    = [guid]::NewGuid().ToString()
+        kind  = $Kind
+        cwd   = $Cwd
+        title = $Title
+        busy  = $Busy
+        away  = $Away
+    }
+    if ($SessionId) {
+        $req.sessionId = $SessionId
+        $req.home = $(if ($ConfigHome) { $ConfigHome } else { $null })
+        $req.oldProcess = $(if ($OldProcess) { $OldProcess } else { 'none' })
+        $req.hostPids = [int[]]@($HostPids | Where-Object { $_ })
+    }
+    $req.at = (Get-Date).ToString('o')
+    Save-ChatSignal $script:ChatReloadPath $req
+}
+
+function Write-ChatOpenRequest {
+    # The overlay's open chip: show this chat, up to date, in the window that
+    # has it - data/open-request, its own file, so a run's request and a
+    # click's never overwrite each other. The same fields as a run's request,
+    # and busy judged as the click went out.
+    param([string]$SessionId, [string]$Cwd, [string]$Title, [string]$ConfigHome, $Busy = $null,
+        [string]$OldProcess = 'none', [int[]]$HostPids = @())
+    Save-ChatSignal $script:ChatOpenPath ([ordered]@{
+            id         = [guid]::NewGuid().ToString()
+            kind       = 'open'
+            sessionId  = $SessionId
+            cwd        = $Cwd
+            title      = $Title
+            home       = $(if ($ConfigHome) { $ConfigHome } else { $null })
+            busy       = $Busy
+            oldProcess = $OldProcess
+            hostPids   = [int[]]@($HostPids | Where-Object { $_ })
+            at         = (Get-Date).ToString('o')
+        })
+}
+
+function Get-ChatShowHold {
+    # Until when a window may still be showing this chat fresh on a request
+    # just written for it - a run's (ran) or the chip's (open) - or $null.
+    # A run going into the chat meanwhile would have the window load it part
+    # way through, with a new process remembering only that much; so the next
+    # run into it waits that out (Invoke-ChatqJob).
+    param([string]$SessionId, [datetime]$Now = (Get-Date))
+    if (-not $SessionId -or $script:ChatShowHoldSeconds -le 0) { return $null }
+    $until = $null
+    foreach ($f in $script:ChatReloadPath, $script:ChatOpenPath) {
+        if (-not (Test-Path -LiteralPath $f)) { continue }
+        $r = try { [System.IO.File]::ReadAllText($f) | ConvertFrom-Json } catch { $null }
+        if (-not $r -or [string](Get-ChatField $r 'sessionId') -ne $SessionId -or [string](Get-ChatField $r 'kind') -notin 'ran', 'open') { continue }
+        $at = ConvertTo-ChatqDate (Get-ChatField $r 'at')
+        if (-not $at) { continue }
+        $end = $at.AddSeconds($script:ChatShowHoldSeconds)
+        if ($end -gt $Now -and (-not $until -or $end -gt $until)) { $until = $end }
+    }
+    return $until
+}
+
+function Save-ChatSignal {
+    # One request, replacing the last: the extension reads the whole file.
+    param([string]$Path, $Request)
     try {
-        $dir = Split-Path $script:ChatReloadPath -Parent
+        $dir = Split-Path $Path -Parent
         if (-not (Test-Path -LiteralPath $dir)) {
             New-Item -ItemType Directory -Path $dir -Force | Out-Null
         }
-        $json = [ordered]@{
-            id    = [guid]::NewGuid().ToString()
-            kind  = $Kind
-            cwd   = $Cwd
-            title = $Title
-            busy  = $Busy
-            away  = $Away
-            at    = (Get-Date).ToString('o')
-        } | ConvertTo-Json -Compress
+        $json = $Request | ConvertTo-Json -Compress
         # NOT Set-Content -Encoding UTF8: that writes a BOM on 5.1 and
         # JSON.parse rejects a BOM outright, so the extension would see nothing
-        [System.IO.File]::WriteAllText($script:ChatReloadPath, $json,
-            (New-Object System.Text.UTF8Encoding $false))
+        [System.IO.File]::WriteAllText($Path, $json, (New-Object System.Text.UTF8Encoding $false))
     }
     catch {}
 }
@@ -3167,6 +3277,15 @@ $script:ChatqIdleSeam = $null
 $script:ChatqHookTimeoutSec = $null
 $script:ChatqClipboardSeam = $null
 $script:ChatqAliveSeam = $null
+# and for showing a chat fresh: a chat process's parent, ending one, the code
+# CLI, the window titles and profile names, the overlay's child - none of
+# them real in a test
+$script:ChatParentSeam = $null
+$script:ChatStopSeam = $null
+$script:ChatCodeSeam = $null
+$script:ChatWindowTitlesSeam = $null
+$script:ChatCodeProfilesSeam = $null
+$script:ChatShowSpawnSeam = $null
 
 #endregion
 
@@ -5005,8 +5124,10 @@ function Invoke-ChatqRun {
 function Get-ChatqLiveSessions {
     # claude agents --json lists them all, panel tabs included, with no TTY.
     # ~/.claude/sessions/<pid>.json is the registry behind it - the fallback.
-    param([string]$ConfigDir)
-    $exe = Find-ChatqExe claude
+    # -RegistryOnly goes straight to it: a click waiting on an answer should
+    # not wait up to 30 s for a CLI to start.
+    param([string]$ConfigDir, [switch]$RegistryOnly)
+    $exe = if ($RegistryOnly) { $null } else { Find-ChatqExe claude }
     if ($exe) {
         $buf = [System.Collections.Generic.List[string]]::new()
         try {
@@ -5015,7 +5136,8 @@ function Get-ChatqLiveSessions {
             $list = ($buf -join "`n") | ConvertFrom-Json
             if ($null -ne $list) {
                 return @($list | ForEach-Object {
-                        [pscustomobject]@{ SessionId = $_.sessionId; Pid = $_.pid; Status = $_.status; Kind = $_.kind; WaitingFor = $_.waitingFor; ProcStart = $null; StartedAt = $_.startedAt }
+                        $ep = if ($_.PSObject.Properties['entrypoint']) { [string]$_.entrypoint } else { $null }
+                        [pscustomobject]@{ SessionId = $_.sessionId; Pid = $_.pid; Status = $_.status; Kind = $_.kind; WaitingFor = $_.waitingFor; ProcStart = $null; StartedAt = $_.startedAt; Entrypoint = $ep }
                     })
             }
         }
@@ -5025,7 +5147,7 @@ function Get-ChatqLiveSessions {
     # something else - only a claude that started when the file says counts.
     $dir = Join-Path (Get-ChatqHomeDir 'claude' $ConfigDir) 'sessions'
     return @(Read-ChatqSessionRegistry $dir | Where-Object { Test-ChatqSessionAlive $_ } | ForEach-Object {
-            [pscustomobject]@{ SessionId = $_.SessionId; Pid = $_.Pid; Status = $_.Status; Kind = $_.Kind; WaitingFor = $_.WaitingFor; ProcStart = $_.ProcStart; StartedAt = $_.StartedAt }
+            [pscustomobject]@{ SessionId = $_.SessionId; Pid = $_.Pid; Status = $_.Status; Kind = $_.Kind; WaitingFor = $_.WaitingFor; ProcStart = $_.ProcStart; StartedAt = $_.StartedAt; Entrypoint = $_.Entrypoint }
         })
 }
 
@@ -5034,7 +5156,8 @@ function Read-ChatqSessionRegistry {
     Claude Code's own list of what runs: sessions/<pid>.json, one per process,
     rewritten as its status moves between idle, busy and waiting. Only
     <digits>.json is read. The <pid>.<hash>.key beside each one is that
-    session's messaging secret, and is never opened.
+    session's messaging secret, and is never opened - nor is the file's
+    messagingSocketPath taken: only the fields below are.
     -Cache (a hashtable kept between calls) re-parses only a file whose length
     or write time moved, which is what lets the overlay list it every 2 s.
     #>
@@ -5060,6 +5183,8 @@ function Read-ChatqSessionRegistry {
             Status = [string](& $p 'status'); WaitingFor = & $p 'waitingFor'; Name = [string](& $p 'name')
             Kind = [string](& $p 'kind'); ProcStart = & $p 'procStart'; StartedAt = & $p 'startedAt'
             UpdatedAt = & $p 'updatedAt'; StatusUpdatedAt = & $p 'statusUpdatedAt'; PidDomain = [string](& $p 'pidDomain')
+            # claude-vscode for a VS Code panel's process, something else for a terminal's
+            Entrypoint = [string](& $p 'entrypoint')
         }
         if ($Cache) { $Cache[$f.FullName] = @{ Key = $key; Entry = $e } }
         $e
@@ -5112,6 +5237,447 @@ function Resolve-ChatqLiveAction {
     $cfg = Get-ChatqConfig
     $idle = if ($cfg.liveIdle -in 'stop', 'warn') { $cfg.liveIdle } else { 'warn' }
     return @{ Action = $idle; Live = $hit }
+}
+
+function Get-ChatField {
+    # a property that may be missing, read without tripping StrictMode
+    param($Object, [string]$Name)
+    if ($null -eq $Object) { return $null }
+    if ($Object -is [System.Collections.IDictionary]) { return $Object[$Name] }
+    $p = $Object.PSObject.Properties[$Name]
+    if ($p) { return $p.Value }
+    return $null
+}
+
+function Get-ChatqEntryStart {
+    # when a live entry's process started: what it says, else the process's own
+    param($Entry)
+    $at = Get-ChatField $Entry 'StartedAt'
+    if ($at) { try { return [DateTimeOffset]::FromUnixTimeMilliseconds([int64]$at).LocalDateTime } catch {} }
+    try { return (Get-Process -Id ([int](Get-ChatField $Entry 'Pid')) -EA Stop).StartTime } catch { return [datetime]::MinValue }
+}
+
+function Test-ChatVsCodeOwned {
+    # Is this claude a VS Code window's? Its registry entry says claude-vscode,
+    # and its parent is a Code.exe that started before it - the window's
+    # extension host (S29). A terminal's claude, even in VS Code's own
+    # terminal, has a shell for a parent. The parent is worth its lookup for
+    # its pid too: that names the one window holding the chat (hostPids).
+    # Pure, for the tests.
+    param([string]$Entrypoint, [string]$ParentName, $ParentStart, $ChildStart)
+    if ($Entrypoint -and $Entrypoint -ne 'claude-vscode') { return $false }
+    if ($ParentName -notmatch '^Code( - Insiders)?$') { return $false }
+    if ($ParentStart -and $ChildStart -and $ParentStart -gt $ChildStart) { return $false }  # parent pid reused
+    return $true
+}
+
+function Get-ChatParentProcess {
+    # The process a chat's claude runs under, @{ Pid; Name; StartTime } - or
+    # $null when that cannot be told, and off Windows, where there is no CIM
+    # to ask.
+    param($Entry, $Process)
+    if ($script:ChatParentSeam) { return (& $script:ChatParentSeam $Entry) }   # tests
+    if (-not $script:ChatqIsWindows) { return $null }
+    try {
+        $id = if ($Process) { [int]$Process.Id } else { [int](Get-ChatField $Entry 'Pid') }
+        $w = Get-CimInstance Win32_Process -Filter "ProcessId = $id" -EA Stop | Select-Object -First 1
+        if (-not $w) { return $null }
+        $pp = Get-Process -Id ([int]$w.ParentProcessId) -EA Stop
+        $st = try { $pp.StartTime } catch { $null }
+        return @{ Pid = [int]$pp.Id; Name = [string]$pp.ProcessName; StartTime = $st }
+    }
+    catch { return $null }
+}
+
+function Stop-ChatIdleProcess {
+    <#
+    The one place a chat's old process is ended, so the next look at the chat
+    loads it from disk (spike S29). Only a VS Code window's process, and only
+    one Claude calls idle with no workflow or background agent of its own in
+    flight - its registry file read again just before it goes. A terminal's
+    claude is never ended. OldProcess says what became of it:
+      none   nothing holds the chat
+      held   busy, waiting, or background work in flight - or a print-mode
+             claude going into the chat right now: nothing ended
+      other  a terminal's claude holds it: nothing ended, and the chat is not
+             to be shown in VS Code as well - that would be a second writer
+      live   -JudgeOnly: a window's idle process, left running
+      ended  every window's process of it ended
+      kept   one could not be checked or ended (no registry file for it, off
+             Windows): left running
+    HostPids: the Code.exe each window's process runs under, taken before
+    anything is ended - which window holds the chat.
+    Background work is told apart by who started it, never by when: what a
+    print-mode run started died with it, what the window's process started
+    is its own (Get-ChatBackgroundTasks -SkipPrint).
+    #>
+    param([string]$SessionId, [string]$Transcript, [string]$ConfigDir, [object[]]$Live, [switch]$JudgeOnly)
+    $res = [pscustomobject]@{ OldProcess = 'none'; Stopped = [int[]]@(); HostPids = [int[]]@(); Terminal = $false }
+    if (-not $PSBoundParameters.ContainsKey('Live')) { $Live = @(Get-ChatqLiveSessions $ConfigDir) }
+    # a print-mode claude writing into the chat now - someone's claude -p, or
+    # a run not chatq's: a window shown the chat meanwhile would hold a copy
+    # from part way through, and a second writer
+    if (Test-ChatPrintLive $Live $SessionId) { $res.OldProcess = 'held'; return $res }
+    # interactive only: an ended print-mode run of the same chat holds nothing
+    $mine = [System.Collections.Generic.List[object]]::new()
+    foreach ($e in @($Live)) {
+        if (-not $e -or [string](Get-ChatField $e 'SessionId') -ne $SessionId) { continue }
+        $k = [string](Get-ChatField $e 'Kind')
+        if ($k -and $k -ne 'interactive') { continue }
+        $mine.Add($e)
+    }
+    if (-not $mine.Count) { return $res }
+    foreach ($e in $mine) {
+        if ([string](Get-ChatField $e 'Status') -in 'busy', 'waiting') { $res.OldProcess = 'held'; return $res }
+    }
+    # idle, as Claude sees it - which a turn that sent work to the background
+    # also is, while that work goes on. No print-mode run of it is alive (just
+    # above), so what one started is dead and left out.
+    if ($Transcript -and (Test-Path -LiteralPath $Transcript)) {
+        $wrote = (Get-Item -LiteralPath $Transcript).LastWriteTime
+        foreach ($e in $mine) {
+            $since = Get-ChatqEntryStart $e
+            if ($wrote -lt $since) { continue }
+            if (@(Get-ChatBackgroundTasks $Transcript $since -SkipPrint).Count) { $res.OldProcess = 'held'; return $res }
+        }
+    }
+
+    # whose each one is, parent first: a window's, or a terminal's
+    $ours = [System.Collections.Generic.List[object]]::new()
+    $hosts = [System.Collections.Generic.List[int]]::new()
+    foreach ($e in $mine) {
+        $pr = Get-Process -Id ([int](Get-ChatField $e 'Pid')) -EA SilentlyContinue
+        if (-not $script:ChatParentSeam) {
+            if (-not $pr) { continue }   # gone since the list was made
+            if (-not $script:ChatqIsWindows) {
+                # nothing to ask for its parent here: the registry's word
+                # alone, and never ended (kept, below)
+                $ep = [string](Get-ChatField $e 'Entrypoint')
+                if ($ep -and $ep -ne 'claude-vscode') { $res.Terminal = $true } else { $ours.Add($e) }
+                continue
+            }
+        }
+        $par = Get-ChatParentProcess $e $pr
+        $childStart = if ($pr) { try { $pr.StartTime } catch { $null } } else { $null }
+        $owned = [bool]$par -and (Test-ChatVsCodeOwned ([string](Get-ChatField $e 'Entrypoint')) ([string](Get-ChatField $par 'Name')) (Get-ChatField $par 'StartTime') $childStart)
+        if (-not $owned) { $res.Terminal = $true; continue }
+        $ours.Add($e)
+        $hp = [int](Get-ChatField $par 'Pid')
+        if ($hp -and -not $hosts.Contains($hp)) { $hosts.Add($hp) }
+    }
+    $res.HostPids = [int[]]$hosts.ToArray()
+    # a terminal holds it: any refresh in VS Code would start a second writer
+    if ($res.Terminal) { $res.OldProcess = 'other'; return $res }
+    if (-not $ours.Count) { return $res }
+    if ($JudgeOnly) { $res.OldProcess = 'live'; return $res }
+
+    # each one read again from its registry file, then ended at once: the gap
+    # someone could start typing in is the time taskkill takes to start
+    $dir = Join-Path (Get-ChatqHomeDir 'claude' $ConfigDir) 'sessions'
+    $kept = $false
+    $stopped = [System.Collections.Generic.List[int]]::new()
+    $short = $SessionId.Substring(0, [Math]::Min(8, $SessionId.Length))
+    foreach ($e in $ours) {
+        $procId = [int](Get-ChatField $e 'Pid')
+        $re = @(Read-ChatqSessionRegistry $dir | Where-Object { $_.Pid -eq $procId }) | Select-Object -First 1
+        # no file to check it against: not ended on a guess
+        if (-not $re) { $kept = $true; continue }
+        # the pid is another chat's now: this one's process is gone
+        if ($re.SessionId -and $re.SessionId -ne $SessionId) { continue }
+        if ($re.Status -ne 'idle') { $res.OldProcess = 'held'; $res.Stopped = [int[]]$stopped.ToArray(); return $res }
+        if ($script:ChatStopSeam) {
+            # tests: ended, other (not verified - kept) or gone
+            switch ([string](& $script:ChatStopSeam $re)) {
+                'ended' { $stopped.Add($procId) }
+                'other' { $kept = $true }
+            }
+            continue
+        }
+        $pr = Get-Process -Id $procId -EA SilentlyContinue
+        if (-not $pr -or -not (Test-ChatqSessionAlive $re) -or -not (Test-ChatqClaudeProcess $pr $re.ProcStart)) { continue }
+        if (-not $script:ChatqIsWindows) { $kept = $true; continue }
+        Stop-ChatqTree $pr
+        $stopped.Add($procId)
+        Write-ChatqWatchLog "show: ended idle chat process $procId ($short)"
+    }
+    $res.Stopped = [int[]]$stopped.ToArray()
+    $res.OldProcess = if ($kept) { 'kept' } elseif ($stopped.Count) { 'ended' } else { 'none' }
+    return $res
+}
+
+function Find-ChatTranscriptPath {
+    # a chat's transcript by its id: the index's folders for this project,
+    # else wherever Claude Code put one the index has not seen yet
+    param([string]$SessionId, [string]$Cwd, [string]$ConfigDir)
+    $hit = @(Get-ChatProjectFiles -Cwd $Cwd | Where-Object { $_.Extension -eq '.jsonl' -and $_.BaseName -eq $SessionId }) | Select-Object -First 1
+    if ($hit) { return $hit.FullName }
+    return (Find-ChatOverlayTranscript (Get-ChatqHomeDir 'claude' $ConfigDir) $Cwd $SessionId)
+}
+
+function Show-ChatFresh {
+    <#
+    Show a chat up to date where it is open. One routine for all three ways
+    in: a queued run into a chat a window still holds (-Via run), the
+    overlay's open chip (-Via chip), and the extension's Show it button
+    (-Via button). The chat's old idle process goes first
+    (Stop-ChatIdleProcess), so the next look loads it from disk; then the
+    window is told, and the extension in extension/ does the rest - Reload
+    Webviews where nothing in the window is working, a fresh tab otherwise.
+    After a run the process is ended only with nobody at the PC (-Away):
+    someone there may be reading the chat, and what a side bar does when the
+    chat on screen loses its process is unchecked (S30). Show it ends it.
+    Returns @{ Outcome; ExitCode; Busy; OldProcess; HostPids; Stopped }; the
+    chip's child exits with ExitCode, which picks the tray's words. An
+    outcome that judged nothing (bad, missing) says kept: nothing was
+    checked, which is as good as a process that could not be.
+    #>
+    param([string]$SessionId, [string]$Cwd, [string]$Title, [string]$TitleB64, [string]$ConfigDir,
+        [string]$Transcript, [ValidateSet('run', 'chip', 'button')][string]$Via = 'chip',
+        [int]$Seconds = $script:ChatIdleSeconds, $Away = $null)
+    $codes = @{ ok = 0; held = 10; running = 15; other = 20; 'not-raised' = 25; missing = 30; 'no-code' = 40; 'code-failed' = 41; bad = 50 }
+    $done = {
+        param([string]$Outcome, $Busy = $null, $Judged = $null)
+        [pscustomobject]@{
+            Outcome = $Outcome; ExitCode = [int]$codes[$Outcome]; Busy = $Busy
+            OldProcess = $(if ($Judged) { [string]$Judged.OldProcess } else { 'kept' })
+            HostPids = $(if ($Judged) { [int[]]@($Judged.HostPids | Where-Object { $_ }) } else { [int[]]@() })
+            Stopped = $(if ($Judged) { [int[]]@($Judged.Stopped | Where-Object { $_ }) } else { [int[]]@() })
+        }
+    }
+    # the title comes from the overlay as base64, so no chat's words are ever
+    # parsed as code on the way
+    if ($TitleB64) { try { $Title = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($TitleB64)) } catch {} }
+    if ($SessionId -notmatch '^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$' -or -not $Cwd -or
+        -not (Test-Path -LiteralPath $Cwd -PathType Container)) { return (& $done 'bad') }
+    if (-not $Transcript) { $Transcript = Find-ChatTranscriptPath $SessionId $Cwd $ConfigDir }
+    if (-not $Transcript -and $Via -ne 'run') { return (& $done 'missing') }
+    $live = @(Get-ChatqLiveSessions $ConfigDir -RegistryOnly:($Via -eq 'button'))
+    # A queued prompt going into it now - another after the one whose Show it
+    # this is, say - or any print-mode claude: ending the window's process
+    # and showing the chat would load it part way through, a second writer
+    # beside the run, and cut off nothing less. Held, busy, and left alone;
+    # the run's own request comes when it ends. After a run (-Via run) its
+    # own process is gone and the next job has not started.
+    if ($Via -ne 'run' -and (@(Get-ChatqJobs | Where-Object { $_.state -eq 'running' -and [string]$_.sessionId -eq $SessionId }).Count -or
+            (Test-ChatPrintLive $live $SessionId))) {
+        return (& $done 'running' $true ([pscustomobject]@{ OldProcess = 'held'; HostPids = @(); Stopped = @() }))
+    }
+    $judgeOnly = $Via -eq 'run' -and $Away -ne $true
+    $j = Stop-ChatIdleProcess -SessionId $SessionId -Transcript $Transcript -ConfigDir $ConfigDir -Live $live -JudgeOnly:$judgeOnly
+    # busy: the chat itself held, or another in the folder working - which
+    # Reload Webviews would cut off as surely as a window reload
+    $busy = $true
+    if ($j.OldProcess -ne 'held') {
+        $idle = Test-ChatIdle -Cwd $Cwd -Except $Transcript -Seconds $Seconds -ConfigDir $ConfigDir -Live $live
+        $busy = if ($null -eq $idle) { $null } else { -not $idle }
+    }
+    $outcome = switch ($j.OldProcess) { 'held' { 'held' } 'other' { 'other' } default { 'ok' } }
+    if ($Via -eq 'run') {
+        Write-ChatReloadRequest -Title $Title -Cwd $Cwd -Kind 'ran' -Busy $busy -Away $Away -SessionId $SessionId `
+            -ConfigHome $ConfigDir -OldProcess $j.OldProcess -HostPids $j.HostPids
+    }
+    elseif ($Via -eq 'chip' -and $j.OldProcess -ne 'other') {
+        Write-ChatOpenRequest -SessionId $SessionId -Cwd $Cwd -Title $Title -ConfigHome $ConfigDir -Busy $busy `
+            -OldProcess $j.OldProcess -HostPids $j.HostPids
+        # A window holds it, but none is on exactly its folder - a multi-root
+        # one, say: code -n <folder> would open a second window on it, so the
+        # request alone goes. Which windows are exact is only guessed at from
+        # their titles out here (S30).
+        if (@($j.HostPids).Count -and -not (Test-ChatWindowExact $Cwd @(Get-ChatCodeWindowTitles) @(Get-ChatCodeProfileNames))) { $outcome = 'not-raised' }
+        else {
+            $c = Open-ChatCodeWindow $Cwd
+            if (-not $c.Ok) { $outcome = [string]$c.Code }
+        }
+    }
+    return (& $done $outcome $busy $j)
+}
+
+function ConvertTo-ChatFreshVerdict {
+    # What the Show it button's child prints for the extension: one line of
+    # ASCII JSON, read by its parseVerdict. Pure.
+    param($Result)
+    return ([ordered]@{
+            busy       = $Result.Busy
+            oldProcess = [string]$Result.OldProcess
+            outcome    = [string]$Result.Outcome
+            hostPids   = [int[]]@($Result.HostPids | Where-Object { $_ })
+        } | ConvertTo-Json -Compress)
+}
+
+function Test-ChatWindowExact {
+    <#
+    Is a VS Code window open on exactly this folder? Told from the windows'
+    titles, where VS Code's default puts the folder's name last before its
+    own - or before the profile's name, when one other than Default is in
+    use: ${activeEditorShort} - ${rootName} - ${profileName} - ${appName}.
+    -Profiles are those names (Get-ChatCodeProfileNames), so only a real
+    profile is stripped, never a folder that happens to follow another. A
+    proxy all the same - a multi-root window shows its workspace's name
+    there, and a window.title of one's own can hide it (S30). Pure, for the
+    tests.
+    #>
+    param([string]$Cwd, [string[]]$Titles, [string[]]$Profiles = @())
+    $leaf = Split-Path ([string]$Cwd).TrimEnd('\', '/') -Leaf
+    if (-not $leaf) { return $false }
+    foreach ($t in @($Titles)) {
+        $s = (([string]$t) -replace '\s+-\s+Visual Studio Code( - Insiders)?(\s*\[[^\]]*\])?\s*$', '').Trim()
+        $cut = @($s)
+        foreach ($p in @($Profiles)) {
+            if ($p -and $s.EndsWith(" - $p", [StringComparison]::OrdinalIgnoreCase)) { $cut += $s.Substring(0, $s.Length - $p.Length - 3) }
+        }
+        foreach ($c in $cut) {
+            if ($c -eq $leaf -or $c.EndsWith(" - $leaf", [StringComparison]::OrdinalIgnoreCase)) { return $true }
+        }
+    }
+    return $false
+}
+
+function Get-ChatCodeProfileNames {
+    # The names of VS Code's profiles, which its window titles carry after the
+    # folder's (Test-ChatWindowExact). VS Code keeps them in its own
+    # storage.json, userDataProfiles - read, nothing more; it is VS Code's
+    # settings, not runtime data of ours. None when there are none.
+    if ($script:ChatCodeProfilesSeam) { return @(& $script:ChatCodeProfilesSeam) }   # tests
+    if (-not $env:APPDATA) { return @() }
+    $names = [System.Collections.Generic.List[string]]::new()
+    foreach ($app in 'Code', 'Code - Insiders') {
+        $f = Join-Path $env:APPDATA "$app\User\globalStorage\storage.json"
+        if (-not (Test-Path -LiteralPath $f)) { continue }
+        try {
+            $o = [System.IO.File]::ReadAllText($f) | ConvertFrom-Json
+            if (-not $o.PSObject.Properties['userDataProfiles']) { continue }
+            foreach ($p in @($o.userDataProfiles)) {
+                $n = [string](Get-ChatField $p 'name')
+                if ($n -and -not $names.Contains($n)) { $names.Add($n) }
+            }
+        }
+        catch {}
+    }
+    return @($names)
+}
+
+# the titles of VS Code's windows, read and nothing else: nothing here moves,
+# raises or activates a window
+$script:ChatCodeWindowsCode = @'
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class ChatCodeWindows {
+    delegate bool EnumProc(IntPtr h, IntPtr l);
+    [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc f, IntPtr l);
+    [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+    public static string[] Titles(int[] pids) {
+        List<string> found = new List<string>();
+        List<uint> want = new List<uint>();
+        foreach (int p in pids) { want.Add((uint)p); }
+        EnumWindows(delegate (IntPtr h, IntPtr l) {
+            uint pid;
+            GetWindowThreadProcessId(h, out pid);
+            if (want.Contains(pid) && IsWindowVisible(h)) {
+                StringBuilder sb = new StringBuilder(512);
+                if (GetWindowText(h, sb, 512) > 0) { found.Add(sb.ToString()); }
+            }
+            return true;
+        }, IntPtr.Zero);
+        return found.ToArray();
+    }
+}
+'@
+
+function Get-ChatCodeWindowTitles {
+    if ($script:ChatWindowTitlesSeam) { return @(& $script:ChatWindowTitlesSeam) }   # tests
+    if (-not $script:ChatqIsWindows) { return @() }
+    try {
+        $ids = @(Get-Process -Name 'Code', 'Code - Insiders' -EA SilentlyContinue | ForEach-Object { [int]$_.Id })
+        if (-not $ids) { return @() }
+        if (-not ('ChatCodeWindows' -as [type])) { Add-Type -TypeDefinition $script:ChatCodeWindowsCode }
+        return @([ChatCodeWindows]::Titles([int[]]$ids))
+    }
+    catch { return @() }
+}
+
+function Find-ChatCodeCommand {
+    # CHATQ_CODE, else code on PATH (an Application, never a function or
+    # alias), else where the user and system installers put it. Reading VS
+    # Code's install place is not runtime data of ours.
+    if ($env:CHATQ_CODE) { return $env:CHATQ_CODE }
+    $c = Get-Command code -CommandType Application -EA SilentlyContinue | Select-Object -First 1
+    if ($c) { return $c.Source }
+    foreach ($p in @(
+            $(if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA 'Programs\Microsoft VS Code\bin\code.cmd' }),
+            $(if ($env:ProgramFiles) { Join-Path $env:ProgramFiles 'Microsoft VS Code\bin\code.cmd' }))) {
+        if ($p -and (Test-Path -LiteralPath $p)) { return $p }
+    }
+    return $null
+}
+
+function Get-ChatCodeEnvDrops {
+    # What a child that starts code must not inherit. Run from inside a VS
+    # Code terminal, or a Claude Code session's shell, VS Code's own VSCODE_*
+    # and ELECTRON_* variables reach the Code.exe that code.cmd starts, which
+    # then fails with "Invalid file descriptor to ICU data", exit 3 (S29).
+    # code.cmd sets ELECTRON_RUN_AS_NODE again itself. Pure.
+    param([string[]]$Names)
+    return @($Names | Where-Object { $_ -match '^(VSCODE_|ELECTRON_)' })
+}
+
+function Get-ChatCodeLaunch {
+    <#
+    How to run code -n <folder>: @{ Exe; Arguments }, or $null when it cannot
+    go on a command line safely. code.cmd runs through cmd.exe: inside its
+    quotes & ^ and | are literal, and /v:off makes ! literal too, but % and "
+    have no escape there at all, so a path holding either is refused. An .exe
+    (CHATQ_CODE), or anything off Windows, is started directly. Pure.
+    #>
+    param([string]$Code, [string]$Folder, [bool]$Windows = $script:ChatqIsWindows)
+    if (-not $Code -or -not $Folder) { return $null }
+    if ($Code -match '\.exe$' -or -not $Windows) {
+        return [pscustomobject]@{ Exe = $Code; Arguments = (ConvertTo-ChatqArgLine @('-n', $Folder)) }
+    }
+    if ("$Code$Folder" -match '[%"\r\n]') { return $null }
+    # a trailing backslash would escape the quote after it, as Code.exe reads it
+    if ($Folder.EndsWith('\')) { $Folder += '.' }
+    $shell = if ($env:ComSpec) { $env:ComSpec } else { 'cmd.exe' }
+    return [pscustomobject]@{ Exe = $shell; Arguments = '/d /s /v:off /c ""' + $Code + '" -n "' + $Folder + '""' }
+}
+
+function Open-ChatCodeWindow {
+    <#
+    code -n <folder>: VS Code brings forward the window that has that folder
+    open, or opens a new one on it. -n keeps it from reusing an unrelated
+    window when window.openFoldersInNewWindow is off; reusing one would close
+    that window's folder. Nothing here moves the pointer, types, or calls a
+    window API - VS Code raises its own window. The vscode:// link would do
+    it without code on PATH, but asks first when opened from outside.
+    Returns @{ Ok; Code (ok, no-code, code-failed); Why; Slow }.
+    #>
+    param([string]$Folder)
+    if ($script:ChatCodeSeam) { return (& $script:ChatCodeSeam $Folder) }   # tests
+    $fail = { param($c, $w) Write-ChatqWatchLog "open: $w"; [pscustomobject]@{ Ok = $false; Code = $c; Why = $w; Slow = $false } }
+    $code = Find-ChatCodeCommand
+    if (-not $code) { return (& $fail 'no-code' 'no code command - VS Code''s bin folder on PATH, or CHATQ_CODE, finds it') }
+    $l = Get-ChatCodeLaunch $code $Folder
+    if (-not $l) { return (& $fail 'code-failed' "cannot hand $Folder to $code") }
+    try {
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $l.Exe
+        $psi.Arguments = $l.Arguments
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        foreach ($n in @(Get-ChatCodeEnvDrops @($psi.EnvironmentVariables.Keys))) { $psi.EnvironmentVariables.Remove($n) }
+        $p = [System.Diagnostics.Process]::Start($psi)
+        if (-not $p.WaitForExit(20000)) {
+            Write-ChatqWatchLog 'open: code still running after 20 s - left to it'
+            return [pscustomobject]@{ Ok = $true; Code = 'ok'; Why = $null; Slow = $true }
+        }
+        if ($p.ExitCode -ne 0) { return (& $fail 'code-failed' "code exited $($p.ExitCode)") }
+        return [pscustomobject]@{ Ok = $true; Code = 'ok'; Why = $null; Slow = $false }
+    }
+    catch { return (& $fail 'code-failed' "code: $($_.Exception.Message)") }
 }
 
 #endregion
@@ -5327,7 +5893,9 @@ $n = New-Object Windows.UI.Notifications.ToastNotification $d
 [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe').Show($n)
 '@
         if ($PSVersionTable.PSEdition -ne 'Core') { & ([scriptblock]::Create($code)); return }
-        $full = "`$xml = '" + $xml.Replace("'", "''") + "'`n" + $code
+        # the curly quotes too: PowerShell ends a '...' string on any of the
+        # four, and a reply's excerpt is full of them
+        $full = "`$xml = '" + [System.Management.Automation.Language.CodeGeneration]::EscapeSingleQuotedStringContent($xml) + "'`n" + $code
         $enc = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($full))
         Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $enc) | Out-Null
         return
@@ -6167,8 +6735,29 @@ function Invoke-ChatqJob {
         return
     }
 
+    # A window may be showing this chat fresh right now, on a request a run
+    # or the chip wrote moments ago: this run going in meanwhile would leave
+    # it a copy from part way through. Not a busy chat - no back-off, and
+    # nothing counts towards giving up - just a wait until that is done.
+    $hold = if ($Job.provider -eq 'claude' -and -not $fresh) { Get-ChatShowHold $Job.sessionId $now } else { $null }
+    if ($hold) {
+        Set-ChatqProp $Job 'deferUntil' $hold.ToUniversalTime().ToString('o')
+        Save-ChatqJob $Job
+        Write-ChatqWatchLog "#$($Job.seq) held back: a window is showing that chat"
+        return
+    }
+
     $live = if ($Job.provider -eq 'claude' -and -not $fresh) { @(Get-ChatqLiveSessions $Job.home) } else { @() }
     $act = Resolve-ChatqLiveAction $Job $live
+    # liveIdle stop: the idle process ends before the run, by the same checks
+    # as everywhere else - and background work in flight in it waits, as a
+    # busy chat does. A terminal's claude, or one that could not be checked,
+    # is left, and the run goes ahead as with warn.
+    $stop = $null
+    if ($act.Action -eq 'stop') {
+        $stop = Stop-ChatIdleProcess -SessionId $Job.sessionId -Transcript $Job.path -ConfigDir $Job.home -Live @($act.Live)
+        if ($stop.OldProcess -eq 'held') { $act = @{ Action = 'defer'; Live = $act.Live } }
+    }
     if ($act.Action -eq 'defer') {
         if (-not $Job.deferredSince) { Set-ChatqProp $Job 'deferredSince' (Get-ChatqStamp) }
         $since = ConvertTo-ChatqDate $Job.deferredSince
@@ -6191,13 +6780,16 @@ function Invoke-ChatqJob {
     }
     $stale = $false
     if ($act.Action -eq 'stop') {
-        foreach ($l in @($act.Live)) {
-            $pr = Get-Process -Id $l.Pid -EA SilentlyContinue
-            if (Test-ChatqClaudeProcess $pr $l.ProcStart) { Stop-ChatqTree $pr }
+        if (@($stop.Stopped).Count) { Write-ChatqWatchLog "#$($Job.seq) stopped idle chat process $(@($stop.Stopped) -join ',')" }
+        if ($stop.OldProcess -in 'other', 'kept') {
+            $stale = $true
+            Write-ChatqWatchLog "#$($Job.seq) idle chat process left running ($($stop.OldProcess))"
         }
-        Write-ChatqWatchLog "#$($Job.seq) stopped idle chat process $(@($act.Live.Pid) -join ',')"
     }
     elseif ($act.Action -eq 'warn') { $stale = $true }
+    # a window held the chat as the run began. After stop too: the side bar
+    # keeps the chat's old view with its process gone (S29).
+    $wasLive = $act.Action -in 'stop', 'warn'
 
     # A "continue" goes alone: the files went with the prompt the first time.
     $files = @()
@@ -6244,29 +6836,50 @@ function Invoke-ChatqJob {
         if ($what.Length -gt 80) { $what = $what.Substring(0, 80) + $script:ChatqEllipsis }
         [void](Send-ChatqAlert 'started' "$($Job.title) $($script:ChatqDot) $m $($script:ChatqDot) $what" 0)
     }
+    $runStart = Get-Date
     $out = Invoke-ChatqRun $Job $prompt $onTick $onStart -Files $files
     $W.current = $null
     $wasCancelled = Test-Path -LiteralPath $cancel
     if ($wasCancelled) { Remove-Item -LiteralPath $cancel -Force -EA SilentlyContinue }
     Set-ChatqProp $Job 'runnerPid' $null
+    # A window that opened the chat while the run went on - a click in its
+    # side bar, a Show it or the chip just before this run began - loaded it
+    # part way through: as stale as one held from before, and treated so.
+    if (-not $wasLive -and -not $wasCancelled -and $Job.provider -eq 'claude' -and -not $fresh -and $Job.sessionId) {
+        $late = @(Get-ChatqLiveSessions $Job.home -RegistryOnly | Where-Object {
+                [string]$_.SessionId -eq [string]$Job.sessionId -and (-not $_.Kind -or $_.Kind -eq 'interactive') -and
+                (Get-ChatqEntryStart $_) -ge $runStart })
+        if ($late) {
+            $wasLive = $true
+            $stale = $true
+            Write-ChatqWatchLog "#$($Job.seq) a window opened the chat during the run"
+        }
+    }
     if ($stale) { Set-ChatqProp $out 'stale' $true }
     # the new chat's transcript, if this run made it where the slug did not say
     Update-ChatqNewChatPath $Job
     # The window still holding this chat shows none of the run until it
-    # reloads. The extension in extension/ offers that reload, in that window
-    # only - the job's folder is what it matches on, never this process's own.
-    # Not for a run that goes back in the queue: it is not finished yet.
-    # Judged here, as the run ends: the window reloads by itself only when
+    # redraws. The extension in extension/ shows it fresh - Reload Webviews,
+    # or a tab of its own - in that window only: the windows that held the
+    # chat, else the job's folder, never this process's own. Not for a run
+    # that goes back in the queue: it is not finished yet.
+    # Judged here, as the run ends: the window shows it by itself only when
     # nobody is at the PC to be typing in it and no other chat in the folder
-    # is working - otherwise it asks, as it always did. "Working" reaches back
-    # quietMinutes here, not one: a chat written that recently is someone's,
-    # at this PC or driving it from the phone, which the idle clock never sees.
-    if ($stale -and -not $wasCancelled -and $out.kind -notin 'limited', 'overloaded') {
+    # is working - otherwise it asks. "Working" reaches back quietMinutes
+    # here, not one: a chat written that recently is someone's, at this PC or
+    # driving it from the phone, which the idle clock never sees.
+    # The chat's old process is ended here only when nobody is at the PC.
+    # Then the window shows the run by itself, or whoever comes back to a
+    # stale view finds their next message starting from disk. With someone
+    # there it is left alone, because what a side bar does when the chat on
+    # screen loses its process is unchecked (S30 item 5); Show it ends it.
+    $shown = $null
+    if ($wasLive -and -not $wasCancelled -and $out.kind -notin 'limited', 'overloaded') {
         $cfg = Get-ChatqConfig
         $recent = [int][Math]::Max(60, (Get-ChatqQuietMinutes $cfg) * 60)
-        $idle = Test-ChatIdle -Cwd $Job.cwd -Except $Job.path -Seconds $recent -ConfigDir $Job.home
-        $busy = if ($null -eq $idle) { $null } else { -not $idle }
-        Write-ChatReloadRequest -Title $Job.title -Cwd $Job.cwd -Kind 'ran' -Busy $busy -Away (Test-ChatqUserAway $cfg)
+        $shown = @(Show-ChatFresh -Via run -SessionId $Job.sessionId -Cwd $Job.cwd -Title $Job.title `
+                -ConfigDir $Job.home -Transcript $Job.path -Seconds $recent -Away (Test-ChatqUserAway $cfg))[-1]
+        if ($shown -and $shown.OldProcess -eq 'ended') { Write-ChatqWatchLog "#$($Job.seq) ended the chat's idle process after the run" }
     }
     # A new chat is on disk now, and the chat list of a window on its folder
     # shows it only after a reload - the same offer, in words of its own. On
@@ -6281,7 +6894,17 @@ function Invoke-ChatqJob {
     $dur = ''
     $s0 = ConvertTo-ChatqDate $Job.startedAt
     if ($s0) { $dur = Get-ChatAge $s0; if ($dur -eq 'now') { $dur = '<1m' } }
-    $reload = if ($stale) { " $($script:ChatqDot) reload the VS Code window before typing in this chat" } else { '' }
+    # what to do before typing in the chat, by what became of its old process
+    $reload = ''
+    if ($wasLive) {
+        $old = if ($shown) { [string]$shown.OldProcess } else { $null }
+        $reload = " $($script:ChatqDot) " + $(switch ($old) {
+                { $_ -in 'ended', 'none' } { 'Show it in VS Code to see the run'; break }
+                'live' { 'Show it in VS Code before typing in this chat'; break }
+                'other' { 'it is open in a terminal too: type there, not in VS Code'; break }
+                default { 'reload the VS Code window before typing in this chat' }
+            })
+    }
     # A limit, a 529, a dropped connection, a login gone: all go back in the
     # queue. A prompt that already reached the chat comes back as "continue",
     # never as itself a second time.
@@ -6593,7 +7216,7 @@ function Start-ChatqWatcherProcess {
         Write-Host '  cannot start the watcher: this shell does not know where VS-code-chat-manager.ps1 is' -ForegroundColor Yellow
         return $false
     }
-    $q = { param($s) "'" + ([string]$s).Replace("'", "''") + "'" }
+    $q = { param($s) "'" + [System.Management.Automation.Language.CodeGeneration]::EscapeSingleQuotedStringContent([string]$s) + "'" }
     $pre = '$env:CHATQ_WATCHER=''1''; '
     foreach ($n in 'CHATQ_CLAUDE', 'CHATQ_CODEX') {
         $v = [Environment]::GetEnvironmentVariable($n)
@@ -9277,6 +9900,7 @@ function New-ChatOverlayWindow {
     $H.Hwnd = [System.Windows.Interop.WindowInteropHelper]::new($w).EnsureHandle()
     [ChatOverlayNative]::ApplyExStyle($H.Hwnd, $H.Locked)
     New-ChatOverlayControlsWindow $H
+    New-ChatOverlayChipWindow $H
 }
 
 function New-ChatOverlayControlsWindow {
@@ -9337,6 +9961,8 @@ function Update-ChatOverlayTheme {
     $H.Frame.Background = Get-ChatOverlayBrush 'frame'
     $H.Frame.BorderBrush = Get-ChatOverlayBrush $(if ($H.Locked) { 'edge' } else { 'unlocked' })
     New-ChatOverlayControls $H
+    Hide-ChatOverlayChip $H
+    if ($H.ChipWin) { New-ChatOverlayChipContent $H }
     # the console too, keeping what is typed in it
     if ($H.Con) { Initialize-ChatConsoleContent $H }
     $H.ViewKey = $null
@@ -9585,14 +10211,16 @@ function Set-ChatOverlayControlsSide {
     foreach ($el in $order) { [void]$H.CtlStack.Children.Add($el) }
 }
 
-function Set-ChatOverlayControlsPlacement {
-    # the controls window on the panel's top edge, wherever the panel is
-    # now; -Dip the size it is about to take, in WPF's units
+function Get-ChatOverlayControlsTarget {
+    # Where the controls window goes now, in screen pixels - x, y, width,
+    # height, the side of the panel and the gap to it - worked out as for
+    # placing it, without moving it: the pointer check wants the spot while
+    # it is hidden too. -Dip the size it is about to take, in WPF's units.
     param($H, $Dip)
-    if (-not $H -or -not $H.CtlWin -or $H.CtlHwnd -eq [IntPtr]::Zero -or $H.Hwnd -eq [IntPtr]::Zero) { return }
+    if (-not $H -or -not $H.CtlWin -or $H.CtlHwnd -eq [IntPtr]::Zero -or $H.Hwnd -eq [IntPtr]::Zero) { return $null }
     $p = [ChatOverlayNative]::GetRect($H.Hwnd)
     $c = [ChatOverlayNative]::GetRect($H.CtlHwnd)
-    if (-not $p -or -not $c) { return }
+    if (-not $p -or -not $c) { return $null }
     $a = if ($script:ChatOverlayWorkAreaSeam) { & $script:ChatOverlayWorkAreaSeam $p }
     else { [System.Windows.Forms.Screen]::FromRectangle([System.Drawing.Rectangle]::new($p[0], $p[1], $p[2], $p[3])).WorkingArea }
     # this screen's pixels to one of WPF's units: 4 of them between the two
@@ -9615,8 +10243,40 @@ function Set-ChatOverlayControlsPlacement {
     $rowDip = if (-not $H.Controls) { 0 } elseif ($H.Controls.ActualHeight -gt 0) { $H.Controls.ActualHeight } else { $H.Controls.DesiredSize.Height }
     $bar = [int][Math]::Round($rowDip * $px)
     $at = Get-ChatOverlayControlsPlacement $p $size ([pscustomobject]@{ X = $a.X; Y = $a.Y; Width = $a.Width; Height = $a.Height }) $gap $H.CtlSide $bar
-    if ($at.Side -ne $H.CtlSide) { Set-ChatOverlayControlsSide $H $at.Side }
-    if ($at.X -ne $c[0] -or $at.Y -ne $c[1]) { [ChatOverlayNative]::MoveTo($H.CtlHwnd, $at.X, $at.Y) }
+    return [pscustomobject]@{ X = $at.X; Y = $at.Y; Width = $size[0]; Height = $size[1]; Side = $at.Side; Gap = $gap; Now = $c }
+}
+
+function Set-ChatOverlayControlsPlacement {
+    # the controls window on the panel's top edge, wherever the panel is
+    # now; -Dip the size it is about to take, in WPF's units
+    param($H, $Dip)
+    $t = Get-ChatOverlayControlsTarget $H $Dip
+    if (-not $t) { return }
+    if ($t.Side -ne $H.CtlSide) { Set-ChatOverlayControlsSide $H $t.Side }
+    if ($t.X -ne $t.Now[0] -or $t.Y -ne $t.Now[1]) { [ChatOverlayNative]::MoveTo($H.CtlHwnd, $t.X, $t.Y) }
+}
+
+function Get-ChatOverlayControlsZone {
+    <#
+    Where the pointer counts as on the buttons, in screen pixels: their
+    window's rect (-Rect x y width height) - where it is, or while hidden
+    where it would go - and the gap between it and the panel on its -Side.
+    So the buttons can be reached straight from anywhere, not only by way of
+    the panel, and crossing the gap never leaves them. Pure, for the tests.
+    #>
+    param([int[]]$Rect, [string]$Side, [int]$Gap)
+    if (-not $Rect -or $Rect.Count -lt 4) { return $null }
+    if ($Side -eq 'below') { return @($Rect[0], ($Rect[1] - $Gap), $Rect[2], ($Rect[3] + $Gap)) }
+    return @($Rect[0], $Rect[1], $Rect[2], ($Rect[3] + $Gap))
+}
+
+function Get-ChatOverlayControlsHoverZone {
+    # the buttons' zone for the pointer check, shown or hidden; $null when
+    # there is no controls window to place
+    param($H)
+    $t = Get-ChatOverlayControlsTarget $H
+    if (-not $t) { return $null }
+    return Get-ChatOverlayControlsZone @($t.X, $t.Y, $t.Width, $t.Height) $t.Side $t.Gap
 }
 
 function Start-ChatOverlayGripDrag {
@@ -9660,6 +10320,7 @@ function Set-ChatOverlayCollapsed {
     # the next start in overlay-state.json
     param($H, [bool]$Collapsed)
     $H.Collapsed = $Collapsed
+    Hide-ChatOverlayChip $H
     Set-ChatqProp $H.State 'collapsed' $Collapsed
     Save-ChatOverlayState $H.State
     $H.ViewKey = $null
@@ -9757,16 +10418,19 @@ function Hide-ChatOverlayByButton {
 function Get-ChatOverlayControlsShown {
     <#
     Whether the buttons show, from where the pointer is. Not on first
-    contact: a pointer crossing the click-through panel on its way to the
-    window under it would meet buttons that take its click. It rests on the
-    panel 350 ms first. Once up they stay while the pointer is on the panel
-    or on them, while a mouse button is held (a slider dragged off the box),
-    mid-drag, and 700 ms after it leaves, so crossing the gap between the
-    two loses nothing. Pure, for the tests.
+    contact: a pointer crossing the click-through panel, or the spot above
+    it where the buttons go, on its way to the window under it would meet
+    buttons that take its click. It rests on either 350 ms first - so the
+    buttons can be pointed at straight away, and come up under the pointer.
+    Never while a mouse button is held: a tab or a file dragged across that
+    corner in the app below would be dropped on them. Once up they stay
+    while the pointer is on the panel or on them, while a mouse button is
+    held (a slider dragged off the box), mid-drag, and 700 ms after it
+    leaves. Pure, for the tests.
     #>
     param([bool]$Shown, [bool]$OnPanel, [bool]$OnControls, [bool]$Dragging, [bool]$Down, [double]$RestedMs, [double]$SinceOverMs)
     if ($Dragging) { return $true }
-    if (-not $Shown) { return ($OnPanel -and $RestedMs -ge 350) }
+    if (-not $Shown) { return ((-not $Down) -and ($OnPanel -or $OnControls) -and $RestedMs -ge 350) }
     return ($OnPanel -or $OnControls -or $Down -or $SinceOverMs -lt 700)
 }
 
@@ -9779,11 +10443,12 @@ function Test-ChatOverlayPointerIn {
 function Update-ChatOverlayHover {
     <#
     Every 120 ms: where the pointer is - read, never moved - against the
-    panel and the controls window. Over either, the controls show, and stay
-    a moment after it leaves, so crossing the gap between the two loses
-    nothing; while a button is held they stay, so a slider dragged off the
-    box keeps going. The controls follow a panel moved some other way, and
-    an opacity the slider settled on is saved here too.
+    panel and the controls' zone: their window and the gap to the panel, or
+    while hidden the spot they would take. Resting on either brings the
+    controls, which stay a moment after it leaves; while a button is held
+    they stay, so a slider dragged off the box keeps going. The controls
+    follow a panel moved some other way, and an opacity the slider settled
+    on is saved here too.
     #>
     $H = $script:ChatOverlayHost
     if (-not $H -or $H.ShuttingDown -or $H.Hidden -or $H.Hwnd -eq [IntPtr]::Zero) { return }
@@ -9791,9 +10456,12 @@ function Update-ChatOverlayHover {
         $m = [System.Windows.Forms.Control]::MousePosition
         $down = [System.Windows.Forms.Control]::MouseButtons -ne [System.Windows.Forms.MouseButtons]::None
         $onPanel = Test-ChatOverlayPointerIn $m ([ChatOverlayNative]::GetRect($H.Hwnd))
-        $onCtl = [bool]$H.ControlsShown -and (Test-ChatOverlayPointerIn $m ([ChatOverlayNative]::GetRect($H.CtlHwnd)))
+        $onCtl = Test-ChatOverlayPointerIn $m (Get-ChatOverlayControlsHoverZone $H)
         $now = Get-Date
-        if (-not $onPanel) { $H.EnterAt = $null } elseif (-not $H.EnterAt) { $H.EnterAt = $now }
+        # a rest with a button held is a drag in the app below; it starts over
+        # once the button is let go
+        if (-not ($onPanel -or $onCtl) -or ($down -and -not $H.ControlsShown)) { $H.EnterAt = $null }
+        elseif (-not $H.EnterAt) { $H.EnterAt = $now }
         if ($onPanel -or $onCtl) { $H.OverAt = $now }
         $rested = if ($H.EnterAt) { ($now - $H.EnterAt).TotalMilliseconds } else { 0 }
         $since = if ($H.OverAt) { ($now - $H.OverAt).TotalMilliseconds } else { [double]::MaxValue }
@@ -9808,8 +10476,326 @@ function Update-ChatOverlayHover {
             if ($v -ne $H.Ctx.Config.opacity) { Save-ChatOverlaySetting $H @{ opacity = $v } }
         }
         Update-ChatOverlaySpin $H
+        Update-ChatOverlayChip $H $m $down $now $onPanel
     }
     catch { Write-ChatOverlayLog "hover: $($_.Exception.Message)" }
+}
+
+function Test-ChatOverlayRowOpenable {
+    # a row the open chip can show: a Claude chat, by its id, in a folder
+    # its window can be found by. Pure.
+    param($Row)
+    if (-not $Row) { return $false }
+    return ([string](Get-ChatField $Row 'provider') -eq 'claude' -and
+        [string](Get-ChatField $Row 'sessionId') -match '^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$' -and
+        [bool][string](Get-ChatField $Row 'cwd'))
+}
+
+function Get-ChatOverlayChipTarget {
+    <#
+    Which row the open chip shows for, from the pointer: '' for none. Not on
+    first contact - a pointer crossing the click-through panel on its way to
+    what is under it would find a chip in its path - but after it rested on a
+    row 1 s from moving onto it (-RestedMs), with no button held, and once per
+    visit to a row (-Spent: the row it last showed for, until the pointer
+    leaves it). Shown, it stays while the pointer is on it or its row, and
+    300 ms after, so crossing to it loses nothing; another row hides it at
+    once. -Blocked: collapsed or mid-drag. Pure, for the tests.
+    #>
+    param([string]$Shown, [string]$Under, [double]$RestedMs, [bool]$OnChip, [double]$SinceOverMs,
+        [bool]$Down, [bool]$Blocked, [string]$Spent)
+    if ($Blocked) { return '' }
+    if ($Shown) {
+        if ($OnChip -or $Under -eq $Shown) { return $Shown }
+        if ($Under) { return '' }
+        if ($SinceOverMs -lt 300) { return $Shown }
+        return ''
+    }
+    if ($Under -and $Under -ne $Spent -and -not $Down -and $RestedMs -ge 1000) { return $Under }
+    return ''
+}
+
+function Step-ChatOverlayChipState {
+    <#
+    One pointer check's bookkeeping for the chip, on $S (the host state, or
+    any hashtable with its Chip* keys): the row under the pointer and since
+    when it rested there, the last time it was over the chip or its row, the
+    row a chip already showed for, and whether a click on the chip counts.
+    The rest starts only when the pointer moves onto a row: rows redrawn
+    under a pointer that sits still start nothing. A click counts only once
+    the pointer has been seen off the chip since it appeared, so a pointer
+    parked where the chip comes up never opens anything with its next click.
+    Pure but for $S.
+    #>
+    param($S, [string]$Under, [string]$Pos, [bool]$OnChip, [datetime]$Now)
+    $moved = $Pos -ne [string]$S.ChipLastPos
+    if ($Under -ne [string]$S.ChipUnder) {
+        $S.ChipUnder = $Under
+        $S.ChipUnderAt = if ($Under -and $moved) { $Now } else { $null }
+    }
+    elseif ($Under -and -not $S.ChipUnderAt -and $moved) { $S.ChipUnderAt = $Now }
+    $S.ChipLastPos = $Pos
+    if ($S.ChipKey -and ($OnChip -or $Under -eq $S.ChipKey)) { $S.ChipOverAt = $Now }
+    if ($S.ChipSpent -and $Under -ne $S.ChipSpent) { $S.ChipSpent = $null }
+    if ($S.ChipKey -and -not $OnChip) { $S.ChipArmed = $true }
+}
+
+function Get-ChatOverlayRowRects {
+    # Each drawn row's rect, and its first line's, in screen pixels: what the
+    # pointer is matched against. Only while the pointer is on the panel or
+    # the chip; a row not laid out yet is left out.
+    param($H)
+    $out = [System.Collections.Generic.List[object]]::new()
+    if (-not $H.Stack) { return $out.ToArray() }
+    foreach ($w in @($H.Stack.Children)) {
+        $row = $w.Tag
+        if (-not $row -or $row -is [string] -or -not (Get-ChatField $row 'key')) { continue }
+        try {
+            $line = @($w.Children | Where-Object { $_.Tag -eq 'line' }) | Select-Object -First 1
+            if (-not $line) { $line = $w }
+            $rect = {
+                param($el)
+                $a = $el.PointToScreen([System.Windows.Point]::new(0, 0))
+                $b = $el.PointToScreen([System.Windows.Point]::new($el.ActualWidth, $el.ActualHeight))
+                @([int][Math]::Round($a.X), [int][Math]::Round($a.Y), [int][Math]::Round($b.X - $a.X), [int][Math]::Round($b.Y - $a.Y))
+            }
+            $out.Add([pscustomobject]@{ Key = [string]$row.key; Row = $row; Rect = (& $rect $w); Line = (& $rect $line) })
+        }
+        catch {}
+    }
+    return $out.ToArray()
+}
+
+function Find-ChatOverlayRowAt {
+    # the row whose rect holds the point, or $null. Pure.
+    param($At, [object[]]$Rects)
+    foreach ($r in @($Rects)) { if ($r -and (Test-ChatOverlayPointerIn $At $r.Rect)) { return $r } }
+    return $null
+}
+
+function Get-ChatOverlayChipPlacement {
+    # The chip flush with its row's right end, centred on the row's first
+    # line, kept on the screen; all in screen pixels (-Line a rect, -Size
+    # width and height). Pure, for the tests.
+    param([int[]]$Line, [int[]]$Size, $Screen)
+    $x = $Line[0] + $Line[2] - $Size[0]
+    $y = $Line[1] + [int][Math]::Round(($Line[3] - $Size[1]) / 2.0)
+    $x = [Math]::Max($Screen.X, [Math]::Min($x, $Screen.X + $Screen.Width - $Size[0]))
+    $y = [Math]::Max($Screen.Y, [Math]::Min($y, $Screen.Y + $Screen.Height - $Size[1]))
+    return [pscustomobject]@{ X = [int]$x; Y = [int]$y }
+}
+
+function New-ChatOverlayChipWindow {
+    <#
+    The open chip: a small window of its own, like the controls', over the
+    right end of the row the pointer rests on. The panel stays click-through
+    everywhere else. Never takes focus, and is in neither Alt+Tab nor the
+    taskbar - the controls window's styles.
+    #>
+    param($H)
+    $c = [System.Windows.Window]::new()
+    $c.Title = 'chatoverlay open'
+    $c.WindowStyle = [System.Windows.WindowStyle]::None
+    $c.AllowsTransparency = $true
+    $c.Background = [System.Windows.Media.Brushes]::Transparent
+    $c.ResizeMode = [System.Windows.ResizeMode]::NoResize
+    $c.Topmost = $true
+    $c.ShowActivated = $false
+    # true for the same reason as the panel's: false means a hidden owner
+    # that is not topmost
+    $c.ShowInTaskbar = $true
+    $c.SizeToContent = [System.Windows.SizeToContent]::WidthAndHeight
+    $c.WindowStartupLocation = [System.Windows.WindowStartupLocation]::Manual
+    $c.Left = -32000
+    $c.Top = -32000
+    $c.FontFamily = $H.Win.FontFamily
+    $c.FontSize = 12
+    $H.ChipWin = $c
+    New-ChatOverlayChipContent $H
+    $H.ChipHwnd = [System.Windows.Interop.WindowInteropHelper]::new($c).EnsureHandle()
+    [ChatOverlayNative]::ApplyExStyle($H.ChipHwnd, $false)
+}
+
+function New-ChatOverlayChipContent {
+    # the chip's face, made anew when the look changes
+    param($H)
+    $b = [System.Windows.Controls.Border]::new()
+    $b.CornerRadius = [System.Windows.CornerRadius]::new(4)
+    $b.Background = Get-ChatOverlayBrush 'panel'
+    $b.BorderBrush = Get-ChatOverlayBrush 'edge'
+    $b.BorderThickness = [System.Windows.Thickness]::new(1)
+    $b.Padding = [System.Windows.Thickness]::new(7, 1, 7, 2)
+    $b.ToolTip = 'Show this chat up to date in its VS Code window. Ends the chat''s idle process, and any background shell it runs.'
+    $busy = [bool]$H.OpenProc
+    $t = New-ChatOverlayText $(if ($busy) { 'opening' } else { 'open' }) $(if ($busy) { 'dim' } else { 'text' }) 11
+    $b.Child = $t
+    $b.add_MouseEnter({ param($s, $e) $s.Background = Get-ChatOverlayBrush 'hover' })
+    $b.add_MouseLeave({ param($s, $e) $s.Background = Get-ChatOverlayBrush 'panel' })
+    # a press counts only once the chip is armed (Step-ChatOverlayChipState)
+    $b.add_MouseLeftButtonDown({ param($s, $e) $e.Handled = $true; $script:ChatOverlayHost.ChipPressed = [bool]$script:ChatOverlayHost.ChipArmed })
+    $b.add_MouseLeftButtonUp({
+            param($s, $e)
+            $e.Handled = $true
+            $X = $script:ChatOverlayHost
+            if ($X.ChipPressed) { $X.ChipPressed = $false; Invoke-ChatOverlayOpen $X $X.ChipRow }
+        })
+    $H.ChipText = $t
+    $H.ChipWin.Content = $b
+}
+
+function Set-ChatOverlayChipPlacement {
+    # over its row's right end, wherever that row is drawn now
+    param($H)
+    if (-not $H.ChipWin -or $H.ChipHwnd -eq [IntPtr]::Zero -or -not $H.ChipLine) { return }
+    $p = [ChatOverlayNative]::GetRect($H.Hwnd)
+    if (-not $p) { return }
+    $px = $p[2] / [Math]::Max(1.0, [double]$H.Win.ActualWidth)
+    if ($H.ChipWin.IsVisible) { $c = [ChatOverlayNative]::GetRect($H.ChipHwnd); $size = @($c[2], $c[3]) }
+    else {
+        $H.ChipWin.Content.Measure([System.Windows.Size]::new([double]::PositiveInfinity, [double]::PositiveInfinity))
+        $d = $H.ChipWin.Content.DesiredSize
+        $size = @([int][Math]::Ceiling($d.Width * $px), [int][Math]::Ceiling($d.Height * $px))
+    }
+    $l = [int[]]$H.ChipLine
+    $a = if ($script:ChatOverlayWorkAreaSeam) { & $script:ChatOverlayWorkAreaSeam $l }
+    else { [System.Windows.Forms.Screen]::FromRectangle([System.Drawing.Rectangle]::new($l[0], $l[1], [Math]::Max(1, $l[2]), [Math]::Max(1, $l[3]))).WorkingArea }
+    $at = Get-ChatOverlayChipPlacement $l $size ([pscustomobject]@{ X = $a.X; Y = $a.Y; Width = $a.Width; Height = $a.Height })
+    [ChatOverlayNative]::MoveTo($H.ChipHwnd, $at.X, $at.Y)
+}
+
+function Show-ChatOverlayChip {
+    # for one row (an entry of Get-ChatOverlayRowRects); placed before it
+    # shows, so it never flashes where it last was, and armed only when the
+    # pointer is not already on it
+    param($H, $Entry, $At = $null)
+    if (-not $H.ChipWin -or -not $Entry) { return }
+    $H.ChipKey = [string]$Entry.Key
+    $H.ChipRow = $Entry.Row
+    $H.ChipLine = $Entry.Line
+    $H.ChipAt = Get-Date
+    $H.ChipOverAt = $H.ChipAt
+    $H.ChipSpent = $H.ChipKey
+    $H.ChipPressed = $false
+    Set-ChatOverlayChipPlacement $H
+    $H.ChipWin.Show()
+    # WPF sets WS_EX_APPWINDOW again as it shows a window
+    [ChatOverlayNative]::ApplyExStyle($H.ChipHwnd, $false)
+    [ChatOverlayNative]::KeepTopmost($H.ChipHwnd)
+    Set-ChatOverlayChipPlacement $H
+    $H.ChipArmed = -not ($At -and (Test-ChatOverlayPointerIn $At ([ChatOverlayNative]::GetRect($H.ChipHwnd))))
+}
+
+function Hide-ChatOverlayChip {
+    param($H)
+    if (-not $H) { return }
+    if ($H.ChipWin) { try { $H.ChipWin.Hide() } catch {} }
+    $H.ChipKey = $null
+    $H.ChipRow = $null
+    $H.ChipArmed = $false
+    $H.ChipPressed = $false
+}
+
+function Update-ChatOverlayChip {
+    # Every pointer check, after the controls': the chip over a Claude row
+    # the pointer rests on (Get-ChatOverlayChipTarget), following its row,
+    # gone when the pointer is. The pointer is only read.
+    param($H, $At, [bool]$Down, [datetime]$Now, [bool]$OnPanel)
+    if (-not $H.ChipWin) { return }
+    $blocked = [bool]($H.Collapsed -or $H.Dragging -or $H.GripDrag)
+    $onChip = [bool]$H.ChipKey -and (Test-ChatOverlayPointerIn $At ([ChatOverlayNative]::GetRect($H.ChipHwnd)))
+    $entry = $null
+    if (($OnPanel -or $onChip) -and -not $blocked) {
+        $entry = Find-ChatOverlayRowAt $At @(Get-ChatOverlayRowRects $H)
+        if ($entry -and -not (Test-ChatOverlayRowOpenable $entry.Row)) { $entry = $null }
+    }
+    $under = if ($entry) { [string]$entry.Key } else { '' }
+    Step-ChatOverlayChipState $H $under "$($At.X),$($At.Y)" $onChip $Now
+    $rested = if ($H.ChipUnderAt) { ($Now - $H.ChipUnderAt).TotalMilliseconds } else { 0 }
+    $since = if ($H.ChipOverAt) { ($Now - $H.ChipOverAt).TotalMilliseconds } else { [double]::MaxValue }
+    $target = Get-ChatOverlayChipTarget ([string]$H.ChipKey) $under $rested $onChip $since $Down $blocked ([string]$H.ChipSpent)
+    if (-not $target) { if ($H.ChipKey) { Hide-ChatOverlayChip $H }; return }
+    if ($target -ne $H.ChipKey) { Show-ChatOverlayChip $H $entry $At; return }
+    # the same row: follow it, should it have moved
+    if ($entry -and $entry.Key -eq $H.ChipKey) { $H.ChipLine = $entry.Line }
+    Set-ChatOverlayChipPlacement $H
+}
+
+function Start-ChatShowFreshProcess {
+    <#
+    Show-ChatFresh for a chip's row in a hidden Windows PowerShell of its
+    own, so the window's thread never waits on the registry, CIM or the code
+    CLI. Every value goes in single-quoted, quotes doubled - the curly ones
+    too - and the title as base64, so nothing a chat is called is ever read
+    as code. It exits with Show-ChatFresh's ExitCode.
+    #>
+    param($H, $Row)
+    if (-not (Test-ChatOverlayRowOpenable $Row)) { return $null }
+    $path = $script:ChatqScriptPath
+    if (-not $path -or -not (Test-Path -LiteralPath $path)) { return $null }
+    $q = { param($s) "'" + [System.Management.Automation.Language.CodeGeneration]::EscapeSingleQuotedStringContent([string]$s) + "'" }
+    $pre = '$env:CHATQ_OVERLAY=''1''; '
+    foreach ($n in 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'CHAT_CODE_USER', 'CHATQ_CLAUDE', 'CHATQ_CODE') {
+        $v = [Environment]::GetEnvironmentVariable($n)
+        if ($v) { $pre += "`$env:$n=$(& $q $v); " }
+    }
+    $b64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes([string](Get-ChatField $Row 'title')))
+    $home0 = if ($H -and $H.Ctx) { [string]$H.Ctx.ClaudeHome } else { $script:ChatClaudeHome }
+    $cmd = $pre + ". $(& $q $path); `$r = @(Show-ChatFresh -Via chip -SessionId $(& $q $Row.sessionId) -Cwd $(& $q $Row.cwd) " +
+    "-TitleB64 $(& $q $b64) -ConfigDir $(& $q $home0))[-1]; exit [int]`$r.ExitCode"
+    if ($script:ChatShowSpawnSeam) { return (& $script:ChatShowSpawnSeam $cmd) }   # tests
+    $enc = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($cmd))
+    $exe = Join-Path $(if ($env:SystemRoot) { $env:SystemRoot } else { 'C:\Windows' }) 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    try { return (Start-Process -FilePath $exe -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $enc) -WindowStyle Hidden -PassThru) }
+    catch { Write-ChatOverlayLog "open: $($_.Exception.Message)"; return $null }
+}
+
+function Invoke-ChatOverlayOpen {
+    # The chip clicked: one open at a time, in a child of its own. No window
+    # is activated from here - code -n, in the child, has VS Code raise its own.
+    param($H, $Row)
+    if (-not $H -or -not $Row -or $H.OpenProc) { return }
+    $p = Start-ChatShowFreshProcess $H $Row
+    if (-not $p) { return }
+    $H.OpenProc = $p
+    $H.OpenAt = Get-Date
+    if ($H.ChipText) { $H.ChipText.Text = 'opening'; $H.ChipText.Foreground = Get-ChatOverlayBrush 'dim' }
+    $sid = [string]$Row.sessionId
+    Write-ChatOverlayLog "open: $($sid.Substring(0, [Math]::Min(8, $sid.Length)))"
+}
+
+function Get-ChatOverlayOpenBalloon {
+    # what the tray says when an open ends, by its child's exit code
+    # (Show-ChatFresh); $null says nothing. Pure.
+    param([int]$Code)
+    switch ($Code) {
+        15 { return 'A queued prompt is running in that chat - open it once it finishes.' }
+        20 { return 'That chat is open in a terminal - not opened in VS Code as well.' }
+        25 { return 'Shown in its window, which also has other folders open - bring it forward yourself.' }
+        30 { return 'That chat has not started yet.' }
+        40 { return 'Asked its window to show it, but VS Code''s code command was not found, so the window was not brought forward.' }
+        41 { return 'code failed - see data/logs/watcher.log.' }
+    }
+    return $null
+}
+
+function Update-ChatOverlayOpen {
+    # every tick while an open runs: when its child is done, say how it went,
+    # and put the chip back; after 60 s stop waiting for it
+    param($H)
+    $p = $H.OpenProc
+    if (-not $p) { return }
+    $ended = try { $p.HasExited } catch { $true }
+    if (-not $ended -and ((Get-Date) - $H.OpenAt).TotalSeconds -lt 60) { return }
+    if ($ended) {
+        $code = try { [int]$p.ExitCode } catch { -1 }
+        if ($code -ne 0) { Write-ChatOverlayLog "open: ended $code" }
+        $say = Get-ChatOverlayOpenBalloon $code
+        if ($say -and $H.Tray) { $H.Tray.ShowBalloonTip(6000, 'chatoverlay', $say, [System.Windows.Forms.ToolTipIcon]::None) }
+    }
+    else { Write-ChatOverlayLog 'open: no answer after 60 s - stopped waiting' }
+    $H.OpenProc = $null
+    if ($H.ChipText) { $H.ChipText.Text = 'open'; $H.ChipText.Foreground = Get-ChatOverlayBrush 'text' }
+    Hide-ChatOverlayChip $H
 }
 
 function Add-ChatOverlayUsage {
@@ -9918,7 +10904,10 @@ function Add-ChatOverlayRow {
     param($Panel, $Row, $Cfg)
     $wrap = [System.Windows.Controls.StackPanel]::new()
     $wrap.Margin = [System.Windows.Thickness]::new(0, 3, 0, 3)
+    # the row it draws, for the open chip to find under the pointer
+    $wrap.Tag = $Row
     $line = [System.Windows.Controls.DockPanel]::new()
+    $line.Tag = 'line'
     $line.LastChildFill = $true
     $dot = [System.Windows.Shapes.Ellipse]::new()
     $dot.Width = 8
@@ -9970,7 +10959,7 @@ function Update-ChatOverlayView {
     $P = $H.Stack
     $P.Children.Clear()
     $H.Clocks = [System.Collections.Generic.List[object]]::new()
-    if ($H.Collapsed) { Add-ChatOverlayCompact $P $Snap; Add-ChatOverlayUnlockedHint $H $P; return }
+    if ($H.Collapsed) { Hide-ChatOverlayChip $H; Add-ChatOverlayCompact $P $Snap; Add-ChatOverlayUnlockedHint $H $P; return }
     foreach ($u in @($Snap.header.usage)) {
         if (-not $u) { continue }
         if ($cfg.usageView -eq 'bars') { Add-ChatOverlayUsage $H $P $u } else { Add-ChatOverlayUsageLine $P $u }
@@ -9991,6 +10980,11 @@ function Update-ChatOverlayView {
     }
     $shown = @($rows | Select-Object -First $cfg.maxRows)
     foreach ($r in $shown) { Add-ChatOverlayRow $P $r $cfg }
+    # the chip goes with its row; one still drawn keeps the row's new data
+    if ($H.ChipKey) {
+        $still = @($shown | Where-Object { $_ -and [string]$_.key -eq $H.ChipKey }) | Select-Object -First 1
+        if ($still) { $H.ChipRow = $still } else { Hide-ChatOverlayChip $H }
+    }
     if ($rows.Count -gt $shown.Count) {
         $rest = @($rows | Select-Object -Skip $shown.Count)
         $bits = @()
@@ -10122,6 +11116,7 @@ function Set-ChatOverlayLocked {
     # go on swallowing clicks over that corner of the screen.
     param($H, [bool]$Locked)
     $H.Locked = $Locked
+    Hide-ChatOverlayChip $H
     if ($H.Hwnd -ne [IntPtr]::Zero) { [ChatOverlayNative]::ApplyExStyle($H.Hwnd, $Locked) }
     $H.Frame.BorderBrush = Get-ChatOverlayBrush $(if ($Locked) { 'edge' } else { 'unlocked' })
     $H.PointerIn = $false
@@ -10139,6 +11134,8 @@ function Set-ChatOverlayHidden {
     if ($Hidden) {
         $H.Win.Hide()
         Show-ChatOverlayControls $H $false
+        # the pointer check stops while hidden, so nothing else would
+        Hide-ChatOverlayChip $H
     }
     else {
         $H.Win.Show()
@@ -10331,6 +11328,8 @@ function Invoke-ChatOverlayTick {
             if ($H.Ctx.Config.theme -eq 'system') { Update-ChatOverlayTheme $H }
             [ChatOverlayNative]::KeepTopmost($H.Hwnd)
             if ($H.ControlsShown) { [ChatOverlayNative]::KeepTopmost($H.CtlHwnd) }
+            # the chip after the panel, so it stays over its row
+            if ($H.ChipKey -and $H.ChipHwnd -ne [IntPtr]::Zero) { [ChatOverlayNative]::KeepTopmost($H.ChipHwnd) }
             $sig = (@([System.Windows.Forms.Screen]::AllScreens | ForEach-Object { "$($_.WorkingArea)" }) -join ';')
             if ($sig -ne $H.ScreenSig) {
                 if ($H.ScreenSig) { Set-ChatOverlayPlacement $H }
@@ -10340,6 +11339,8 @@ function Invoke-ChatOverlayTick {
         if (-not $H.Locked -and -not $H.PointerIn -and $H.LeftAt -and ((Get-Date) - $H.LeftAt).TotalSeconds -ge 120) {
             Set-ChatOverlayLocked $H $true
         }
+        # an open the chip started may have finished
+        if ($H.OpenProc) { Update-ChatOverlayOpen $H }
     }
     catch { Write-ChatOverlayLog "tick: $($_.Exception.Message) @ $(($_.ScriptStackTrace -split "`n")[0])" }
 }
@@ -10368,6 +11369,7 @@ function Close-ChatOverlayWindow {
     try { if ($H.Tray) { $H.Tray.Visible = $false; $H.Tray.Dispose(); $H.Tray = $null } } catch {}
     try { if ($H.IconHandle -ne [IntPtr]::Zero) { [void][ChatOverlayNative]::DestroyIcon($H.IconHandle); $H.IconHandle = [IntPtr]::Zero } } catch {}
     try { if ($H.CtlWin) { $H.CtlWin.Close() } } catch {}
+    try { if ($H.ChipWin) { $H.ChipWin.Close() } } catch {}
     try { if ($H.Win) { $H.Win.Close() } } catch {}
 }
 
@@ -10383,6 +11385,12 @@ function New-ChatOverlayHostState {
         Timer = $null; ViewKey = $null; Clocks = [System.Collections.Generic.List[object]]::new(); Snap = $null
         ScreenSig = $null; Stop = $false; Restart = $false; ShuttingDown = $false; Menu = @{}
         Con = $null; ConHotkey = $null; ConHotkeyText = $null
+        # the open chip: its window, the row it shows for, and the pointer's
+        # rest, arming and leaving (Update-ChatOverlayChip); the child an
+        # open runs in (Invoke-ChatOverlayOpen)
+        ChipWin = $null; ChipHwnd = [IntPtr]::Zero; ChipText = $null; ChipKey = $null; ChipRow = $null; ChipLine = $null; ChipAt = $null
+        ChipUnder = $null; ChipUnderAt = $null; ChipOverAt = $null; ChipLastPos = $null; ChipSpent = $null
+        ChipArmed = $false; ChipPressed = $false; OpenProc = $null; OpenAt = $null
     }
 }
 
@@ -11167,7 +12175,7 @@ function Start-ChatConsoleIndexSync {
     $C.SyncAt = Get-Date
     $path = $script:ChatqScriptPath
     if (-not $path -or -not (Test-Path -LiteralPath $path)) { return }
-    $q = { param($s) "'" + ([string]$s).Replace("'", "''") + "'" }
+    $q = { param($s) "'" + [System.Management.Automation.Language.CodeGeneration]::EscapeSingleQuotedStringContent([string]$s) + "'" }
     $pre = '$env:CHATQ_OVERLAY=''1''; '
     foreach ($n in 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'CHAT_CODE_USER') {
         $v = [Environment]::GetEnvironmentVariable($n)
@@ -12447,7 +13455,7 @@ function Get-ChatOverlayLaunch {
     command left for it now would be swept away as it takes its lock.
     #>
     param([string]$Path = $script:ChatqScriptPath, [ValidateSet('', 'console')][string]$Open = '')
-    $q = { param($s) "'" + ([string]$s).Replace("'", "''") + "'" }
+    $q = { param($s) "'" + [System.Management.Automation.Language.CodeGeneration]::EscapeSingleQuotedStringContent([string]$s) + "'" }
     $pre = '$env:CHATQ_OVERLAY=''1''; '
     foreach ($n in 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'CHATQ_CLAUDE', 'CHATQ_CODEX', 'CHATQ_GH') {
         $v = [Environment]::GetEnvironmentVariable($n)

@@ -5,6 +5,15 @@ it would take.
 
 ## Deliver into a live chat instead of beside it
 
+**Shelved in 0.6.0** in favour of showing the chat fresh: after a headless
+run the window redraws only its web views, or opens the chat in a tab of its
+own, and the chat's old process is ended so the next message starts from
+disk (spike S29). That covers what this was wanted for - a window that shows
+the run without a whole reload - while the prompt keeps going through the
+headless run, where a permission prompt parks the job, a `CLAUDE.md` edit is
+done, and the prompt is yours rather than another session's. The notes below
+stay for if a live delivery is wanted again.
+
 **Why deferred:** a chat open in a VS Code window shows a chatq run only after
 a reload (since 0.5.0 one the window takes by itself when you are away).
 Delivering the prompt into the open chat would show it running, live, with no
@@ -115,14 +124,23 @@ Open questions, from `codex-rs/tui/src/session_queue_commands.rs`:
 
 ## `liveIdle` default
 
-**Why deferred:** ending an idle chat's process before a run (`liveIdle: stop`)
-should make the next click re-read the transcript. Nobody has watched the panel
-react to it yet, so the default stays `warn`: run, then ask that window to
-reload - by the alert's text, and through the extension's Reload button, which
-since 0.5.0 it presses by itself when nobody is at the PC.
+**Why deferred:** spike S29 showed the side bar keeps a chat's cached view
+even once its process is ended, so ending it alone never shows the run; the
+window has to redraw. Since 0.6.0 the two settings differ only in when the
+process goes:
+- `warn` (the default) runs, then ends the idle process after the run when
+  nobody is at the PC, and on Show it otherwise.
+- `stop` ends it before the run, by the same checks
+  (`Stop-ChatIdleProcess`), and waits, as for a busy chat, while a workflow
+  or background agent is in flight.
 
-**To close:** spike S4 in TESTING.md. If the panel turns out to refresh by
-itself, the reload offer after a run goes too.
+Still open: whether a present user's process may be ended at the run's end
+too. What a side bar does when the chat on screen loses its process - and
+whether an unsent draft survives - has not been watched.
+
+**To close:** S30 item 5 in TESTING.md. If the side bar takes it quietly and
+keeps the draft, end it at run end whoever is at the PC, and drop the `live`
+case.
 
 ## A chat typed into while chatq runs it
 
@@ -134,6 +152,16 @@ chatq's is still working. Both edit the same files at once. The panel's agent
 knows nothing of what chatq's did after the fork, only the files. chatq checks
 for a busy chat before a job starts, and never while it runs. The `started`
 alert says nothing about keeping out of the chat.
+
+What 0.6.0 does about it: Show it and the chip leave a chat alone while a
+queued prompt or any `claude -p` goes into it (`Show-ChatFresh`, outcome
+`running`); the next run into a chat waits 30 s after a request to show it
+(`Get-ChatShowHold`); and a run into a chat a window opened while the run went
+on is followed by a `ran` request, as for a chat held from before
+(`Invoke-ChatqJob`). What is left is someone typing into such a window before
+the run ends - a window that opened the chat mid-run, a startup open more
+than 30 s after the chip's click, or the side bar's idle process under
+`liveIdle: warn`.
 
 **To close:**
 1. Say so up front: when the chat is open in a window, the `started` alert
@@ -176,10 +204,11 @@ ask mid-run.
   parked as needs-input. **Why deferred:** the same as for the phone, above.
   **To close:** the same `--permission-prompt-tool` bridge, answered from
   the console's details pane.
-- **Opening the chat in VS Code** from the console. **Why deferred:**
-  nothing outside VS Code can open a chat in its panel. **To close:** a
-  command in `extension/` that a request file names, as the reload already
-  works.
+- **Opening the chat in VS Code** from the console. **Why deferred:** the
+  console was not in 0.6.0's scope. Since then the way exists: the overlay's
+  open chip writes `data/open-request` and the extension opens the chat by
+  its id. **To close:** a button in the console's details pane that calls
+  `Start-ChatShowFreshProcess` for the picked chat, as the chip does.
 - **The reply as it streams.** The console shows a run's reply once the run
   ends. **Why deferred:** reading a log the watcher holds open works now
   (`Get-ChatqLogEntries` shares with the writer), but redrawing the details
@@ -200,7 +229,8 @@ ask mid-run.
 **Why deferred:** the terminal UI was chosen, and then the overlay's console.
 
 **To close:** grow `extension/`, which already offers the reload after a
-delete, an archive, or a queued run into a chat that window holds:
+delete or an archive, and shows a queued run's chat fresh in the window that
+holds it:
 - a status-bar count of queued jobs and the next send time
 - a chat picker fed from the same index
 
@@ -209,7 +239,9 @@ delete, an archive, or a queued run into a chat that window holds:
 **Why deferred:** `data/reload-request` is one file, and the extension polls it
 every 2 seconds. Two requests inside one poll - a delete right after a queued
 run, say - and the first is overwritten unseen. Rare, and the cost is one
-missed button.
+missed button. Since 0.6.0 the overlay's open chip writes a file of its own,
+`data/open-request`, so a click and a run never overwrite each other; the one
+slot remains within each file.
 
 **To close:** make it a short array with ids, and have the extension keep the
 last few ids it has seen instead of one.
@@ -221,13 +253,95 @@ chat started that have not reported back, but not a Bash command run in the
 background (`backgroundTaskId`). One is as often a dev server or a watcher as a
 build, and a server never reports. Counting them would hold the project
 "active" for as long as it runs, and `-WaitForIdle` would never return. A
-reload still kills a background build with the chat's process.
+reload still kills a background build with the chat's process. So, since
+0.6.0, does showing a chat fresh: `Stop-ChatIdleProcess` ends the chat's
+idle process with `taskkill /T`, dev servers and all, and Reload Webviews
+restarts every Claude process in the window. The open chip's tooltip says
+so; nothing else warns.
 
 **To close:** tell the two apart. A shell the model started with a timeout, or
 one that moved to the background after its timeout ran out (`timedOutAfterMs`
 in its result), is meant to end, so it could count. One started with
 `run_in_background` and no end in sight would not. Before relying on that,
-check the CLI keeps those fields stable.
+check the CLI keeps those fields stable. For the ending itself, a chat's
+process with child processes other than its MCP servers could count as
+`held` - once MCP servers can be told from shells the model started.
+
+## Deletes and new chats through Reload Webviews
+
+**Why deferred:** 0.6.0 shows a queued run's chat with Reload Webviews, but a
+delete, an archive and a new chat still reload the whole window. Nothing has
+shown that Reload Webviews rebuilds the chat history - it might keep a
+deleted chat listed - and the processes it restarts might write a deleted
+chat back as a stub.
+
+**To close:** S30 item 17 in TESTING.md. If the history drops a deleted chat
+with no stub written back, and `claude-vscode.editor.open` shows a chat the
+list does not have yet, move `deleted`, `archived` and `new` requests over.
+
+## A busy judgement per window
+
+**Why deferred:** chatq judges a folder, not a window, so Reload Webviews is
+used only in a window on exactly that one folder. A multi-root window, or one
+on a parent folder, always gets the tab instead, and the overlay's chip does
+not bring such a window forward (`Test-ChatWindowExact` guesses at it from
+window titles).
+
+**To close:** `hostPids` already names the `Code.exe` behind each window's
+Claude processes (S30 item 12 checks it is the extension host). Judge busy
+over the chats whose process has that parent, and any window where none of
+its own chats is working can use Reload Webviews, whatever its folders.
+
+## Ending a chat's process off Windows
+
+**Why deferred:** the parent check that tells a VS Code window's `claude`
+from a terminal's reads the parent through CIM, which is Windows only. Off
+Windows the process is never ended (`kept`), and the window is offered a
+reload instead.
+
+**To close:** a spike on macOS and Linux for what a panel `claude`'s parent
+is called there (`Code Helper (Plugin)` on macOS, most likely), then a parent
+lookup through `ps -o ppid=,comm=`.
+
+## `code -n` behaviour
+
+**Why deferred:** the chip brings a window forward with `code -n <folder>`,
+assumed to focus the window already on that folder and open none. Windows
+may refuse a background process the foreground and only flash the taskbar
+button.
+
+**To close:** only if S30 item 8 shows a second window, or item 6 a flash
+instead of a raise: record what happens, and which VS Code setting
+(`window.openFoldersInNewWindow`) or other route changes it. Nothing that
+moves the pointer, types, or calls a window API.
+
+## A chat no process holds gets no request
+
+**Why deferred:** a queued run writes a `ran` request only when a window's
+process held the chat as the run began. A chat whose process had already
+ended - by itself, or by a Reload Webviews for another chat - can still be
+cached in a side bar, which then shows it stale, and nothing tells that
+window. 0.5.0 was the same.
+
+**To close:** after S30 item 15, write a `ran` request (`oldProcess` none)
+after any run into a chat a window may cache - one whose transcript says
+`claude-vscode` - and let the window decide.
+
+## A `claude -p` that is not chatq's
+
+**Why deferred:** since 0.6.0 a chat's background work is told apart by
+the `entrypoint` its records carry, and a print-mode run's (`sdk-cli`) is
+taken for dead once no print-mode process of the chat is alive
+(`Test-ChatPrintLive`, `Get-ChatBackgroundTasks -SkipPrint`). A queued run
+is also known from the queue. Someone else's `claude -p --resume` into the
+same chat is known only from `~/.claude/sessions/` - and whether a
+print-mode process writes a file there, and with what `kind`, has not been
+watched. If it writes none, such a run going on is invisible: its workflows
+would read as dead, and Show it could end the window's process beside it.
+
+**To close:** S30 item 18. If a print-mode process leaves no registry file,
+treat an `sdk-cli` record written in the last few minutes as a run still
+going on.
 
 ## The overlay: what 0.4.0 left out
 
@@ -238,11 +352,6 @@ check the CLI keeps those fields stable.
   (the one `codex queue` talks to; see the Codex entry above), or treat a
   rollout written in the last minute as working. Copilot waits on something
   that says a chat is running.
-- **Click a row to go to its window.** **Why deferred:** the panel lets clicks
-  through, and a window this tool brings forward would be stealing focus.
-  **To close:** a click while unlocked runs `code <folder>`, so VS Code
-  brings its own window forward. Opening the chat itself needs the extension,
-  and a command that opens a session by id.
 - **Linux.** **Why deferred:** nothing here runs Linux (see CI below), and each
   desktop has its own tray. **To close:** a GTK or tray-icon renderer reading
   the same `overlay.json`. `chatoverlay -Print` is the view until then.
