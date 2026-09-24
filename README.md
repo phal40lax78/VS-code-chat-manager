@@ -21,7 +21,7 @@ Codex and GitHub Copilot Chat — from PowerShell.
 - **Shows every running chat at a glance:** `chatoverlay` keeps a small panel on top — each open chat's project, title, newest prompt and whether it waits on you, with usage live at the top.
 - **Does all of it in a window:** `chatconsole` — pick a chat, write to it, drop files on it, send now or queue it; continue the chats the limit cut off; start new ones; run the queue.
 
-One file, no modules, nothing to build. It was two tools — chatrm and chatq — and is now one, with one index and one install.
+One script and the `src/` folder it loads, no modules, nothing to build. It was two tools — chatrm and chatq — and is now one, with one index and one install.
 
 ## Install
 
@@ -31,11 +31,13 @@ iex (irm https://raw.githubusercontent.com/phal40lax78/VS-code-chat-manager/main
 
 Then type `chat`. The commands are live in the shell you ran that in, and the
 line the installer writes into `$PROFILE` brings them back in every new one. It
-downloads `VS-code-chat-manager.ps1` to `~/Tools/VS-code-chat-manager`; set
-`$env:CHAT_MANAGER_DIR` first to put it somewhere else. The first install builds
-the search index, about 30 seconds.
+downloads the repo as one zip and copies `VS-code-chat-manager.ps1` and `src/`
+to `~/Tools/VS-code-chat-manager`; set `$env:CHAT_MANAGER_DIR` first to put it
+somewhere else. The first install builds the search index, about 30 seconds.
 
-Already have the file? Load it and install:
+Already have the files? Load the script and install. It loads its parts from
+`src/` beside it, so copy the two together; without them it says which are
+missing and loads nothing.
 
 ```powershell
 . "$HOME\Tools\VS-code-chat-manager\VS-code-chat-manager.ps1"
@@ -756,7 +758,8 @@ Everything it writes is in `data/` beside the script — the index, tombstones,
 the archive, the queue and its logs, the board, `config.json`, the
 overlay's `overlay.json` and `overlay-state.json`, and the console's
 `console-state.json` and the files waiting to go in `console/draft/`, and
-the extension's `reload-request` and `open-request`. No
+the extension's `reload-request` and `open-request`, and the installer's
+`download/` while it unpacks. No
 registry keys,
 no AppData, no scheduled task; the one line in `$PROFILE` is the only thing
 outside the folder.

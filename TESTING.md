@@ -23,8 +23,13 @@ behind for poking at. It uses no Pester, no network and no model.
   homes under `tests/.sandbox/` with timestamps relative to now, so nothing goes
   stale. `CHAT_CODE_USER` points the Copilot provider there too — otherwise an
   index sync would read this machine's real Copilot chats.
-- **A private copy.** The script is dot-sourced from a copy in the sandbox, so
-  the run gets its own `data/`.
+- **A private copy.** The script and its `src/` are dot-sourced from a copy
+  in the sandbox, so the run gets its own `data/`.
+- **One scope, many files.** `run-tests.ps1` holds `Check`, `Section` and
+  the summary; the sandbox and every section are files in `tests/sections/`,
+  dot-sourced in the order its list gives, as the one file had them. A
+  section uses what the sandbox and the sections before it set, so none
+  runs on its own. A new section goes in that list.
 - **Seams, so nothing real leaves the sandbox:** no desktop toast
   (`ChatqToastSeam`), no push service (`ChatqNtfySeam`), no idle clock
   (`ChatqIdleSeam`, as if nobody were at the PC), no real background watcher
@@ -52,7 +57,7 @@ behind for poking at. It uses no Pester, no network and no model.
 - **Synthetic streams only** in `tests/fixtures/stream/`. The repo is public, so
   no real transcript goes in it.
 
-What it covers (at 0.6.0, 471 checks in `run-tests.ps1` and 73 in
+What it covers (at 0.6.0, 472 checks in `run-tests.ps1` and 73 in
 `extension-check.js`):
 
 | area | checks |
@@ -74,7 +79,7 @@ What it covers (at 0.6.0, 471 checks in `run-tests.ps1` and 73 in
 | archive | Claude archive → tombstone and index row gone → restore over the window's stub, leftovers and all, tombstone cleared; never over a chat with messages; not while open in a window; Codex through `codex archive` / `unarchive`; `chatuninstall -All` refuses while the archive holds one |
 | reload safety | in a project of its own: all finished → idle; `busy` or `waiting` from `claude agents` → active though the transcript reads finished; a workflow started and not reported → active, where the transcript alone reads finished; the chat's process gone, or the start older than the process → idle; its `<task-notification>` → idle; a background agent, reported, then woken by SendMessage → active again; a background shell → not counted; the reload request carries `busy` either way; a chat written this minute → active, unless it is the one a queued run just wrote (`-Except`) — but that chat busy in a window still counts; a neighbour written 3 minutes ago → active over `quietMinutes`, not over one minute; a folder whose only chat is the one the run wrote → idle, not unjudged; a queued run into that chat, open and idle, with nobody at the PC → a `ran` request with `away` true and `busy` false, the one the window may take by itself |
 | completion | one completer per command: `chatq 3` completes nothing, `chatq` never offers Copilot, subagent chats only with `-All`, hex completes an id, a hex-looking title still completes, a typographic apostrophe quoted; the cycler skips subagents and, for `chatq`, Copilot; a tail left mid-line comes off a `chatq` line |
-| install | one profile line replaces chatrm's and chatq's; uninstall leaves the rest of the profile |
+| install | one profile line replaces chatrm's and chatq's; uninstall leaves the rest of the profile; the script copied without `src/` names the parts missing and defines no command |
 | StrictMode | dot-sourced and used from a `Set-StrictMode -Version Latest` shell — once as the tests run it, once as a real shell loads it (not the watcher, no queue yet, stop on the first error) |
 | runner | stdin byte-exact on 5.1 (Hangul, quotes, `\`, `%`, newlines, no BOM); API key and `CLAUDECODE` kept out; 400 KB of stderr without deadlock; timeout kills the whole tree; argument quoting round-trips through a compiled echo exe |
 | jobs | queueing records cwd and mode; the prompt file is named after the chat; done / limited / needs-input / skipped `-Continue` / busy chat deferred / idle live chat run, with a reload request for that window; 529 mid-run; an interrupted run failed and not resent; `chatqrm -Force` with no watcher |
@@ -95,7 +100,7 @@ What it covers (at 0.6.0, 471 checks in `run-tests.ps1` and 73 in
 | console: pure | When - now first and looked at every 30 s, in turn neither, at/in a time or why not; search by every word in the title or project, any case, with a cap; the line saying what Send will do - soon, a limit and when it sends, a busy chat, behind others, a new chat, a 529, the watcher starting, and a refused login in the CLI's own words or a failed probe, never as "limited until"; each job's words and colour in the queue; the limit the preview names, from a usage window marked limited, else the latest reset of the chats it cut off, and never Claude's for a Codex chat - with nothing read from disk; where it opens - where it was left while it shows, else the main screen's middle; `chatconsole` tells a running overlay, or starts one with `-Open console`; the console hotkey's default, `none`, and nonsense refused |
 | console: Windows window | in its own child `powershell.exe -STA`, shown off every screen and never activated: a window that can take focus and is no tool window nor topmost; the chat index read in a runspace of its own and its rows taken once ready (on the window's thread it had cost 250 ms here each time the index changed); its lists hold the cut-off and open chats, and the search narrows them; a chat picked is the one written to; a file dropped and a screenshot pasted (through the clipboard seam) become chips, a folder dropped is turned away; Send makes the job chatq would - first, sent now, both files moved in, the box and the staging folder emptied, the status saying so; a queued prompt being edited outlives a redraw of the queue; Remove asks, the second half of a double-click is no answer - timed from when the pane has redrawn, since a slow redraw on a busy machine had used up the 0.4 s and let it delete - and a click a second later is; Continue clicked twice queues one; a Codex chat is offered no mode or model and is sent none even when picked before; a theme switch keeps what is typed; closing hides it and keeps the draft in `console-state.json` |
 | overlay: Windows panel | in a child `powershell.exe -STA`, built but never shown: 10 rows draw as 8 and `+2 more · 2 idle`, none as one line; both windows shown the way the host shows them, still off every screen, and their styles read after that - WPF sets `WS_EX_APPWINDOW` again as a window shows: the panel a tool window that never activates and lets clicks through, the buttons' window one that takes clicks but never focus, neither with a taskbar button; seven buttons, the console's among them, hidden until the pointer comes, the grip at the left end and close at the corner; placed by the code the pointer check runs every 120 ms, on a stood-in screen: above the panel, 4 units off and flush with its right, where they were placed before they first showed, still there after more passes (fed their own rect where their size belonged, they had jumped between two spots each pass - the blink this caught), and moved up as the settings box opens above them, never over the panel; the refresh icon turns while an ask is out and stops after; switching to light redraws the frame and keeps the settings box open; the slider itself moved sets the window's opacity, and the next pointer pass saves it to `config.json`; collapsed, one line of counts and usage and a chevron that offers to expand; usage drawn as a line - name, the windows, when it is from - and as bars, the time under the name, once the settings box says so; while the buttons are hidden, the spot the pointer check counts is the one they then show on, with the gap to the panel |
-| overlay: macOS panel | `tests/overlay-mac-check.js`: the JXA pulled out of the script, pure ASCII, free of `?.` and `??`, compiled; its countdowns, bars, lines, row cap, prompt toggle, unlocked hint, commands taken once and only when newer than the panel, the menu bar count; the theme chosen from the config and the OS, both looks with every colour, usage as a line a provider ending in its time, or as bars when set; opacity held to 0.3-1 |
+| overlay: macOS panel | `tests/overlay-mac-check.js`: the JXA pulled out of `src/overlay-mac.ps1`, pure ASCII, free of `?.` and `??`, compiled; its countdowns, bars, lines, row cap, prompt toggle, unlocked hint, commands taken once and only when newer than the panel, the menu bar count; the theme chosen from the config and the OS, both looks with every colour, usage as a line a provider ending in its time, or as bars when set; opacity held to 0.3-1 |
 
 ## CI
 
@@ -488,5 +493,12 @@ Each is in the table above where a test can hold it.
       underneath lands there. Drag an editor tab or a file across it, pausing
       there with the button held: nothing comes up, and the drop lands in the
       window underneath.
+- **S31, the one-line installer from GitHub's zip.** Checked here only in
+  Windows PowerShell 5.1, against a local zip laid out as GitHub's archive
+  is - one `VS-code-chat-manager-main/` folder - with a scratch profile and
+  empty chat homes. After the push that brings `src/`, with
+  `$env:CHAT_MANAGER_DIR` on an empty folder: it prints `downloading`, the
+  folder holds the script and every part in `src/`, `data/download/` is
+  gone, and `chat` works in that shell. In PowerShell 7 too.
 - **macOS and Linux** are untested; the Unix branches are written but have never
   run.

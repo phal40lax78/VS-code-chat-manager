@@ -1,5 +1,5 @@
 // Checks the macOS overlay's JXA without a Mac: lifts the here-string out of
-// VS-code-chat-manager.ps1, compiles it, and drives its pure part (CO) - the
+// src/overlay-mac.ps1, compiles it, and drives its pure part (CO) - the
 // countdowns, the lines the panel draws, which commands it takes. Everything
 // that touches Cocoa sits in run(), which only osascript on a Mac can run;
 // TESTING.md has the checklist for that.
@@ -16,7 +16,7 @@ const check = (name, ok) => {
     if (!ok) failed++;
     console.log((ok ? '  ok    ' : '  FAIL  ') + name);
 };
-const ps1 = fs.readFileSync(path.join(__dirname, '..', 'VS-code-chat-manager.ps1'), 'utf8');
+const ps1 = fs.readFileSync(path.join(__dirname, '..', 'src', 'overlay-mac.ps1'), 'utf8');
 const m = ps1.match(/\$script:ChatOverlayJxa = @'\r?\n([\s\S]*?)\r?\n'@/);
 check('the JXA here-string is in the script', !!m);
 const js = m ? m[1] : '';

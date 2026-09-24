@@ -83,6 +83,15 @@
   its 10-minute sync, a virus scan - fails the swap, and a restored or new
   chat then stayed missing from Tab until the next sync. The swap now tries
   five times over about 0.4 s, then warns.
+- **Layout: the script and `src/`.** The one file had passed 13,000 lines.
+  `VS-code-chat-manager.ps1` now loads fourteen parts from `src/`, in the
+  order the file had them; nothing they do changed, and the profile line,
+  the watcher and the overlay still load the same path. Copying it by hand
+  means copying `src/` with it; without a part it says which and loads
+  nothing. The one-line installer downloads the repo as one zip, since
+  files fetched one by one from raw.githubusercontent.com can come from two
+  versions for minutes after a push. The self-test is split the same way,
+  into `tests/sections/`.
 
 ## 0.5.0 — chatq in a window
 

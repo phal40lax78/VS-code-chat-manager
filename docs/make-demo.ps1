@@ -37,6 +37,7 @@ $codexHome = Join-Path $sb 'codex'
 $proj = Join-Path $sb 'work\parser'
 foreach ($d in $claudeHome, $codexHome, $proj, (Join-Path $sb 'tool'), (Join-Path $sb 'code-user')) { $null = New-Item -ItemType Directory -Path $d -Force }
 Copy-Item -LiteralPath (Join-Path $root 'VS-code-chat-manager.ps1') -Destination (Join-Path $sb 'tool')
+Copy-Item -LiteralPath (Join-Path $root 'src') -Destination (Join-Path $sb 'tool') -Recurse
 $env:CLAUDE_CONFIG_DIR = $claudeHome
 $env:CODEX_HOME = $codexHome
 $env:CHAT_CODE_USER = Join-Path $sb 'code-user'
