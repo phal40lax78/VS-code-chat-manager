@@ -1,5 +1,74 @@
 # Changelog
 
+## 0.4.0 — every running chat at a glance
+
+- **`chatoverlay`** keeps a small panel in the top-right corner, above other
+  windows. It shows every open Claude chat: its project, title, newest prompt,
+  and a dot for what it is doing. Amber is waiting on you and goes to the top,
+  green is working, grey is idle. A chat open in two windows is one row.
+  Queued prompts appear on their chat's row, or as a purple row of their own
+  when that chat is not open.
+- **A slash command is the newest thing sent.** Claude Code does not count one
+  as a prompt: after `/compact` its own record of the last prompt still names
+  the one before. So the overlay reads the command from the transcript. While
+  `/compact` runs nothing on disk names it yet, and the row says a command is
+  running instead of showing the older prompt as current.
+- **Usage at the top, live.** A line each for Claude, Codex and Copilot, as
+  the collapsed panel has it, ending with when that figure is from - or, from
+  the settings box or `-UsageView bars`, a bar in the server's own colour and
+  a reset countdown per window. Claude's five-hour and weekly windows, and one
+  model's weekly window once used; Codex's; Copilot's monthly quotas. Claude
+  Code caches its figure only when a window opens its usage view, and here
+  that copy read 55% while the account stood at 79%. So the overlay asks
+  Claude's usage endpoint itself: every five minutes while a chat works, every
+  fifteen while all are idle, as a window resets, and on the refresh button.
+  It uses the login Claude Code saved, reads the token for that one request,
+  and never stores, logs or refreshes it. An expired login or a refusal falls
+  back to the cached figure, marked with its age. `-LiveUsage off` keeps to
+  the cache.
+- **Copilot's quota through the GitHub CLI.** VS Code keeps only the plan on
+  disk, so the overlay runs `gh api copilot_internal/user` - what VS Code's
+  Copilot status reads - every fifteen minutes and on refresh. `gh` keeps its
+  own login and hands the overlay no token. No `gh`, or one not logged in,
+  means no Copilot line; `-CopilotUsage off` stops asking.
+- **It keeps to the endpoint's own wait.** Asked once a minute, the endpoint
+  refused after about an hour and said to wait 48 minutes. So the overlay now
+  asks every five, and when refused it waits as long as `Retry-After` says,
+  showing `retry 11:22`. The refresh button does not ask inside
+  that wait. The last live figure and the wait survive a restart.
+- **Out of the way.** It never takes focus and clicks go through it. The tray
+  dot, in the most urgent chat's colour, shows and hides it and has a menu.
+  **Ctrl+Alt+Shift+O** unlocks it for dragging (`-Hotkey` changes the key),
+  and it locks itself two minutes after the pointer leaves.
+- **Buttons on its top edge when you point at it,** outside the panel and
+  flush with its top-right corner: a grip to drag it by, collapse to one line
+  (counts and usage), refresh usage, a settings box, hide to the tray, and
+  close. Refresh turns while it asks and then says when Claude answered;
+  Codex's figure is never asked for - it moves when Codex runs - and says it
+  is from Codex's last run, with its date once over a week old. The settings
+  box has an opacity slider, the theme (Dark, Light, or System to follow
+  Windows' light or dark mode), and usage as lines or bars. The buttons are a
+  small window of their own, so the panel never takes a click. The choices
+  are kept in `config.json`; `chatoverlay -Theme`, `-Opacity`, `-UsageView`,
+  `-Collapse` and `-Refresh` do the same from a shell.
+- **Cheap.** One hidden Windows PowerShell, about 160 MB and under 0.1% CPU on
+  this machine with ten chats open. It re-reads a file only once it changed,
+  and a transcript only from where it stopped: the first look at a 20 MB chat
+  reads its last 256 KB, where Claude Code writes each turn's prompt and title.
+- **`chatoverlay -AutoStart on`** brings it back with every new shell, as the
+  watcher comes back. Nothing is registered with the OS. `chatinstall` restarts a
+  running overlay on the new copy, and `chatuninstall` stops it.
+- **`chatoverlay -Print`** draws the same in the console. That is Linux's only
+  view.
+- **macOS, untested:** a floating panel and a `CQ` menu bar item, drawn by
+  JavaScript for Automation, so nothing needs installing. Live usage is off
+  there by default, since reading the login from the keychain asks for a
+  password.
+- **The watcher reads the same session list.** When `claude agents` cannot
+  run, its fallback now reads `~/.claude/sessions/` the overlay's way. It also
+  keeps what a chat is waiting for. A macOS-style `procStart` no longer rejects
+  every session as a reused pid.
+
 ## 0.3.1 — no "safe to reload" while another chat is working
 
 - **A chat running a workflow or a background agent is no longer called

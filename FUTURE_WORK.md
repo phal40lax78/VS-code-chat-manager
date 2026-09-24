@@ -132,6 +132,83 @@ in its result), is meant to end, so it could count. One started with
 `run_in_background` and no end in sight would not. Before relying on that,
 check the CLI keeps those fields stable.
 
+## The overlay: what 0.4.0 left out
+
+- **Codex and Copilot chats as live rows.** **Why deferred:** only Claude Code
+  writes a list of what runs (`~/.claude/sessions/`). Codex's panel keeps a
+  rollout open while a thread is shown, and Copilot records nothing at all.
+  **To close:** for Codex, ask the shared app-server daemon for its threads
+  (the one `codex queue` talks to; see the Codex entry above), or treat a
+  rollout written in the last minute as working. Copilot waits on something
+  that says a chat is running.
+- **Click a row to go to its window.** **Why deferred:** the panel lets clicks
+  through, and a window this tool brings forward would be stealing focus.
+  **To close:** a click while unlocked runs `code <folder>`, so VS Code
+  brings its own window forward. Opening the chat itself needs the extension,
+  and a command that opens a session by id.
+- **Linux.** **Why deferred:** nothing here runs Linux (see CI below), and each
+  desktop has its own tray. **To close:** a GTK or tray-icon renderer reading
+  the same `overlay.json`. `chatoverlay -Print` is the view until then.
+- **Full screen.** **Why deferred:** a game in exclusive full screen draws
+  over any window, and that is expected. **To close:** hide the panel while
+  `SHQueryUserNotificationState` says full screen or presentation mode.
+- **The macOS panel has never run.** **Why deferred:** no Mac here. **To
+  close:** checklist S24 in TESTING.md, and `osacompile` on a `macos-latest`
+  CI leg.
+- **A hotkey on macOS.** **Why deferred:** a global key needs Carbon's
+  `RegisterEventHotKey` or an accessibility permission, neither reachable
+  cleanly from JXA. **To close:** only if the menu bar item turns out not to
+  be enough.
+- **The panel's buttons on macOS.** Windows has a row of buttons on the
+  panel's top edge when the pointer is near it: grip, collapse, refresh,
+  settings, hide, close. The Mac panel has only its menu bar item, and `-Theme`, `-Opacity`
+  and `-Refresh` from a shell; it has no collapsed view. **Why deferred:** the
+  Mac panel has never run, and more untested Cocoa would not help that.
+  **To close:** after S24, a second small `NSPanel` beside the first, the
+  way Windows uses a second window, shown from a tracking area on the panel;
+  the settings and collapse as menu items, which JXA can already make.
+- **Copilot usage without the GitHub CLI.** Copilot's line needs `gh`,
+  logged in. **Why deferred:** VS Code writes only the plan to disk
+  (`chat.setupContext` in `globalStorage/state.vscdb`, e.g.
+  `free_limited_copilot`), never the quota; the figures come from GitHub
+  with VS Code's GitHub login, which sits encrypted in VS Code's own secret
+  store - not something another program should pry out. **To close:** if VS
+  Code starts keeping the quota snapshot in its state, read it there.
+- **Codex usage on demand.** Codex's figure is the `rate_limits` snapshot
+  Codex writes into its own rollout during a run, so the refresh button
+  cannot move it: it is as old as Codex's last run, and the panel says so.
+  **Why deferred:** a fresh figure means asking OpenAI with the login Codex
+  saved in `~/.codex/auth.json`, through an endpoint that is not documented
+  and has not been looked into here. **To close:** find what Codex's own
+  `/status` asks, and treat that token as the Claude one is treated - read
+  for the one request, never stored, logged or refreshed - with the same
+  waits on a refusal.
+- **Usage without asking the endpoint.** Claude Code hands a status-line
+  command `rate_limits.five_hour` / `seven_day` (`used_percentage`,
+  `resets_at`) after every reply (code.claude.com/docs/en/statusline). That
+  is current to the turn and costs no request, where the endpoint refuses
+  when asked often. **Why deferred:** it means adding a command to
+  `~/.claude/settings.json` - or wrapping one already there - and status
+  lines are reported not to run in the VS Code extension's chat panel, which
+  is where these chats live. **To close:** confirm whether the extension runs
+  `statusLine`; if it does, an opt-in `chatoverlay -StatusLine on` that
+  installs a one-line command writing `data/usage-statusline.json`, read by
+  the collector ahead of the endpoint, and taken out again on `off` and on
+  uninstall.
+- **Naming a command while it runs.** While `/compact` runs, the row says only
+  that a command is running. **Why deferred:** Claude Code writes the command
+  down once it ends; until then its transcript holds a queue record with no
+  text, and nothing else on disk names it. **To close:** if a later Claude
+  Code puts the text in that record, or in `~/.claude/sessions/<pid>.json`,
+  read it there.
+- **More than one Claude account.** **Why deferred:** the overlay reads the
+  one config dir it was started with (`CLAUDE_CONFIG_DIR`). **To close:** an
+  `overlay.claudeHomes` list, a row group and a usage line per account.
+- **The collector on a thread of its own.** **Why deferred:** a pass costs
+  40-60 ms and the usage request never blocks, so the panel has not stuttered.
+  **To close:** only if `data/logs/overlay.log` or use shows it does: a
+  background runspace for the collector, handing snapshots to the UI thread.
+
 ## Copilot Chat
 
 **Why deferred:** there is no CLI that resumes a Copilot chat headless. chatrm

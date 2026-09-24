@@ -18,6 +18,7 @@ Codex and GitHub Copilot Chat — from PowerShell.
 - **Queue prompts while the usage limit is hit.** At the reset each chat is resumed in turn, sent its prompt, and run to the end.
 - **Waits out `API Error: 529 Overloaded`** by watching status.claude.com, and resumes as soon as Claude Code is back.
 - **Tells you how it went:** a desktop toast, your phone through Join or ntfy, or a command of your own.
+- **Shows every running chat at a glance:** `chatoverlay` keeps a small panel on top — each open chat's project, title, newest prompt and whether it waits on you, with usage live at the top.
 
 One file, no modules, nothing to build. It was two tools — chatrm and chatq — and is now one, with one index and one install.
 
@@ -50,7 +51,7 @@ this one — both define the same commands. The commands keep their names.
 **Updating:** run the one-liner again. It says `updated 0.2.0 -> 0.3.0` or
 `unchanged`; an `unchanged` right after a push is the CDN serving the old copy
 for a few minutes. A background watcher that is running switches to the new
-copy after its current job.
+copy after its current job, and a running overlay restarts on it at once.
 
 ## Contents
 
@@ -59,6 +60,7 @@ copy after its current job.
 - [Archive and restore](#archive-and-restore)
 - [Queue prompts for when the limit resets](#queue-prompts-for-when-the-limit-resets)
 - [Alerts](#alerts)
+- [The overlay](#the-overlay)
 - [Chats open in VS Code, and the extension](#chats-open-in-vs-code-and-the-extension)
 - [Codex](#codex)
 - [Where it looks, and what it writes](#where-it-looks-and-what-it-writes)
@@ -83,6 +85,7 @@ copy after its current job.
 | `chatqrun [<n>] [-Now] [-First] [-Stop]` | requeue *n*, move it up, stop waiting and try now, stop the watcher |
 | `chatqlog <n> [-Raw]` | what a run did |
 | `chatqnotify` | desktop, phone and command alerts |
+| `chatoverlay [-Stop] [-Collapse] [-Refresh] [-Theme dark\|light\|system] [-Print]` | every open chat, the queue and live usage in a panel that stays on top |
 | `chatproviders` / `chatindex` | which tools were found / rebuild the index |
 | `chatinstall` / `chatuninstall [-All]` | add to, or drop from, your profile |
 | `chat` | cheat sheet |
@@ -374,6 +377,135 @@ Every title starts `chatq ·`, so a Tasker profile can filter on it. Alerts also
 go to `data/logs/alerts.log`. What they carry — the chat title, the end of the
 reply — passes through the push service's servers.
 
+## The overlay
+
+```powershell
+chatoverlay                 # start it (or show it again)
+chatoverlay -Stop
+chatoverlay -AutoStart on   # back with every new shell, as the watcher comes back
+chatoverlay -Print          # the same, once, in this console
+```
+
+![The overlay: a usage line for Claude - five-hour window at 100% in red, weekly at 46% - and one for Copilot's chat and code quotas, each ending with the time of its figure; then four chats with their newest prompt beneath - one amber and waiting on input, one green and working, each carrying a queued prompt, one idle, and a purple queued prompt for a chat that is not open](docs/demo-overlay.png)
+
+A small panel in the top-right corner that stays above other windows:
+
+- **Usage at the top, live.** A line each for Claude, Codex and Copilot, as the
+  collapsed panel has it: `Claude  5h 41% · week 74% · Fable week 2%   22:22`.
+  Claude's five-hour and weekly windows, and one model's weekly window once it
+  is used; Codex's weekly (and five-hour, on a paid plan); Copilot's monthly
+  chat and code quotas, or premium requests on a paid plan. A percent turns
+  amber or red as Claude's own usage view would colour it, and each line ends
+  with when its figure is from. The settings box switches to **bars** - a bar
+  and a reset countdown per window, the same few words under each name - and
+  back.
+- **Every open Claude chat:** project, title and newest prompt, with a dot for
+  what it is doing. Amber is waiting on you (a permission prompt, say) and goes
+  to the top; green is working; grey is idle. A chat open in two windows is one
+  row. A slash command counts as the newest thing sent. Claude Code writes
+  `/compact` down only once it ends, so while it runs the row says a command
+  is running rather than showing the prompt before it.
+- **The queue.** A queued prompt rides on its chat's row (`#3 sends 13:01`), or
+  has a purple row of its own when that chat is not open; blue while it runs.
+  Prompts queued with no watcher running are called out.
+
+**It stays out of the way.** It never takes focus, and clicks go through it.
+Rest the pointer on it for a moment and a row of buttons appears on its top
+edge, outside the panel, flush with its top-right corner - or under the
+panel when it sits too near the top of the screen for them. A pointer just
+passing over on its way to the window underneath brings up nothing. Left to
+right, with × at the corner as on any window:
+- **the grip** (six dots): hold it and drag to move the panel;
+- **collapse** (a chevron): folds the panel to one line - how many chats wait,
+  work or sit idle, and Claude's usage - and back;
+- **refresh** (a circular arrow): asks Claude and Copilot for usage now. It
+  turns while it asks, and the end of Claude's line reads `asking...`, then
+  `checked 22:22:01` - or why it did not ask. Codex has nothing to ask: its
+  figure is what Codex wrote on its last run (`last run Mar 13`), so it moves
+  only when Codex runs;
+- **settings** (two sliders): a box with opacity on a slider, the theme as
+  Dark, Light or System (System follows Windows' own light or dark mode), and
+  usage as Lines or Bars;
+- **hide to tray** (an arrow onto a line): click the tray dot to show it again;
+- **×**: closes the overlay. `chatoverlay` starts it again.
+
+The panel itself never takes a click; the buttons are a small window of their
+own, and they go when the pointer leaves. What you pick in the settings box
+is kept in `config.json`, like a setting made with `chatoverlay`; a collapsed
+panel stays collapsed across restarts.
+
+**Ctrl+Alt+Shift+O** or the tray dot's menu unlocks the whole panel to drag:
+it gets a blue edge, and it locks itself again two minutes after the pointer
+leaves. The tray dot takes the colour of the most urgent chat. Left-click it to
+hide or show the panel; right-click it for Lock, Hide, Collapse, Refresh
+usage, Move to top right and Quit. `chatoverlay -Unlock`, `-Lock`, `-Reset`,
+`-Collapse`, `-Expand` and `-Refresh` do the same from a shell.
+
+**How live "live" is.** Claude Code caches its usage in `~/.claude.json`, but
+only when a window opens its usage view. So that copy can be hours old: on the
+machine this was written on it said 55% while the account stood at 79%. The
+overlay asks Claude's usage endpoint itself, the same one `/usage` asks:
+- every five minutes while any chat is working;
+- every fifteen while all are idle, since nothing moves the figure then;
+- straight after a window resets;
+- when you press refresh, or run `chatoverlay -Refresh`.
+
+The endpoint is meant for a `/usage` opened now and then. Asked once a minute,
+it refused after about an hour, and then said to wait 48 minutes. When it
+says how long to wait, the overlay waits that long and says so (`13:25, retry
+14:13` at the end of Claude's line), refresh or not, since asking early only
+earns another refusal. The last live figure and that wait survive a
+restart. Meanwhile it shows the newest figure it has: its own last answer, or
+Claude Code's cached one, with its age.
+
+It uses the login Claude Code saved. The token is read for that one request and
+is never stored, logged or refreshed: a refresh would sign Claude Code out. If
+the login has expired, the overlay shows the cached figure with its age until
+Claude Code next runs and renews it. `chatoverlay -LiveUsage off` keeps it to
+the cache. Codex's figure comes from its newest session file, which it rewrites
+every turn.
+
+Copilot's comes from GitHub, through the GitHub CLI: `gh api
+copilot_internal/user`, the answer VS Code's own Copilot status shows, every
+fifteen minutes and on refresh. `gh` keeps its own login, so the overlay never
+sees a token. With no `gh`, or one not logged in (`gh auth login`), there is
+simply no Copilot line; `chatoverlay -CopilotUsage off` stops asking. That
+endpoint is GitHub's own, not a documented one, so it may change under it.
+
+**What it costs.** One hidden `powershell.exe`, about 160 MB and under 0.1% CPU.
+It reads a file again only once that file has changed, and a transcript only from
+where it last stopped. The first look at a 20 MB chat reads the last 256 KB.
+
+Settings live in `data/config.json` under `overlay`. `chatoverlay -Theme`,
+`-Opacity`, `-UsageView`, `-Hotkey`, `-AutoStart`, `-LiveUsage` and
+`-CopilotUsage` set theirs and apply them at once; after editing the file by
+hand, `chatoverlay -Stop` and start it again.
+
+| key | default | |
+|---|---|---|
+| `width` | 380 | pixels, 260–800 |
+| `maxRows` | 8 | the rest become `+3 more · 2 idle` |
+| `opacity` | 0.94 | 0.3–1; the settings box's slider, or `chatoverlay -Opacity 85` |
+| `theme` | `dark` | `light`, or `system` to follow the OS; `chatoverlay -Theme system` |
+| `prompts` | `true` | `false` hides the prompt lines, for screen sharing |
+| `hotkey` | `Ctrl+Alt+Shift+O` | `chatoverlay -Hotkey Ctrl+Win+F9`; `none` for no key |
+| `autoStart` | `false` | `chatoverlay -AutoStart on` |
+| `usageView` | `lines` | `bars` for a bar and reset countdown per window; the settings box, or `chatoverlay -UsageView bars` |
+| `liveUsage` | `true`, `false` on macOS | `chatoverlay -LiveUsage off` |
+| `copilotUsage` | `true` | `chatoverlay -CopilotUsage off`: no Copilot line, and `gh` never run for it |
+| `usageSeconds` | 300 | how often usage is asked while a chat works (three times that while idle, and for Copilot); 60 at least |
+
+- **Only Claude chats get live rows.** Codex and Copilot write nothing that says a
+  chat is open or working, so theirs show only as queued prompts.
+- **A game in exclusive full screen** draws over it, as it does over anything.
+- **macOS** (untested): a floating panel and a `CQ` menu bar item, with no
+  hotkey, no buttons beside the panel and no collapsed view; the menu has
+  Unlock, Hide, Move and Quit, and `-Theme`, `-Opacity` and `-Refresh` apply
+  there too. Live usage reads the login
+  from the keychain there, and the first read by another program asks for your
+  password, so it stays off until `chatoverlay -LiveUsage on`.
+- **Linux:** `chatoverlay -Print`.
+
 ## Chats open in VS Code, and the extension
 
 The panel shows one chat, but each VS Code window keeps a `claude` process alive
@@ -424,12 +556,15 @@ queued run, which can finish at any hour with another chat in the window busy.
 | Copilot Chat | `<Code user>/workspaceStorage/<hash>/chatSessions/<uuid>.json` |
 | Codex | `~/.codex/sessions/**/rollout-*.jsonl` (`CODEX_HOME` honoured) |
 | the CLIs | `claude` / `codex` on PATH, else the copy bundled in the VS Code extension; `CHATQ_CLAUDE` / `CHATQ_CODEX` override |
+| running chats (overlay) | `~/.claude/sessions/<pid>.json`, the list Claude Code keeps of what runs; the `<pid>.<hash>.key` beside each is never opened |
+| usage (overlay) | Claude's usage endpoint, with the login in `~/.claude/.credentials.json` (the keychain on macOS); the `cachedUsageUtilization` block of `~/.claude.json` as the fallback. Copilot's through `gh api copilot_internal/user` - `gh` with its own login (`CHATQ_GH` names another `gh`) |
 
 `<Code user>` is `%APPDATA%/Code/User` on Windows, `~/Library/Application
 Support/Code/User` on macOS, `~/.config/Code/User` on Linux.
 
 Everything it writes is in `data/` beside the script — the index, tombstones,
-the archive, the queue and its logs, the board, `config.json`. No registry keys,
+the archive, the queue and its logs, the board, `config.json`, and the
+overlay's `overlay.json` and `overlay-state.json`. No registry keys,
 no AppData, no scheduled task; the one line in `$PROFILE` is the only thing
 outside the folder.
 
@@ -466,7 +601,7 @@ As of September 2026 — corrections welcome.
 ## Uninstall
 
 ```powershell
-chatuninstall        # drop the profile line, stop the watcher, keep the folder
+chatuninstall        # drop the profile line, stop the watcher and the overlay, keep the folder
 chatuninstall -All   # and delete the folder - not while the archive holds a chat
 ```
 
@@ -474,6 +609,8 @@ chatuninstall -All   # and delete the folder - not while the archive holds a cha
 
 - Windows PowerShell 5.1 or PowerShell 7. macOS and Linux need PowerShell 7, and
   are untested so far.
+- The overlay's panel runs in Windows PowerShell, which every Windows has, even
+  when started from PowerShell 7: WPF needs it.
 - Claude Code 2.1.259 or later for the queue (`--permission-prompts none`).
 
 ## Sponsorship

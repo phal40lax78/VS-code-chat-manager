@@ -6,6 +6,7 @@
 powershell -NoProfile -ExecutionPolicy Bypass -File tests\run-tests.ps1   # Windows PowerShell 5.1
 pwsh -NoProfile -File tests/run-tests.ps1                                  # PowerShell 7
 node tests/extension-check.js                                              # the VS Code extension
+node tests/overlay-mac-check.js                                            # the overlay's macOS panel (JXA)
 ```
 
 The exit code is the number of failed checks, and `-Keep` leaves the sandbox
@@ -26,7 +27,17 @@ behind for poking at. It uses no Pester, no network and no model.
 - **Seams, so nothing real leaves the sandbox:** no desktop toast
   (`ChatqToastSeam`), no push service (`ChatqNtfySeam`), no idle clock
   (`ChatqIdleSeam`, as if nobody were at the PC), no real background watcher
-  (`ChatqSpawn`), no ghost-watch events (`ChatNoGhostWatch`).
+  (`ChatqSpawn`), no ghost-watch events (`ChatNoGhostWatch`). For the overlay:
+  no real overlay process (`ChatOverlaySpawn`), no usage endpoint
+  (`ChatOverlayUsageSeam`), no GitHub CLI - `CHATQ_GH` names one that does
+  not exist, for the child processes too, since `gh`'s login is the
+  machine's and no sandbox reaches it; `ChatOverlayCopilotSeam` stands in for
+  its answer - no real Windows light/dark setting
+  (`ChatOverlaySystemDarkSeam`), a screen of the test's own off every real one
+  for the panel's buttons (`ChatOverlayWorkAreaSeam`), and no real process
+  list behind the session
+  registry (`ChatqAliveSeam`) - except in the checks against a real `node`
+  process, which run only where node is installed.
 - **Synthetic streams only** in `tests/fixtures/stream/`. The repo is public, so
   no real transcript goes in it.
 
@@ -57,6 +68,13 @@ What it covers:
 | jobs | queueing records cwd and mode; the prompt file is named after the chat; done / limited / needs-input / skipped `-Continue` / busy chat deferred / idle live chat run, with a reload request for that window; 529 mid-run; an interrupted run failed and not resent; `chatqrm -Force` with no watcher |
 | status | the board folds prompts; Hangul cell widths; a zero-width cell; Join URL length and device routing |
 | extension | `tests/extension-check.js`: which window a request is for (not the `-Mobile` sibling), the wording per kind and while a chat works, `autoReload` never while one works or after a queued run, the file watched |
+| overlay: transcripts | the newest prompt and title of a 3 MB chat from its last 256 KB, counted in bytes read; read back past a 3 MB line when no record follows it; a budget stops the search and keeps the title found; a `last-prompt` that is machinery falls back to the real prompt; a Hangul prompt cut by a block edge put back together; a rename wins over the generated title; a transcript that grew read only from where it was; `/compact` the way it goes - while it runs, the dequeue with no record after it marked pending; once written, the command newer than the prompt before, not the compaction's summary; kept while only the old `last-prompt` is written again, 100 KB on; replaced by the same words as the prompt before, typed again (by its timestamp), and by the next prompt; a prompt after `/model opus[1m]` wins, the arguments read; a skill the model loads is no command; a working row on a pending command says so, an idle one does not |
+| overlay: sessions | `sessions/<pid>.json` read and the `.key` beside it never opened (held locked, so a read would fail); a dead entry, a new chat tab with no transcript, and chatq's own `claude -p` runs get no row; one chat in two windows is one row at the more urgent state, and one window closing leaves the other; the watcher's fallback reads the same registry with `waitingFor`; against a real process: matching start → alive, `procStart` an hour off, a reused pid and another machine's entry → not, a macOS date `procStart` not held against it |
+| overlay: rows | waiting oldest first, then working, running, idle newest first, queued in queue order; a prompt queued for an open chat rides on its row; a job row carries its first line; the snapshot's counts match its rows |
+| overlay: usage | the live answer's 5 h, week, and a model's week once used, in the server's colours; not asked again on the next pass; a window whose reset passed reads empty and is asked about at once; a 401 falls back to the cached figure and waits 10 minutes, a 429 with no Retry-After 5 and says when it asks again; the refresh button asks at once after that, but not twice in 20 s; what a click did is said at the end of Claude's usage - asking, then when Claude answered, gone 10 s on, or why it did not ask - and reaches overlay.json on the next pass; an old Codex figure says it is from Codex's last run; each provider's line ends in when its figure is from or what is happening to it (asking, checked, cached, last run, retry at the named wait) - under its name as bars - and in neither view does any of that take a row of its own, and a time over a week old shows its date (`Mar 13`, not the weekday that read six months as last Friday); Copilot's quota read from GitHub's answer on the free plan (chat, code) and a paid one (premium alone), a fraction of a percent kept as one (`[Math]::Max(0, 0.1)` had rounded it away), a Copilot line from gh's answer, and none - quietly - when gh is not logged in or not there; Retry-After read from a real `HttpResponseMessage` as seconds (2867, the figure the live endpoint sent) or as a date; a 429 with Retry-After waits that long, says `rate-limited until`, and the refresh button keeps to it; the panel's note says so over the last live figure too; a live figure 16 minutes old is not stale while idle asks are 15 apart, a cached one is; with live usage off, only the cache shows; a restart restores the last live figure and that wait from `overlay.json` and does not ask; an expired login is not used; a failed ask is logged and the token appears in no file; a machine with no Codex still gets Claude's |
+| overlay: control | a running overlay is shown, never started twice; `-Stop`, `chatinstall` and `chatuninstall` reach it; commands taken once, a stale one dropped, a pass with none queues none; the collector loop ends on `restart`; `overlay.json` BOM-less with Hangul, schema 1, epoch ms; `-Unlock` / `-Reset` / `-Collapse` wait in `overlay-state.json` while it is not running, and `-Expand` undoes it; `-AutoStart on` read at shell start; hotkeys parsed and nonsense refused; `-UsageView` and `-CopilotUsage` kept, lines by default and for a view it does not know; `-Theme` and `-Opacity` kept, a percent read as one, an opacity out of range refused, an unknown theme drawn dark; `system` following the (stood-in) Windows setting; both palettes name every colour; the buttons' window on the panel's top edge flush with its right, under the panel when the screen's top leaves no room, kept on the screen side to side (on a second screen too), and left on its side when the box opens where only the buttons fit; the panel's default spot leaves room above it for them; the buttons come only after the pointer rests 350 ms on the panel, stay while it is on either or a button is held or a drag runs, and go 700 ms after it leaves; placement back onto a screen; the launch line (`powershell.exe -STA`, `CHATQ_OVERLAY`); the tray tooltip under 64 characters; reset countdowns |
+| overlay: Windows panel | in a child `powershell.exe -STA`, built but never shown: 10 rows draw as 8 and `+2 more · 2 idle`, none as one line; both windows shown the way the host shows them, still off every screen, and their styles read after that - WPF sets `WS_EX_APPWINDOW` again as a window shows: the panel a tool window that never activates and lets clicks through, the buttons' window one that takes clicks but never focus, neither with a taskbar button; six buttons, hidden until the pointer comes, the grip at the left end and close at the corner; placed by the code the pointer check runs every 120 ms, on a stood-in screen: above the panel, 4 units off and flush with its right, where they were placed before they first showed, still there after more passes (fed their own rect where their size belonged, they had jumped between two spots each pass - the blink this caught), and moved up as the settings box opens above them, never over the panel; the refresh icon turns while an ask is out and stops after; switching to light redraws the frame and keeps the settings box open; the slider itself moved sets the window's opacity, and the next pointer pass saves it to `config.json`; collapsed, one line of counts and usage and a chevron that offers to expand; usage drawn as a line - name, the windows, when it is from - and as bars, the time under the name, once the settings box says so |
+| overlay: macOS panel | `tests/overlay-mac-check.js`: the JXA pulled out of the script, pure ASCII, free of `?.` and `??`, compiled; its countdowns, bars, lines, row cap, prompt toggle, unlocked hint, commands taken once and only when newer than the panel, the menu bar count; the theme chosen from the config and the OS, both looks with every colour, usage as a line a provider ending in its time, or as bars when set; opacity held to 0.3-1 |
 
 ## CI
 
@@ -64,7 +82,7 @@ What it covers:
 PowerShell 5.1 and once under PowerShell 7, and fails on any failed check. The
 5.1 leg also fails on a non-ASCII byte in any `.ps1` — the runner is en-US, so
 the CP949 problem that rule exists for would never show there — and runs the
-extension check with node.
+extension check and the overlay's macOS check with node.
 
 On pwsh 7 `Add-Type` builds libraries only, so the argument-quoting check builds
 its echo exe with .NET Framework's `csc.exe` instead. Where neither can, it says
@@ -73,8 +91,12 @@ its echo exe with .NET Framework's `csc.exe` instead. Where neither can, it says
 ## The demo frames
 
 `docs/make-demo.ps1` draws every frame in the README: `docs/demo-queue.svg`,
-`docs/demo-list.svg`, and the `chatrm` walk-through, `docs/demo-1-type.svg` to
-`docs/demo-4-reloaded.svg`.
+`docs/demo-list.svg`, `docs/demo-overlay.png`, and the `chatrm` walk-through,
+`docs/demo-1-type.svg` to `docs/demo-4-reloaded.svg`.
+- **The overlay frame is the real panel,** rendered off screen by WPF from the
+  real collector reading a made-up session list, so it needs Windows
+  PowerShell. Only the usage endpoint is a stand-in, answering what the
+  sandbox's cache says.
 - **The terminal is real output:** the real commands against a sandbox of
   made-up chats, captured by a `Write-Host` of its own, which also reads the
   colour escapes the walk row carries.
@@ -125,6 +147,37 @@ reader read this machine's clipboard the same both ways: in-process from 5.1's
 STA console, and - from a shell started with `-MTA`, which cannot - through the
 `-STA` child Windows PowerShell it starts for that. It left no folder behind.
 
+The overlay ran on this machine, with ten real Claude sessions registered.
+Nothing drove the mouse or keyboard: the window was read back with
+`PrintWindow` and its extended style, and every command went through
+`chatoverlay` or `data/overlay-cmd`.
+- **Rows:** `chatoverlay` started it in 1.5 s, top right. The captured window
+  showed the one chat waiting on input (amber, `input needed`) first, then
+  the two working, then the idle ones. New chat tabs with nothing sent in them
+  were left out. That was after a fix: they had shown as rows named like
+  `as-bw-02`.
+- **Usage:** the first pass asked the usage endpoint. It read 87% for the 5 h
+  window while `~/.claude.json` still said 55%, fetched 153 minutes earlier.
+- **Window style:** `WS_EX_TOOLWINDOW | NOACTIVATE | LAYERED | TRANSPARENT`.
+  WPF had also set `WS_EX_APPWINDOW`, which would have put a button on the
+  taskbar; it is now cleared.
+- **Commands:** `-Unlock` dropped `TRANSPARENT` and `-Lock` put it back. `hide`
+  hid it and `chatoverlay` showed it again. A `restart` handed over to a new
+  process in under a second, and `-Stop` closed it in 2.2 s with its pid file
+  and lock gone.
+- **Cost:** one pass over the ten sessions took 40-60 ms, and the first read
+  2 MB of transcripts. CPU was 0.07% of the machine over 20 s. The process held
+  288 MB until WPF was switched to software rendering, then 162 MB, flat over
+  90 s. A collector alone is about 115 MB.
+- **Its parent:** it outlived the shell that started it, which exited at once.
+  That shows only that it survives its parent exiting; closing a whole Windows
+  Terminal or VS Code, which can end every process they started, is below.
+
+`docs/make-demo.ps1` then found two more by rendering from a sandbox with no
+Codex home. An `if` whose branch yields an empty array assigns `$null`, so the
+usage header failed there, and every pass queued an empty command, which made
+the panel redraw every 2 s. Both are fixed and in the table above.
+
 ## Review
 
 v0.1.0 went through a four-angle review with a separate skeptic per finding;
@@ -134,6 +187,26 @@ before the transcript was confirmed gone, network retries that dropped
 themselves as "already continued", a watcher handoff that could leave nobody
 watching, and StrictMode breaking at load. Each is fixed and, where a test can
 hold it, in the table above.
+
+The 0.4.0 overlay's buttons, collapse, refresh and usage waits went through a
+three-angle review (WPF and Win32, PowerShell pitfalls, state and
+lifecycle) with a skeptic per finding. It found 11 distinct defects, and
+all are fixed. Among them:
+- a panel hidden before a restart came back off every screen;
+- the buttons popped up the moment the pointer crossed the panel, with ×
+  nearest it, so a click meant for the window beside it could close the
+  overlay;
+- the `rate-limited until` note was hidden whenever a live figure showed, so
+  the refresh button looked broken;
+- a command sent during start-up was dropped;
+- the style checks read the windows before WPF shows them, which is when it
+  puts the taskbar flag back.
+
+It missed one, found in use: the buttons blinked and could not be clicked.
+Their placement was handed the window's rect where its size belonged, so
+each pass put them somewhere new. The placement function's own tests passed
+a size and were right; only the call was wrong, and nothing ran the call on
+a shown window. The panel test now does, on a stood-in screen.
 
 ## Still to check by hand
 
@@ -173,5 +246,71 @@ hold it, in the table above.
   let the turn end, then `chatrm` a throwaway chat in the same project. The
   window should show a warning with **Reload anyway**, not the plain
   **Reload** offer.
+- **S23, the overlay by hand on Windows.** What reading the window back could
+  not show:
+  1. A click on the panel lands in the window under it, and typing stays there.
+  2. Resting the pointer on it for a moment brings up the row of buttons
+     on its top edge, outside it, flush with its top-right corner - under it
+     once the panel is dragged to the top of the screen - grip at the left,
+     × at the corner. Sweeping the pointer across it brings up nothing. They
+     go a moment after the pointer leaves; moving from the panel onto them
+     does not lose them. A click on the panel still goes through, and so
+     does one on the empty space beside the buttons. With the panel near
+     the top, opening the settings box leaves the buttons where they are.
+  3. Holding the grip drags the panel, the buttons follow, and the position
+     is kept after `chatoverlay -Stop` and a start.
+  4. The settings box opens above the buttons, outside the panel: the slider
+     changes the opacity as it moves and `config.json` has it a second after
+     release; dragging past the box's edge keeps the slider. Dark, Light and
+     System redraw at once; with System, switching Windows between light and
+     dark mode follows within 5 s. Focus stays in the window you were typing
+     in throughout.
+  5. Collapse folds the panel to one line and the chevron turns; expand
+     brings the rows back; collapsed survives a restart.
+  6. Refresh inside a named wait asks nothing (the log shows no new
+     `usage:` line) and Claude's line ends `not asked - wait`; outside one,
+     the icon turns, and within seconds the line ends `checked` and the time,
+     for 10 s. A second click inside 20 s says `just asked`. Codex's line
+     ends `last run` and its date; with `gh` logged in, Copilot's line shows
+     and its time moves on refresh. Lines and Bars in the settings box switch
+     at once; in bars the same few words sit under each name, and neither
+     view has a row of notes about usage.
+  7. Hide to tray hides it, a balloon says the tray dot brings it back
+     (once), and the tray dot does - also after `chatoverlay -Stop` and a
+     start while hidden. × closes it, and `chatoverlay` starts it, shown.
+  8. **Ctrl+Alt+Shift+O** unlocks it, a drag moves it (the buttons follow),
+     and the key locks it again. Left unlocked, it locks itself two minutes
+     after the pointer leaves.
+  9. The tray dot's left click hides and shows it, and its menu's Lock, Hide,
+     Collapse, Refresh usage, Move to top right and Quit work.
+  10. Neither window is in Alt+Tab or on the taskbar.
+  11. With a monitor unplugged, it moves onto the main one within 5 s.
+  12. It survives closing a whole Windows Terminal window, and quitting VS
+      Code, when started from each. If it does not, launch it through
+      `Invoke-CimMethod Win32_Process Create`, outside their job object.
+  13. `-AutoStart on` brings it back after signing out and in and opening a
+      shell.
+  14. After an hour, memory is still about 170 MB, and CPU stays under 0.2%
+      with the 120 ms pointer check running; the log shows no 429 at the
+      five-minute pace.
+  15. `/compact` in a chat: its row reads "command running" while it runs
+      and `/compact` once it ends.
+  16. Rested on, the buttons stay still - no flicker between two places -
+      and each one takes a click; opening the settings box never covers
+      the panel.
+- **S24, the overlay on macOS** (never run):
+  1. The panel and `CQ` appear, focus stays where it was, and any Dock icon
+     flash is noted.
+  2. Clicks go through it; it shows on every Space and over full-screen apps.
+  3. Unlock, drag, Lock, and the position is kept.
+  4. Rows update, and the `procStart` format in `~/.claude/sessions/` is noted.
+  5. Hidden for ten minutes, it is current when shown again (App Nap).
+  6. `kill -9` of the pwsh host takes the panel away within 20 s.
+  7. `osacompile -l JavaScript data/overlay-mac.js` succeeds.
+  8. Hangul draws.
+  9. `-LiveUsage on` reads the keychain once, after the password prompt.
+  10. `chatinstall` restarts it and `chatuninstall` stops it.
+  11. `-Theme light`, `-Theme system` (then flip macOS's appearance) and
+      `-Opacity 60` each show within a few seconds.
 - **macOS and Linux** are untested; the Unix branches are written but have never
   run.

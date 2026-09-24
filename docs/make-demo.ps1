@@ -2,6 +2,7 @@
 Renders the README's frames:
 
     docs/demo-queue.svg, docs/demo-list.svg        chatq and chatqlist
+    docs/demo-overlay.png                          chatoverlay's panel
     docs/demo-1-type.svg ... docs/demo-4-reloaded.svg   the chatrm walk-through
 
     powershell -NoProfile -ExecutionPolicy Bypass -File docs\make-demo.ps1
@@ -15,6 +16,11 @@ window, no screen capture, nothing taken from the console.
 The VS Code panel beside the chatrm frames is a sketch, not a capture: the
 sandbox's Claude chats as the index lists them, drawn the way the panel's
 session list shows them.
+
+The overlay frame is the real WPF panel, rendered off screen from what the
+real collector reads: a made-up registry of open chats, the queue the frames
+above left, and a stand-in usage endpoint answering what the made-up cache
+says. Windows PowerShell only - WPF needs it.
 
 This file is ASCII, like the script it drives.
 #>
@@ -37,6 +43,8 @@ $env:CHAT_CODE_USER = Join-Path $sb 'code-user'
 $env:CHATQ_CLAUDE = Join-Path $root 'tests\fake-claude.cmd'
 $env:CHATQ_CODEX = $env:CHATQ_CLAUDE
 $env:CHATQ_WATCHER = '1'
+# gh's login is this machine's: never asked, whatever the sandbox
+$env:CHATQ_GH = Join-Path $sb 'no-such-gh.exe'
 
 $now = [DateTimeOffset]::UtcNow
 $reset = $now.AddMinutes(95)
@@ -268,6 +276,56 @@ finally { $lock.Dispose() }
 ConvertTo-DemoSvg $f1 (Join-Path $here 'demo-queue.svg') 'chatq queueing a prompt for a chat picked by its title'
 ConvertTo-DemoSvg $f2 (Join-Path $here 'demo-list.svg') 'chatqlist showing two queued prompts, the usage and the limit reset'
 
+# --- the overlay -----------------------------------------------------------------
+# Three of the made-up chats open in a window - one on a permission prompt, one
+# working, one idle - and a prompt queued for a fourth that is not open.
+$sessDir = Join-Path $claudeHome 'sessions'
+$null = New-Item -ItemType Directory -Path $sessDir -Force
+$nowMs = $now.ToUnixTimeMilliseconds()
+foreach ($o in @(
+        @{ Pid = 101; Id = '1a2b3c4d-0000-4000-8000-000000000001'; Status = 'waiting'; Ago = 3; Wait = 'input needed' }
+        @{ Pid = 102; Id = '1a2b3c4d-0000-4000-8000-000000000002'; Status = 'busy'; Ago = 1; Wait = $null }
+        @{ Pid = 103; Id = '1a2b3c4d-0000-4000-8000-000000000004'; Status = 'idle'; Ago = 40; Wait = $null })) {
+    $at = $nowMs - $o.Ago * 60000
+    $rec = [ordered]@{ pid = $o.Pid; sessionId = $o.Id; cwd = $proj; startedAt = $nowMs - 7200000; kind = 'interactive'; name = 'parser'; status = $o.Status; updatedAt = $at; statusUpdatedAt = $at }
+    if ($o.Wait) { $rec.waitingFor = $o.Wait }
+    [System.IO.File]::WriteAllText((Join-Path $sessDir "$($o.Pid).json"), ($rec | ConvertTo-Json -Compress), $utf8)
+}
+$script:ChatqAliveSeam = { $true }
+$script:ChatOverlayUsageSeam = { @{ Ok = $true; Status = 200; Windows = @((Read-ChatqClaudeUsageCache (Join-Path $claudeHome '.claude.json')).Windows) } }
+# and a made-up answer from GitHub for Copilot's line
+$script:ChatOverlayCopilotSeam = { @{ Ok = $true; Windows = @(
+            [pscustomobject]@{ Label = 'chat'; Percent = 18; ResetsAt = $now.AddDays(9).LocalDateTime; Severity = '' }
+            [pscustomobject]@{ Label = 'code'; Percent = 4; ResetsAt = $now.AddDays(9).LocalDateTime; Severity = '' }) } }
+$lock = [System.IO.File]::Open($script:ChatqLockPath, 'OpenOrCreate', 'ReadWrite', 'None')
+try {
+    chatq 'Release notes for 2.4' -Prompt 'add the migration notes for the new plugin API'
+    Initialize-ChatOverlayNative
+    $H = New-ChatOverlayHostState
+    $script:ChatOverlayHost = $H
+    $H.Ctx = New-ChatOverlayContext
+    $H.State = [pscustomobject]@{ x = $null; y = $null; locked = $true; hidden = $false }
+    New-ChatOverlayWindow $H
+    Update-ChatOverlayView $H (Invoke-ChatOverlayCycle $H.Ctx -Peek)
+}
+finally { $lock.Dispose() }
+# the frame alone, laid out off screen at twice the size, for a sharp image
+$frame = $H.Frame
+$H.Win.Content = $null
+$frame.Width = $H.Win.Width
+$frame.Measure([System.Windows.Size]::new($H.Win.Width, [double]::PositiveInfinity))
+$frame.Arrange([System.Windows.Rect]::new($frame.DesiredSize))
+$frame.UpdateLayout()
+$bmp = [System.Windows.Media.Imaging.RenderTargetBitmap]::new([int]($frame.ActualWidth * 2), [int]($frame.ActualHeight * 2), 192, 192, [System.Windows.Media.PixelFormats]::Pbgra32)
+$bmp.Render($frame)
+$png = [System.Windows.Media.Imaging.PngBitmapEncoder]::new()
+$png.Frames.Add([System.Windows.Media.Imaging.BitmapFrame]::Create($bmp))
+$fs = [System.IO.File]::Create((Join-Path $here 'demo-overlay.png'))
+try { $png.Save($fs) } finally { $fs.Dispose() }
+$script:ChatqAliveSeam = $null
+$script:ChatOverlayUsageSeam = $null
+$script:ChatOverlayCopilotSeam = $null
+
 # --- the chatrm walk-through ---------------------------------------------------
 # chatrm gives its reload advice only while a VS Code window is up to take it,
 # and a real shell runs the ghost watch, which the sandbox never starts
@@ -314,4 +372,4 @@ ConvertTo-DemoSvg -Frame @() -Path (Join-Path $here 'demo-4-reloaded.svg') -Pane
 
 Set-Location -LiteralPath $here
 Remove-Item -LiteralPath $sb -Recurse -Force -EA SilentlyContinue
-Microsoft.PowerShell.Utility\Write-Host '  wrote docs/demo-queue.svg, docs/demo-list.svg, docs/demo-1-type.svg .. demo-4-reloaded.svg'
+Microsoft.PowerShell.Utility\Write-Host '  wrote docs/demo-queue.svg, docs/demo-list.svg, docs/demo-overlay.png, docs/demo-1-type.svg .. demo-4-reloaded.svg'

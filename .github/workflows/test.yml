@@ -34,6 +34,12 @@ jobs:
         if: matrix.host == 'powershell'
         run: node tests/extension-check.js
 
+      # the macOS overlay's JXA: compiled and its pure part driven under node;
+      # only a Mac can run the rest (TESTING.md)
+      - name: Overlay (macOS panel) check
+        if: matrix.host == 'powershell'
+        run: node tests/overlay-mac-check.js
+
       - name: Self-test (${{ matrix.host }})
         shell: pwsh
         run: |
