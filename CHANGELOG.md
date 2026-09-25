@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.7.1 — a new icon, and releases from CI
+
+- **A new icon:** the Marketplace and the Extensions view show a photo in
+  place of the chat bubble, on the same rounded square. The photo meets the
+  square halfway: a little of its left end is cut, and bands filled with
+  its own background make up the rest above and below.
+  `docs/make-icon.ps1` makes it from `docs/icon-source.jpg`.
+- **The Marketplace listing shows the terminal too:** Tab filling in a
+  title for `chatrm`, `chatq` queueing a prompt, and `chatqlist`. vsce
+  takes no SVG there, so `docs/make-demo.ps1` now also draws those three
+  frames as PNGs, with headless Edge.
+- **Updating, said plainly:** a window runs a new version of the extension
+  once you click **Restart Extensions** or reload; VS Code restarts none by
+  itself. An extension installed from a `.vsix` file is pinned and never
+  updates by itself until **Auto Update** is turned on for it.
+- **Releases from CI:** `.github/workflows/publish.yml`
+  publishes a `v*` tag and makes its GitHub release, signing in as an
+  Entra app rather than with a PAT. Run by hand, it publishes nothing: it
+  builds the VSIX, signs in, and checks that the publisher accepts the app
+  (docs/marketplace-spec.md, Publishing).
+
 ## 0.7.0 — one extension on the VS Code Marketplace
 
 - **Install from the Marketplace.** **VS Code Chat Manager**

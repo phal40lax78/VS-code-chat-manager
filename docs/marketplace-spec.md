@@ -1,11 +1,14 @@
 # Spec: one extension on the VS Code Marketplace
 
 Status: accepted 2026-09-25, all three decisions as proposed. Built in
-0.7.0: steps 1 and 2 of the order of work, and spike M2, which passed.
-Left: M3 and M4 (TESTING.md S32), the first upload by hand, then M1 and
-`publish.yml`. The listing shows the overlay's PNG only; PNG renders of
-the terminal frames wait for a PNG output in `docs/make-demo.ps1`.
-Written against 0.6.0.
+0.7.0, which was uploaded by hand and went live the same day: steps 1 to 3
+of the order of work, and spike M2, which passed. M4 is answered from VS
+Code's own code (below). `docs/make-demo.ps1` now draws PNGs of three
+terminal frames, which reach the listing with the next release.
+`.github/workflows/publish.yml` is written, and spike M1 passed the same
+day, and M3 that evening. Left: the first release through `publish.yml`,
+the last proof that `vsce publish --azure-credential` itself works, and
+the rest of TESTING.md S32. Written against 0.6.0.
 
 ## Goal
 
@@ -161,21 +164,52 @@ The decision is a pure function, so it can be tested:
    page. That needs no token, and it proves the listing before any
    automation exists.
 3. **Later releases: from CI.** Azure DevOps retires global PATs on
-   **2026-12-01**, so no PAT: `.github/workflows/publish.yml`, on a `v*`
-   tag:
-   - runs the tests;
+   **2026-12-01**, and the "All accessible organizations" PAT that vsce's
+   docs describe is one, so no PAT. `.github/workflows/publish.yml`, on a
+   `v*` tag:
+   - runs the tests (`test.yml`, called);
+   - checks the tag against `package.json`, and that `CHANGELOG.md` has
+     the version's section; `build.js` checks `$script:ChatVersion`;
    - builds the VSIX;
-   - checks that the tag, `package.json` and `$script:ChatVersion` agree;
    - signs in with `azure/login` using GitHub OIDC;
-   - runs `vsce publish --azure-credential` (vsce 2.26.1 or later);
-   - attaches the VSIX to the GitHub release.
-4. **The identity for CI:** a Microsoft Entra app registration with a
+   - checks the publisher accepts the app (`vsce verify-pat
+     --azure-credential`), then runs `vsce publish --azure-credential`
+     (vsce 2.26.1 or later);
+   - makes the GitHub release, with the VSIX and the changelog section.
+
+   Run by hand, it publishes nothing: it signs in, prints the app's profile
+   ID, and runs the same check. That run is spike M1. Publishing by hand
+   keeps working after 2026-12-01, since the manage page needs no token.
+4. **The identity for CI:** a Microsoft Entra **app registration** with a
    federated credential for this repo's `marketplace` environment, and no
-   secret. It needs no Azure subscription (`allow-no-subscriptions`). Its
-   Visual Studio profile ID is added as a member of the publisher. The docs
-   say the role is **Contributor**, and one working setup used **Creator**
-   (spike M1). If the publisher's page offers trusted publishing (vsce
-   `--oidc`), use that instead, since it needs no Entra app at all.
+   secret. Microsoft's guide uses a managed identity, but a managed identity
+   is an Azure resource and needs a subscription; an app registration does
+   not (`allow-no-subscriptions`). `github/vscode-codeql` publishes this
+   way. The repo holds its IDs as the secrets `AZURE_CLIENT_ID` and
+   `AZURE_TENANT_ID`. Its Visual Studio profile ID is added as a member of
+   the publisher with the **Contributor** role, as Microsoft's guide says.
+   Trusted publishing is not offered yet. vsce 4 has a `--oidc` flag, but
+   hides it from `--help`, and the Marketplace has no page to set a trust
+   policy (microsoft/vsmarketplace#1422, open on 2026-09-24).
+
+   To set it up:
+   1. **Entra admin center → App registrations → New registration.**
+      Single tenant, no redirect URI.
+   2. **Certificates & secrets → Federated credentials → Add → GitHub
+      Actions.** Organization `phal40lax78` (a personal account's
+      username), repository `VS-code-chat-manager`, entity type
+      Environment, environment `marketplace`. The form fills in the
+      numeric IDs, 199534513 and 1380880732. Leave the subject as it
+      builds it, `repo:phal40lax78@199534513/VS-code-chat-manager@1380880732:environment:marketplace`:
+      this repo's tokens use that immutable form (`gh api
+      repos/phal40lax78/VS-code-chat-manager/actions/oidc/customization/sub`).
+   3. **In the repo's Settings → Secrets and variables → Actions,** add
+      `AZURE_CLIENT_ID` (the Application ID) and `AZURE_TENANT_ID` (the
+      Directory ID).
+   4. **Run publish.yml by hand.** Take the ID printed by the step "The
+      app's profile id".
+   5. **Add that ID on the publisher's Members page as Contributor.** Run
+      publish.yml again, and "The publisher accepts it" passes.
 
 ## Tests
 
@@ -214,17 +248,44 @@ The decision is a pure function, so it can be tested:
 - **M1: publishing works.** An Entra app with no Azure subscription, as a
   personal Microsoft account's app, made a member of the publisher, then
   `vsce publish --azure-credential` from a GitHub run. Or trusted
-  publishing, if the publisher's page offers it.
+  publishing, if the publisher's page offers it. Researched 2026-09-25; the
+  steps are under Publishing. Two things were unknown. First, whether the
+  owner's account had an Entra tenant: one exists if it ever signed up for
+  Azure, and Microsoft documents creating a new one as needing a
+  subscription. Second, whether a publisher owned by a personal account
+  takes an app as a member. vsce issues #976 and #1023 show
+  `--azure-credential` failing for apps that had the role, both in work
+  tenants. **Passed 2026-09-25.** The owner's account had a Default
+  Directory. The first run by hand signed in, printed the profile ID, and
+  was refused: "needs the following permission(s) on the resource
+  /redaechan". The Members page took that ID as Contributor, showing it as
+  `<tenant ID>\<object ID>`, and the second run's check passed. A passing
+  check is not yet a publish, since #1023 saw one pass and the publish
+  fail; the first `v*` tag settles it.
 - **M2: the name.** Both `name` and `displayName` must be unique on the
   Marketplace. Check the chosen ones are free before anything else is
   built around them.
 - **M3: removing the old extension.** Does
   `workbench.extensions.uninstallExtension` with an ID take a copied-in,
-  unpublished extension away, and does it need a reload?
+  unpublished extension away, and does it need a reload? **Passed
+  2026-09-25:** it took the old one out of VS Code's list at once, and the
+  reload finished it. Its folder stays on disk, never loaded again: the
+  removal mark names version 2.1.0, the version in its manifest, but the
+  folder was copied in as `-2.0.0`. The offer itself is easy to miss
+  (TESTING.md S32 item 4).
 - **M4: updates.** After a Marketplace update, does VS Code 1.108 restart
   the extension in open windows by itself, or wait for the owner to click
   *Restart Extensions*? The sync runs on activation either way; this only
-  decides how soon.
+  decides how soon. **Answered from the code of VS Code 1.108.2**, the
+  owner's, on 2026-09-25: open windows wait. `extensions.autoRestart`, which
+  would restart them unfocused, defaults to off and is left out of Stable
+  builds altogether. So a window runs the new version once *Restart
+  Extensions* is clicked or the window reloads, and the first to do so
+  copies the scripts. VS Code looks for updates every 12 hours. **An
+  install from a VSIX is pinned:** `~/.vscode/extensions/extensions.json`
+  marks it `"pinned": true`, and it never updates by itself. `code
+  --install-extension <id> --force` changes nothing at the same version.
+  Turning **Auto Update** on for it in the Extensions view unpins it.
 
 ## Decisions (taken 2026-09-25)
 
@@ -244,5 +305,7 @@ The decision is a pure function, so it can be tested:
    `extensionKind`.
 2. **The listing:** its README, PNG frames, the icon, and the packaging
    check in CI.
-3. **Spikes M2 and M3**, then 0.7.0 packaged and uploaded by hand.
-4. **Spike M1**, then `publish.yml`.
+3. **Spikes M2 and M3**, then 0.7.0 packaged and uploaded by hand. Done
+   2026-09-25, M3 that evening.
+4. **Spike M1**, then `publish.yml`. Done 2026-09-25: `publish.yml` was
+   written first, and M1 was run with it.

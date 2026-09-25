@@ -224,21 +224,6 @@ ask mid-run.
   `&|<>^()` when the executable is a `.cmd` or `.bat`, and refuse one
   holding `"` or `%`.
 
-## Publishing the Marketplace extension
-
-**Why it waits:** 0.7.0 builds the extension
-([docs/marketplace-spec.md](docs/marketplace-spec.md)), and `vsce package`
-packs it, but publishing needs the owner: the VSIX uploaded by hand to the
-`redaechan` publisher they made at marketplace.visualstudio.com/manage. Automating it waits on spike M1, since
-Azure DevOps retires global PATs on 2026-12-01 and the Entra ID route with no
-Azure subscription is unproven for a personal account. The listing also
-lacks PNG renders of the terminal frames.
-
-**To close:** the publisher and the first upload; M3 and M4 by hand
-(TESTING.md S32); then M1 and a `publish.yml` that publishes a `v*` tag
-with `vsce publish --azure-credential`, or trusted publishing if the
-publisher's page offers it.
-
 ## A VS Code front end
 
 **Why deferred:** the terminal UI was chosen, and then the overlay's console.
