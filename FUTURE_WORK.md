@@ -224,6 +224,19 @@ ask mid-run.
   `&|<>^()` when the executable is a `.cmd` or `.bat`, and refuse one
   holding `"` or `%`.
 
+## One extension on the VS Code Marketplace
+
+**Why it waits:** it is next, and the spec is written:
+[docs/marketplace-spec.md](docs/marketplace-spec.md). The extension and the
+scripts are installed apart today and drift: on 2026-09-25 the script was
+0.6.0 while every window ran the 2.0.0 extension, so the overlay's open chip
+did nothing. The owner took the spec's name, profile question and
+publishing plan as proposed, and four spikes come first: publishing
+without a PAT (global PATs retire on 2026-12-01), a free name, removing the
+old extension, and how updates reach open windows.
+
+**To close:** the spec's order of work, up to a 0.7.0 on the Marketplace.
+
 ## A VS Code front end
 
 **Why deferred:** the terminal UI was chosen, and then the overlay's console.
