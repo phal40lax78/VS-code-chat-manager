@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.1 — a new icon, and releases from CI
 
 - **A new icon:** the Marketplace and the Extensions view show a photo in
   place of the chat bubble - all of it, the bands above and below filled
