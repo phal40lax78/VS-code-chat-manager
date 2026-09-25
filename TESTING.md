@@ -591,7 +591,14 @@ would not recognise it.
      both are installed the new one handles nothing, and the old 2.0.0
      ignores the overlay's open chip, so a missed offer leaves the chip dead.
      Reinstalled with `code --install-extension redaechan.vs-code-chat-manager`,
-     which comes from the Marketplace and so is not pinned.
+     which comes from the Marketplace and so is not pinned. **Then it
+     passed:** after a reload, the offer was clicked, and six seconds after
+     the new extension started, VS Code's log reads "Successfully
+     uninstalled extension from the profile phal40lax78.chat-manager-reload".
+     After the reload the offer asks for, the new extension no longer finds
+     the old one. A few minutes later the new one was removed by hand once
+     more and installed again. The two names, "VS Code Chat Manager" and
+     "VS Code chat manager - reload", are easy to mix up.
   5. **A Remote-SSH or WSL window:** the extension runs on the local side.
   6. **Spike M4:** after a Marketplace update, do open windows restart the
      extension by themselves, or wait for *Restart Extensions*? The code

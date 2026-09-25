@@ -6,9 +6,9 @@ of the order of work, and spike M2, which passed. M4 is answered from VS
 Code's own code (below). `docs/make-demo.ps1` now draws PNGs of three
 terminal frames, which reach the listing with the next release.
 `.github/workflows/publish.yml` is written, and spike M1 passed the same
-day. Left: M3 by hand (TESTING.md S32), and the first release through
-`publish.yml`, the last proof that `vsce publish --azure-credential`
-itself works. Written against 0.6.0.
+day, and M3 that evening. Left: the first release through `publish.yml`,
+the last proof that `vsce publish --azure-credential` itself works, and
+the rest of TESTING.md S32. Written against 0.6.0.
 
 ## Goal
 
@@ -267,7 +267,12 @@ The decision is a pure function, so it can be tested:
   built around them.
 - **M3: removing the old extension.** Does
   `workbench.extensions.uninstallExtension` with an ID take a copied-in,
-  unpublished extension away, and does it need a reload?
+  unpublished extension away, and does it need a reload? **Passed
+  2026-09-25:** it took the old one out of VS Code's list at once, and the
+  reload finished it. Its folder stays on disk, never loaded again: the
+  removal mark names version 2.1.0, the version in its manifest, but the
+  folder was copied in as `-2.0.0`. The offer itself is easy to miss
+  (TESTING.md S32 item 4).
 - **M4: updates.** After a Marketplace update, does VS Code 1.108 restart
   the extension in open windows by itself, or wait for the owner to click
   *Restart Extensions*? The sync runs on activation either way; this only
@@ -301,6 +306,6 @@ The decision is a pure function, so it can be tested:
 2. **The listing:** its README, PNG frames, the icon, and the packaging
    check in CI.
 3. **Spikes M2 and M3**, then 0.7.0 packaged and uploaded by hand. Done
-   2026-09-25, except M3.
+   2026-09-25, M3 that evening.
 4. **Spike M1**, then `publish.yml`. Done 2026-09-25: `publish.yml` was
    written first, and M1 was run with it.
