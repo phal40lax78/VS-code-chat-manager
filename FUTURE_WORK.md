@@ -224,18 +224,20 @@ ask mid-run.
   `&|<>^()` when the executable is a `.cmd` or `.bat`, and refuse one
   holding `"` or `%`.
 
-## One extension on the VS Code Marketplace
+## Publishing the Marketplace extension
 
-**Why it waits:** it is next, and the spec is written:
-[docs/marketplace-spec.md](docs/marketplace-spec.md). The extension and the
-scripts are installed apart today and drift: on 2026-09-25 the script was
-0.6.0 while every window ran the 2.0.0 extension, so the overlay's open chip
-did nothing. The owner took the spec's name, profile question and
-publishing plan as proposed, and four spikes come first: publishing
-without a PAT (global PATs retire on 2026-12-01), a free name, removing the
-old extension, and how updates reach open windows.
+**Why it waits:** 0.7.0 builds the extension
+([docs/marketplace-spec.md](docs/marketplace-spec.md)), and `vsce package`
+packs it, but publishing needs the owner: the VSIX uploaded by hand to the
+`redaechan` publisher they made at marketplace.visualstudio.com/manage. Automating it waits on spike M1, since
+Azure DevOps retires global PATs on 2026-12-01 and the Entra ID route with no
+Azure subscription is unproven for a personal account. The listing also
+lacks PNG renders of the terminal frames.
 
-**To close:** the spec's order of work, up to a 0.7.0 on the Marketplace.
+**To close:** the publisher and the first upload; M3 and M4 by hand
+(TESTING.md S32); then M1 and a `publish.yml` that publishes a `v*` tag
+with `vsce publish --azure-credential`, or trusted publishing if the
+publisher's page offers it.
 
 ## A VS Code front end
 

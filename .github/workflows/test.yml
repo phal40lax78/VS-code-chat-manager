@@ -34,6 +34,14 @@ jobs:
         if: matrix.host == 'powershell'
         run: node tests/extension-check.js
 
+      # the Marketplace package: build.js fills payload/ and refuses a version
+      # that is not the script's, a script that is not ASCII, an SVG in the
+      # listing; vsce then checks the manifest the Marketplace will read
+      - name: Extension package
+        if: matrix.host == 'powershell'
+        working-directory: extension
+        run: npx --yes @vscode/vsce@3 package --out vs-code-chat-manager.vsix
+
       # the macOS overlay's JXA: compiled and its pure part driven under node;
       # only a Mac can run the rest (TESTING.md)
       - name: Overlay (macOS panel) check

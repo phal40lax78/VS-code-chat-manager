@@ -25,6 +25,21 @@ One script and the `src/` folder it loads, no modules, nothing to build. It was 
 
 ## Install
 
+**From VS Code:** install **VS Code Chat Manager** from the Marketplace -
+search the Extensions view, or:
+
+```powershell
+code --install-extension redaechan.vs-code-chat-manager
+```
+
+On its first start it puts the scripts in `~/Tools/VS-code-chat-manager`,
+asks once before adding the line that loads them to your PowerShell profile,
+and from then on VS Code's own extension updates keep the scripts up to date
+too. [What it does, step by step](extension/README.md). Then open a new
+terminal and type `chat`.
+
+**Terminal only**, without the extension:
+
 ```powershell
 iex (irm https://raw.githubusercontent.com/phal40lax78/VS-code-chat-manager/main/install.ps1)
 ```
@@ -51,10 +66,13 @@ prints the line you meant.
 **Coming from chatrm or chatq?** `chatinstall` replaces their profile lines with
 this one — both define the same commands. The commands keep their names.
 
-**Updating:** run the one-liner again. It says `updated 0.2.0 -> 0.3.0` or
-`unchanged`; an `unchanged` right after a push is the CDN serving the old copy
-for a few minutes. A background watcher that is running switches to the new
-copy after its current job, and a running overlay restarts on it at once.
+**Updating:** with the extension, VS Code does it. Without it, run the
+one-liner again. It says `updated 0.2.0 -> 0.3.0` or `unchanged`; an
+`unchanged` right after a push is GitHub serving the old copy for a few
+minutes. Either way a background watcher that is running switches to the new
+copy after its current job, and a running overlay restarts on it at once. The
+extension never writes into a folder that is a git checkout; it says when the
+scripts there are another version than itself.
 
 ## Contents
 
@@ -636,19 +654,15 @@ transcript.
 
 Nothing outside VS Code can redraw a window: Reload Webviews, the window
 reload and the Claude Code extension's own commands for opening a chat by
-its id run from inside an extension only. `extension/` is that extension,
-and is optional:
+its id run from inside an extension only. **VS Code Chat Manager**, the
+Marketplace extension that also installs the scripts ([Install](#install)),
+is that extension; `extension/` is its source. Without it the terminal
+commands work as ever, and only this part is missing.
 
-```powershell
-Copy-Item -Recurse "$HOME\Tools\VS-code-chat-manager\extension" "$HOME\.vscode\extensions\phal40lax78.chat-manager-reload-2.1.0"
-```
-
-Reload once and it is live. To update it later, copy the files over the old
-ones: `Copy-Item -Force "$HOME\Tools\VS-code-chat-manager\extension\*"` into
-the same folder - a `-2.0.0` folder takes 2.1.0's files just as well. A second
-`Copy-Item -Recurse` onto a folder that already exists would nest a copy
-inside it. Update it along with the script: a 2.0.0 extension offers a whole
-reload where 2.1.0 shows the chat fresh.
+It replaces the one that used to be copied into `~/.vscode/extensions/` by
+hand, `phal40lax78.chat-manager-reload`. While that one is still installed
+the new one leaves every request to it - both would act, and a window would
+reload twice - and offers to uninstall it; a window reload finishes the move.
 
 **After a queued run into a chat the window still holds**, the window is
 asked to **show that chat fresh**. The request names the chat, so it goes to
@@ -708,8 +722,8 @@ into it waits 30 seconds while the window shows it. And a window that opened
 the chat while a run went into it - loaded part way through - gets the same
 Show it after the run as one that held it from before.
 
-`chatManagerReload.showFresh: false`, or no Claude Code extension, brings back
-0.5.0's window reload. `chatManagerReload.autoReloadAfterRun: false` makes it
+`chatManager.showFresh: false`, or no Claude Code extension, brings back
+0.5.0's window reload. `chatManager.autoReloadAfterRun: false` makes it
 always ask. A window opened after the run already shows it, and neither asks
 nor acts. The overlay's [open chip](#the-overlay) asks the same way, through
 `data/open-request`.
@@ -724,11 +738,12 @@ window — matched by its workspace folder — offers a **Reload** button, as
 before. If a chat in the project was still working when the delete ran
 ([what counts](#reloading-safely)), it warns instead: *A chat in this workspace
 is still working, and reloading now would cut it off*, with **Reload anyway**.
-`chatManagerReload.signalFile` points it elsewhere if the script does not live
-in `~/Tools/VS-code-chat-manager` (`open-request` is looked for beside it);
-`chatManagerReload.autoReload` skips the question after a delete — never while
-a chat is working, and never after a queued run or a new chat, which have
-rules of their own.
+`chatManager.folder` points it elsewhere if the script does not live in
+`~/Tools/VS-code-chat-manager`; `chatManager.autoReload` skips the question
+after a delete — never while a chat is working, and never after a queued run
+or a new chat, which have rules of their own. The old extension's
+`chatManagerReload.*` settings are still read where the new ones are unset,
+its `signalFile` standing in for the folder.
 
 A new chat a queued run started is only ever offered: the window asks, never
 reloads by itself for one, and a window opened after it lists it already.
@@ -801,6 +816,9 @@ As of September 2026 — corrections welcome.
 chatuninstall        # drop the profile line, stop the watcher and the overlay, keep the folder
 chatuninstall -All   # and delete the folder - not while the archive holds a chat
 ```
+
+Uninstalling the VS Code extension leaves the terminal commands and the tool
+folder as they are; these two remove them.
 
 ## Requirements
 

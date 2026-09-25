@@ -86,14 +86,24 @@ Check 'no ghost watch inside the background watcher' (-not (Test-ChatGhostWatch)
 # one profile line for both halves, and uninstall takes only that
 $PROFILE = Join-Path $sb 'profile.ps1'
 [System.IO.File]::WriteAllLines($PROFILE, [string[]]@('. "C:\x\chatrm\chatrm.ps1"', 'Set-Alias foo bar', '. "C:\x\chatq\chatq.ps1"'))
+$lineBefore = Test-ChatProfileLine
+# the watcher and overlay restart counted, not done: none runs here
+$rcWas = ${function:Restart-ChatBackground}
+$script:RestartCalls = 0
+${function:Restart-ChatBackground} = { $script:RestartCalls++ }
 chatinstall *> $null
+$lineAfter = Test-ChatProfileLine
+chatinstall -NoRestart *> $null
+${function:Restart-ChatBackground} = $rcWas
 $pl = @(Get-Content -LiteralPath $PROFILE)
 $me = Join-Path $sb 'tool\VS-code-chat-manager.ps1'
 Check 'one install line replaces chatrm''s and chatq''s' (@($pl | Where-Object { $_ -match $script:ChatProfilePattern }).Count -eq 1 -and
     ($pl -join "`n").Contains($me) -and $pl -contains 'Set-Alias foo bar') ($pl -join ' | ')
+Check 'chatinstall moves a running watcher and overlay to this copy; -NoRestart, for the extension, leaves them' ($script:RestartCalls -eq 1) $script:RestartCalls
 chatuninstall *> $null
 $pl = @(Get-Content -LiteralPath $PROFILE)
 Check 'uninstall leaves the rest of the profile alone' ($pl.Count -eq 1 -and $pl[0] -eq 'Set-Alias foo bar') ($pl -join ' | ')
+Check 'Test-ChatProfileLine: only a line loading this copy counts, not an old tool''s' (-not $lineBefore -and $lineAfter -and -not (Test-ChatProfileLine)) "$lineBefore $lineAfter"
 
 # StrictMode again, the way a real shell loads it: not as the watcher, with no
 # queue at all yet, and a stop on the first error

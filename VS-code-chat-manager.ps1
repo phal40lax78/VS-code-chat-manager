@@ -238,8 +238,10 @@ FILES   everything in data/ beside this script, nothing anywhere else
 # against data/version.txt to say whether a reinstall actually landed anything,
 # and raw.githubusercontent.com serves a stale copy for minutes after a push, so
 # "updated" vs "unchanged" is the only way to tell a real upgrade from the CDN
-# handing back what you already had.
-$script:ChatVersion = '0.6.0'
+# handing back what you already had. extension/package.json carries the same
+# version: the extension installs this copy by it, and extension/build.js
+# refuses to pack the two apart.
+$script:ChatVersion = '0.7.0'
 
 # The tool's folder and this file, read here once and never inside a function:
 # data/ sits in that folder, and the profile line, the watcher and the overlay

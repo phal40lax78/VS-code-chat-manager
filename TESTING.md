@@ -57,7 +57,7 @@ behind for poking at. It uses no Pester, no network and no model.
 - **Synthetic streams only** in `tests/fixtures/stream/`. The repo is public, so
   no real transcript goes in it.
 
-What it covers (at 0.6.0, 473 checks in `run-tests.ps1` and 73 in
+What it covers (at 0.7.0, 475 checks in `run-tests.ps1` and 124 in
 `extension-check.js`):
 
 | area | checks |
@@ -79,7 +79,8 @@ What it covers (at 0.6.0, 473 checks in `run-tests.ps1` and 73 in
 | archive | Claude archive → tombstone and index row gone → restore over the window's stub, leftovers and all, tombstone cleared; never over a chat with messages; not while open in a window; Codex through `codex archive` / `unarchive`; `chatuninstall -All` refuses while the archive holds one |
 | reload safety | in a project of its own: all finished → idle; `busy` or `waiting` from `claude agents` → active though the transcript reads finished; a workflow started and not reported → active, where the transcript alone reads finished; the chat's process gone, or the start older than the process → idle; its `<task-notification>` → idle; a background agent, reported, then woken by SendMessage → active again; a background shell → not counted; the reload request carries `busy` either way; a chat written this minute → active, unless it is the one a queued run just wrote (`-Except`) — but that chat busy in a window still counts; a neighbour written 3 minutes ago → active over `quietMinutes`, not over one minute; a folder whose only chat is the one the run wrote → idle, not unjudged; a queued run into that chat, open and idle, with nobody at the PC → a `ran` request with `away` true and `busy` false, the one the window may take by itself |
 | completion | one completer per command: `chatq 3` completes nothing, `chatq` never offers Copilot, subagent chats only with `-All`, hex completes an id, a hex-looking title still completes, a typographic apostrophe quoted; the cycler skips subagents and, for `chatq`, Copilot; a tail left mid-line comes off a `chatq` line |
-| install | one profile line replaces chatrm's and chatq's; uninstall leaves the rest of the profile; the script copied without `src/` names the parts missing and defines no command |
+| install | one profile line replaces chatrm's and chatq's; uninstall leaves the rest of the profile; `chatinstall` moves a running watcher and overlay to the new copy, and `-NoRestart` leaves them; `Test-ChatProfileLine` counts only a line loading this copy, never an old tool's; the script copied without `src/` names the parts missing and defines no command |
+| extension: the terminal half | `tests/extension-check.js`, `setup.js` and `build.js` with no PowerShell started: the loader's version read, an unreadable one (`0.8.0-rc1`) no version, and compared by number; the decision - nothing there → install, older → update, the same → nothing, newer → left, a loader of no readable version → left and said once, a folder holding other files → nothing written, not even `data/`, a git work tree at the folder or above it → never written, the difference said once per version pair, no payload → nothing; when the profile is looked at at all and when asked (never after Never, after Not now at the next version, always from the palette); the lock - taken, refused, taken over once stale, and a place that cannot be written thrown rather than read as another window; `setUp` in a sandbox folder: installed parts first with no `.new` left, the same again copies nothing, settled it starts no PowerShell, updated, a newer copy left, nothing copied while another window holds the lock, a copy that fails said once a version with no `.new` and no half install; the profile step with PowerShell stood in for: Add runs `chatinstall` where the line was missing and checks again, after an update also where it was, one restart; Add with the line still missing after it → no "Added", the answer not kept, and said; a policy that would stop the line → the question says so and scripts are allowed before the line is written; a policy that will not change → no line, and said; a PowerShell that gives no answer → neither asked about nor installed into; a line already there that never runs → the policy offered once a version; Never kept until the palette asks; setup runs one at a time, a palette run after a start's rather than dropped; the build: the loader's own part list, every part present, the extension's version the script's, an SVG image caught and a link to one not, the listing README free of them; the old extension on the same file → none of it watched here and one window offers it away, another within 10 minutes not, on another file than `chatManager.folder`'s → this one handles its own; without it both files watched in the tool folder; `chatManager.folder`, `~` in it, a relative one refused for the default, the old `signalFile` taken only as a `data/reload-request`, and `chatManagerReload.*` read where the new ones are unset |
 | StrictMode | dot-sourced and used from a `Set-StrictMode -Version Latest` shell — once as the tests run it, once as a real shell loads it (not the watcher, no queue yet, stop on the first error) |
 | runner | stdin byte-exact on 5.1 (Hangul, quotes, `\`, `%`, newlines, no BOM); API key and `CLAUDECODE` kept out; 400 KB of stderr without deadlock; timeout kills the whole tree; argument quoting round-trips through a compiled echo exe |
 | jobs | queueing records cwd and mode; the prompt file is named after the chat; done / limited / needs-input / skipped `-Continue` / busy chat deferred / idle live chat run, with a reload request for that window; 529 mid-run; an interrupted run failed and not resent; `chatqrm -Force` with no watcher |
@@ -108,7 +109,12 @@ What it covers (at 0.6.0, 473 checks in `run-tests.ps1` and 73 in
 PowerShell 5.1 and once under PowerShell 7, and fails on any failed check. The
 5.1 leg also fails on a non-ASCII byte in any `.ps1` — the runner is en-US, so
 the CP949 problem that rule exists for would never show there — and runs the
-extension check and the overlay's macOS check with node.
+extension check and the overlay's macOS check with node. It also packs the
+extension with `vsce package`, whose `vscode:prepublish` is `extension/build.js`:
+a version that is not the script's, a script that is not ASCII, or an SVG in
+the listing's README or CHANGELOG fails the run before vsce reads the manifest.
+
+`docs/make-icon.ps1` draws `extension/icon.png`, the Marketplace icon.
 
 On pwsh 7 `Add-Type` builds libraries only, so the argument-quoting check builds
 its echo exe with .NET Framework's `csc.exe` instead. Where neither can, it says
@@ -259,6 +265,28 @@ Among them:
   the index changed: 250 ms for 226 chats here, about 2 s for 2,000. It now
   reads it in a runspace of its own.
 Each is in the table above where a test can hold it.
+
+0.7.0's extension, which writes PowerShell profiles and can change an
+execution policy, went through one review before release: 13 findings, 11
+fixed, all in the table above. Among them:
+- a stale `chatManagerReload.signalFile` became the place the scripts were
+  written, so one naming `C:\reload-request` would have put them in `C:\`;
+  a relative `chatManager.folder` would have written beside Code.exe;
+- a loader whose version did not read as three numbers was taken for no
+  loader, and overwritten;
+- "Added." was said, and the answer kept, even when `chatinstall` failed;
+  a PowerShell that gave no answer counted as one lacking the line;
+- a failed copy said nothing, left `.new` files, and was tried again at
+  every start;
+- the git check looked at the folder only, not the ones above it;
+- with the old extension watching another file than `chatManager.folder`'s,
+  nobody handled requests;
+- the policy was offered only after the line was written, and never where
+  a line already there could not run.
+Two are left as they are: one duplicate delete prompt at the switch, since
+the new ID starts with no memory of requests seen, and a profile line that
+does not spell the path out is asked about again, as `chatinstall` itself
+would not recognise it.
 
 ## Still to check by hand
 
@@ -502,5 +530,28 @@ Each is in the table above where a test can hold it.
   `$env:CHAT_MANAGER_DIR` on an empty folder: it prints `downloading`, the
   folder holds the script and every part in `src/`, `data/download/` is
   gone, and `chat` works in that shell. In PowerShell 7 too.
+- **S32, the Marketplace extension** (docs/marketplace-spec.md). Checked here:
+  `vsce package` packs 0.7.0 - the loader and all 14 parts in `payload/` -
+  and, against this machine's own profile, the profile step's two read-only
+  calls answer right (the line is there; the policy is RemoteSigned). Spike
+  M2 on 2026-09-25: neither `vs-code-chat-manager` nor "VS Code Chat
+  Manager" is taken - the page for the ID is a 404, and the Marketplace's
+  search for "chat manager" has neither. Still to see, in Windows Sandbox
+  or a spare Windows user:
+  1. **A clean install from the Marketplace:** the scripts in
+     `~/Tools/VS-code-chat-manager`, the profile question, then - from
+     `Restricted` - the policy question, and `chat` in a new terminal.
+  2. **An update, 0.7.0 to 0.7.1**, with three windows open: one window
+     copies, the files are replaced, the watcher hands over after its job
+     and the overlay restarts, and the update note says terminals keep the
+     old commands.
+  3. **This machine:** the folder is a git checkout, so nothing is written;
+     at another version it says so once.
+  4. **The old extension** (spike M3): the new one leaves requests to it,
+     one window offers to uninstall it, `workbench.extensions.uninstallExtension`
+     takes a copied-in, unpublished extension away, and the reload finishes it.
+  5. **A Remote-SSH or WSL window:** the extension runs on the local side.
+  6. **Spike M4:** after a Marketplace update, do open windows restart the
+     extension by themselves, or wait for *Restart Extensions*?
 - **macOS and Linux** are untested; the Unix branches are written but have never
   run.

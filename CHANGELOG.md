@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.7.0 — one extension on the VS Code Marketplace
+
+- **Install from the Marketplace.** **VS Code Chat Manager**
+  (`redaechan.vs-code-chat-manager`) carries the PowerShell scripts as
+  well as the VS Code half. On its first start it puts them in
+  `~/Tools/VS-code-chat-manager` (`chatManager.folder` moves it), asks once
+  before adding the profile line - **Add**, **Not now**, **Never** - and,
+  where the execution policy would stop that line, offers to allow local
+  scripts for your user. VS Code's own extension updates then keep the
+  scripts up to date, and each moves a running watcher and overlay onto the
+  new copy.
+- **What it never does:** write into a git checkout - the folder or any
+  folder above it; it says when the scripts there are another version -
+  write over a newer copy or one whose version it cannot read, write into
+  a folder that holds other files, or act in two windows at once. A
+  `chatManager.folder` that is not a full path is refused for the default.
+  Where the policy would stop the profile line, **Add** says so and allows
+  local scripts first; where a line is already there but never runs, it
+  offers that once. "Added." comes only once the line is really there; a
+  copy or an add that fails says so. The answers live in
+  `data/extension.json`, beside the rest. Every process it starts is logged
+  with its command line under **Chat Manager: Show log**; **Chat Manager:
+  Install terminal commands** asks again, even after Never.
+- **One version for both halves.** The extension was 2.1.0; it is now the
+  tool's own, 0.7.0, and `extension/build.js` refuses to pack the two apart.
+- **The old extension retires.** `phal40lax78.chat-manager-reload`, which
+  was copied into `~/.vscode/extensions/` by hand, is replaced. While it is
+  still installed and watches the same file, the new one handles no
+  request, since both would act on each, and offers to uninstall it. Settings move from `chatManagerReload.*`
+  to `chatManager.*`; the old ones are still read where the new ones are
+  unset, and `signalFile` gives way to `chatManager.folder`.
+- **Why:** nothing kept the two halves in step. On 2026-09-25 the script
+  was 0.6.0 while every window still ran the 2.0.0 extension, which ignores
+  the overlay's open requests, so the open chip did nothing.
+- **`chatinstall -NoRestart`**, for the extension, which installs into
+  each PowerShell in turn and restarts the watcher and overlay once, after
+  the last. `chatinstall` now names `chatManager.folder` where it named
+  `chatManagerReload.signalFile`.
+- **The one-liner stays**, for the terminal alone.
+
 ## 0.6.0 — show the chat fresh
 
 - **Show it, not Reload.** A chat a VS Code window still holds shows a

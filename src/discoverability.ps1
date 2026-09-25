@@ -32,12 +32,16 @@ function chatinstall {
     file.
     .PARAMETER Force
     Rewrite the line even when it is already there.
+    .PARAMETER NoRestart
+    Leave a running watcher and overlay on the copy they run. The VS Code
+    extension installs into each PowerShell's profile in turn, and restarts
+    them once, after the last.
     .EXAMPLE
     . C:\tools\VS-code-chat-manager\VS-code-chat-manager.ps1
     chatinstall
     #>
     [CmdletBinding()]
-    param([switch]$Force)
+    param([switch]$Force, [switch]$NoRestart)
     Set-StrictMode -Off
 
     $me = $script:ChatScriptPath
@@ -142,25 +146,15 @@ function chatinstall {
     if (-not (Find-ChatqExe claude) -and -not (Find-ChatqExe codex)) {
         Write-Host '    no claude or codex CLI found - chatq needs one, or CHATQ_CLAUDE / CHATQ_CODEX' -ForegroundColor Yellow
     }
-    # A watcher already running is still the old code. It hands over to one
-    # running this copy after its current job - never in the middle of one.
-    if (Test-ChatqWatcherAlive) {
-        Save-ChatqText $script:ChatqRestartPath 'restart'
-        Write-Host '    the running watcher switches to this copy after its current job' -ForegroundColor DarkGray
-    }
-    # the overlay has no job to finish: it starts again on this copy now
-    if (Test-ChatOverlayAlive) {
-        Send-ChatOverlayCommand 'restart'
-        Write-Host '    the overlay restarts on this copy' -ForegroundColor DarkGray
-    }
+    if (-not $NoRestart) { Restart-ChatBackground }
 
-    # The extension defaults to ~/Tools/VS-code-chat-manager/data/reload-request.
-    # Anywhere else needs the setting, and without it the reload prompt simply
-    # never appears - a silence that looks like the extension being broken.
-    $defaultReload = Join-Path (Join-Path (Join-Path (Join-Path $HOME 'Tools') 'VS-code-chat-manager') 'data') 'reload-request'
-    if ($script:ChatReloadPath -ne $defaultReload) {
-        Write-Host '    using extension/? set chatManagerReload.signalFile to' -ForegroundColor DarkGray
-        Write-Host "      $($script:ChatReloadPath)" -ForegroundColor DarkGray
+    # The extension defaults to ~/Tools/VS-code-chat-manager. Anywhere else
+    # needs the setting, and without it its prompts simply never appear - a
+    # silence that looks like the extension being broken.
+    $defaultRoot = Join-Path (Join-Path $HOME 'Tools') 'VS-code-chat-manager'
+    if ($script:ChatRoot -ne $defaultRoot) {
+        Write-Host '    using the VS Code extension? set chatManager.folder to' -ForegroundColor DarkGray
+        Write-Host "      $($script:ChatRoot)" -ForegroundColor DarkGray
     }
 
     # last, so a run that died earlier leaves the old stamp alone and the next
@@ -174,6 +168,31 @@ function chatinstall {
         Set-Content -LiteralPath $script:ChatVersionPath -Value $script:ChatVersion -Encoding UTF8
     }
     catch {}
+}
+
+function Restart-ChatBackground {
+    # A watcher already running is still the old code. It hands over to one
+    # running this copy after its current job - never in the middle of one.
+    if (Test-ChatqWatcherAlive) {
+        Save-ChatqText $script:ChatqRestartPath 'restart'
+        Write-Host '    the running watcher switches to this copy after its current job' -ForegroundColor DarkGray
+    }
+    # the overlay has no job to finish: it starts again on this copy now
+    if (Test-ChatOverlayAlive) {
+        Send-ChatOverlayCommand 'restart'
+        Write-Host '    the overlay restarts on this copy' -ForegroundColor DarkGray
+    }
+}
+
+function Test-ChatProfileLine {
+    # $true when $PROFILE already loads this copy, the way chatinstall finds
+    # its own line. The VS Code extension asks before it adds one, and needs
+    # to ask nothing where the line is there already.
+    # a host with no $PROFILE at all has no line, and Test-Path would throw
+    $me = $script:ChatScriptPath
+    if (-not $me -or -not $PROFILE -or -not (Test-Path -LiteralPath $PROFILE)) { return $false }
+    return [bool](@(Get-Content -LiteralPath $PROFILE) | Where-Object {
+            $_ -match $script:ChatProfilePattern -and $_.IndexOf($me, [StringComparison]::OrdinalIgnoreCase) -ge 0 })
 }
 
 function chatuninstall {

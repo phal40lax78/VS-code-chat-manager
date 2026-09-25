@@ -12,15 +12,25 @@
 const Module = require('module');
 const path = require('path');
 const folders = [{ uri: { fsPath: path.resolve('/work/projA') } }];
-// the settings: '' for anything unset, as VS Code's get hands back a default
+// the settings, by 'section.key': '' for anything unset, as VS Code's get
+// hands back a default, and inspect saying where a value was set
 const cfgVals = {};
 let claudeHere = false;
+let oldHere = false;
 class TabInputWebview { constructor(viewType) { this.viewType = viewType; } }
 class TabInputText { constructor(uri) { this.uri = uri; } }
 const stub = {
-    workspace: { getConfiguration: () => ({ get: (k) => (k in cfgVals ? cfgVals[k] : '') }), workspaceFolders: folders },
+    workspace: {
+        getConfiguration: (sec) => ({
+            get: (k) => (sec + '.' + k in cfgVals ? cfgVals[sec + '.' + k] : ''),
+            inspect: (k) => (sec + '.' + k in cfgVals ? { key: k, globalValue: cfgVals[sec + '.' + k] } : { key: k })
+        }),
+        workspaceFolders: folders
+    },
     window: {}, commands: {},
-    extensions: { getExtension: (id) => (claudeHere && id === 'anthropic.claude-code' ? { id } : undefined) },
+    extensions: {
+        getExtension: (id) => ((claudeHere && id === 'anthropic.claude-code') || (oldHere && id === 'phal40lax78.chat-manager-reload') ? { id } : undefined)
+    },
     TabInputWebview, TabInputText
 };
 const load = Module._load;
@@ -132,9 +142,25 @@ check('bad JSON, or a field of the wrong type, is no verdict', ext._parseVerdict
     ext._parseVerdict('{"busy":false,"oldProcess":"ended","outcome":"ok","hostPids":["1"]}') === null && ext._parseVerdict('') === null);
 const of = ext._openFiles();
 check('the open requests: data/open-request beside the reload one', of.length === 1 && of[0].endsWith(path.join('VS-code-chat-manager', 'data', 'open-request')));
-cfgVals.signalFile = path.resolve('/x/data/reload-request');
-check('and it follows signalFile', ext._openFiles()[0] === path.resolve('/x/data/open-request'));
-delete cfgVals.signalFile;
+cfgVals['chatManager.folder'] = path.resolve('/t/tool');
+check('both follow chatManager.folder', ext._signalFiles()[0] === path.resolve('/t/tool/data/reload-request') &&
+    ext._openFiles()[0] === path.resolve('/t/tool/data/open-request'));
+cfgVals['chatManager.folder'] = '~/elsewhere';
+check('and a folder under ~ is under the home folder', ext._toolFolder() === path.join(require('os').homedir(), 'elsewhere'), ext._toolFolder());
+delete cfgVals['chatManager.folder'];
+cfgVals['chatManagerReload.signalFile'] = path.resolve('/x/data/reload-request');
+check('unset, the old extension\'s signalFile still places them', ext._openFiles()[0] === path.resolve('/x/data/open-request'));
+cfgVals['chatManager.folder'] = path.resolve('/t/tool');
+check('but chatManager.folder wins over it', ext._toolFolder() === path.resolve('/t/tool'));
+delete cfgVals['chatManager.folder'];
+delete cfgVals['chatManagerReload.signalFile'];
+cfgVals['chatManagerReload.showFresh'] = false;
+const oldOff = ext._showFresh();
+cfgVals['chatManager.showFresh'] = true;
+const newOn = ext._showFresh();
+delete cfgVals['chatManagerReload.showFresh'];
+delete cfgVals['chatManager.showFresh'];
+check('an old chatManagerReload setting is read where the new one is unset, and the new one wins', oldOff === false && newOn === true && ext._showFresh() === true);
 
 // the whole path, request file to reload, with what the window would do recorded
 (async () => {
@@ -357,6 +383,288 @@ delete cfgVals.signalFile;
     await ext._checkOpen(context, ofile, false);
     await settle();
     check('the same open twice acts once', calls.join() === 'claude-vscode.editor.open', calls.join());
+
+    // --- the terminal half: setup.js and build.js -----------------------------
+    const su = require(path.join(__dirname, '..', 'extension', 'setup.js'));
+    const bj = require(path.join(__dirname, '..', 'extension', 'build.js'));
+    check('setup: the loader\'s version read from its text', su._readVersion("# x\r\n$script:ChatVersion = '0.7.0'\r\n") === '0.7.0' &&
+        su._readVersion('none') === null && su._readVersion("$script:ChatVersion = '0.8.0-rc1'") === null);
+    check('setup: versions compare by number, 0.10.0 after 0.9.1', su._compareVersions('0.10.0', '0.9.1') === 1 &&
+        su._compareVersions('0.7.0', '0.7.0') === 0 && su._compareVersions('0.6.9', '0.7.0') === -1);
+    const dcd = (bundled, disk, git, extra) => su._decide(Object.assign({ bundled, loader: disk !== null, onDisk: disk, git, foreign: false }, extra));
+    check('setup: nothing there - install; older - update; the same - nothing; newer - left alone',
+        dcd('0.7.0', null, false) === 'install' && dcd('0.7.0', '0.6.0', false) === 'update' && dcd('0.7.0', '0.7.0', false) === 'none' && dcd('0.7.0', '0.8.0', false) === 'newer');
+    check('setup: a git checkout is never written - another version there is only said',
+        dcd('0.7.0', '0.6.0', true) === 'skew' && dcd('0.7.0', '0.7.0', true) === 'none' && dcd('0.7.0', null, true) === 'none');
+    check('setup: a loader whose version cannot be read is left, never taken for no loader',
+        dcd('0.7.0', null, false, { loader: true }) === 'unknown' && dcd('0.7.0', null, true, { loader: true }) === 'unknown');
+    check('setup: a folder holding other things is not installed into', dcd('0.7.0', null, false, { foreign: true }) === 'foreign');
+    check('setup: a build carrying no scripts does nothing', dcd(null, '0.6.0', false) === 'none' && dcd(null, null, false) === 'none');
+    check('setup: the profile looked at when files changed, or when not settled for this version',
+        su._needsProbe('update', { profile: 'yes' }, '0.7.0') && su._needsProbe('none', {}, '0.7.0') && !su._needsProbe('none', { profile: 'yes' }, '0.7.0') &&
+        !su._needsProbe('none', { profile: 'never' }, '0.7.0') && !su._needsProbe('none', { notNowFor: '0.7.0' }, '0.7.0') && su._needsProbe('none', { notNowFor: '0.6.0' }, '0.7.0'));
+    check('setup: asked only where a PowerShell lacks the line; never after Never; after Not now, at the next version; always from the palette',
+        !su._shouldAsk({}, [], '0.7.0', true) && su._shouldAsk({}, ['p'], '0.7.0', false) && !su._shouldAsk({ profile: 'never' }, ['p'], '0.7.0', false) &&
+        su._shouldAsk({ profile: 'never' }, ['p'], '0.7.0', true) && !su._shouldAsk({ notNowFor: '0.7.0' }, ['p'], '0.7.0', false) && su._shouldAsk({ notNowFor: '0.6.0' }, ['p'], '0.7.0', false));
+    check('setup: the policies a profile line cannot run under', su._blocksProfile('Restricted') && su._blocksProfile('AllSigned') &&
+        !su._blocksProfile('RemoteSigned') && !su._blocksProfile('Bypass') && !su._blocksProfile(null));
+    check('setup: the last True or False a PowerShell printed, and none is no answer', su._lastBool('WARNING: x\r\nFalse\r\nTrue\r\n') === true && su._lastBool('noise') === null);
+    const pa = su._psArgs("C:\\it's\\VS-code-chat-manager.ps1", 'Test-ChatProfileLine');
+    const pt = Buffer.from(pa[pa.length - 1], 'base64').toString('utf16le');
+    check('setup: its PowerShell loads no profile, is marked as no interactive shell, and quotes the path',
+        pa.includes('-NoProfile') && pa.includes('Bypass') && pt === "$env:CHATQ_OVERLAY='1'; . 'C:\\it''s\\VS-code-chat-manager.ps1'; Test-ChatProfileLine", pt);
+
+    // locks, folders and copies, in the sandbox
+    const sbx = path.join(dir, 'ext-setup');
+    fs.rmSync(sbx, { recursive: true, force: true });
+    fs.mkdirSync(sbx, { recursive: true });
+    const lk = path.join(sbx, 'x.lock');
+    const t0 = Date.now();
+    check('lock: the first window takes it, a second does not', su._takeLock(lk, t0, 60000) && !su._takeLock(lk, t0, 60000));
+    check('lock: one older than its limit is taken over', su._takeLock(lk, t0 + 120000, 60000));
+    su._releaseLock(lk);
+    check('lock: released, it is free again', su._takeLock(lk, t0, 60000));
+    su._releaseLock(lk);
+    let lockThrew = false;
+    try { su._takeLock(path.join(sbx, 'no-such-dir', 'x.lock'), t0, 60000); } catch (e) { lockThrew = true; }
+    check('lock: a place that cannot be written throws, never reads as another window', lockThrew);
+    fs.mkdirSync(path.join(sbx, 'repo', '.git'), { recursive: true });
+    fs.mkdirSync(path.join(sbx, 'repo', 'Tools', 'tool'), { recursive: true });
+    // the sandbox is inside this repo, so every look stops at it
+    const realGit = su._inGitCheckout;
+    check('setup: a folder inside a git work tree counts as one, however deep', realGit(path.join(sbx, 'repo', 'Tools', 'tool'), sbx) &&
+        !realGit(path.join(sbx, 'x'), sbx));
+    su._inGitCheckout = (f) => realGit(f, sbx);
+    fs.mkdirSync(path.join(sbx, 'docs'), { recursive: true });
+    fs.writeFileSync(path.join(sbx, 'docs', 'letter.txt'), 'x');
+    fs.mkdirSync(path.join(sbx, 'empty'), { recursive: true });
+    fs.mkdirSync(path.join(sbx, 'withdata', 'data'), { recursive: true });
+    check('setup: someone else\'s folder is foreign; an empty or missing one, or one with data/, is not',
+        su._isForeign(path.join(sbx, 'docs')) && !su._isForeign(path.join(sbx, 'empty')) && !su._isForeign(path.join(sbx, 'missing')) &&
+        !su._isForeign(path.join(sbx, 'withdata')));
+
+    // packages carrying 0.7.0 and 0.7.1, and a tool folder to put them in
+    const mkPayload = (at, v) => {
+        const p = path.join(at, 'payload');
+        fs.mkdirSync(path.join(p, 'src'), { recursive: true });
+        fs.writeFileSync(path.join(p, su.LOADER), "$script:ChatVersion = '" + v + "'\r\n");
+        fs.writeFileSync(path.join(p, 'src', 'core.ps1'), '# core ' + v + '\r\n');
+        return at;
+    };
+    const ext70 = mkPayload(path.join(sbx, 'ext70'), '0.7.0');
+    const ext71 = mkPayload(path.join(sbx, 'ext71'), '0.7.1');
+    const tool = path.join(sbx, 'tool');
+    const steps = [];
+    const realStep = su._profileStep;
+    su._profileStep = async (o) => { steps.push(o.action); };
+    const said = [];
+    const warned = [];
+    stub.window.showInformationMessage = async (m) => { said.push(m); };
+    stub.window.showWarningMessage = async (m) => { warned.push(m); };
+    const up = (at, force, where) => su.setUp({ extensionPath: at, folder: where || tool, log: () => { }, force });
+    const diskText = () => { try { return fs.readFileSync(path.join(tool, su.LOADER), 'latin1'); } catch (e) { return ''; } };
+    const coreText = () => { try { return fs.readFileSync(path.join(tool, 'src', 'core.ps1'), 'latin1'); } catch (e) { return ''; } };
+    const r1s = await up(ext70);
+    check('setUp: an empty folder gets the scripts, then the profile step, and says where',
+        r1s === 'install' && diskText().includes("'0.7.0'") && coreText().includes('0.7.0') && steps.join() === 'install' &&
+        !fs.existsSync(path.join(tool, su.LOADER + '.new')) && said.length === 1 && said[0].includes(tool), r1s + ' ' + steps.join() + ' ' + said.join('|'));
+    steps.length = 0; said.length = 0;
+    const r2s = await up(ext70);
+    check('setUp: the same package again copies nothing; the profile question is still open', r2s === 'none' && steps.join() === 'none', r2s + ' ' + steps.join());
+    steps.length = 0;
+    su._writeState(tool, { profile: 'yes' });
+    const r3s = await up(ext70);
+    check('setUp: settled, a start runs no PowerShell at all', r3s === 'none' && steps.length === 0, r3s + ' ' + steps.join());
+    const r4s = await up(ext71);
+    check('setUp: a newer package updates the copy, and says so', r4s === 'update' && diskText().includes("'0.7.1'") && coreText().includes('0.7.1') &&
+        steps.join() === 'update' && said.some(m => m.includes('0.7.1')), r4s + ' ' + steps.join());
+    steps.length = 0;
+    const r5s = await up(ext70);
+    check('setUp: an older package leaves a newer copy alone', r5s === 'newer' && diskText().includes("'0.7.1'") && steps.length === 0, r5s);
+    fs.writeFileSync(path.join(tool, su.LOADER), "$script:ChatVersion = '0.9.0-dev'\r\n");
+    warned.length = 0;
+    const u1 = await up(ext70);
+    const u2 = await up(ext70);
+    check('setUp: a loader of no readable version is left as it is, and said once', u1 === 'unknown' && u2 === 'unknown' &&
+        diskText().includes('0.9.0-dev') && warned.length === 1 && steps.length === 0, u1 + ' ' + warned.join('|'));
+    fs.writeFileSync(path.join(tool, su.LOADER), "$script:ChatVersion = '0.6.0'\r\n");
+    fs.writeFileSync(path.join(tool, 'data', 'install.lock'), '1');
+    const r6s = await up(ext70);
+    check('setUp: while another window holds the lock, nothing is copied', r6s === 'elsewhere' && diskText().includes("'0.6.0'"), r6s);
+    fs.unlinkSync(path.join(tool, 'data', 'install.lock'));
+    // a copy that fails: src is a file where the folder goes
+    const bad = path.join(sbx, 'bad');
+    fs.mkdirSync(path.join(bad, 'data'), { recursive: true });
+    fs.writeFileSync(path.join(bad, 'src'), 'not a folder');
+    warned.length = 0;
+    const b1 = await up(ext70, false, bad);
+    const b2 = await up(ext70, false, bad);
+    check('setUp: a copy that fails says so once a version, leaves no .new, and keeps no half install',
+        b1 === 'failed' && b2 === 'failed' && warned.length === 1 && /could not put/.test(warned[0]) && !fs.existsSync(path.join(bad, su.LOADER)) &&
+        !fs.readdirSync(bad).some(n => n.endsWith('.new')), b1 + ' ' + warned.join('|'));
+    warned.length = 0;
+    const f1 = await up(ext70, false, path.join(sbx, 'docs'));
+    check('setUp: someone else\'s folder gets nothing, not even a data/, and is said', f1 === 'foreign' &&
+        !fs.existsSync(path.join(sbx, 'docs', 'data')) && !fs.existsSync(path.join(sbx, 'docs', su.LOADER)) && warned.length === 1, f1);
+    fs.mkdirSync(path.join(tool, '.git'));
+    said.length = 0;
+    const g1 = await up(ext70);
+    const g2 = await up(ext70);
+    check('setUp: a git checkout is never written, and the difference is said once',
+        g1 === 'skew' && g2 === 'skew' && diskText().includes("'0.6.0'") && said.length === 1 && /pull to match/.test(said[0]), g1 + ' ' + said.join('|'));
+    su._profileStep = realStep;
+    su._inGitCheckout = realGit;
+
+    // the profile step itself, with PowerShell stood in for: hosts A and B,
+    // what each answers, and every command recorded
+    const ps = { A: { line: true, policy: 'RemoteSigned' }, B: { line: false, policy: 'RemoteSigned' } };
+    const psRan = [];
+    let installWorks = true;
+    const real = { hosts: su._hosts, runPs: su._runPs, policyOf: su._policyOf, allowScripts: su._allowScripts };
+    su._hosts = () => Object.keys(ps);
+    su._runPs = async (exe, loader, cmd) => {
+        psRan.push(exe + ':' + cmd.split(' ')[0]);
+        if (/Test-ChatProfileLine/.test(cmd)) return { ok: true, stdout: ps[exe].line === null ? 'garbage' : String(ps[exe].line ? 'True' : 'False') };
+        if (/^chatinstall/.test(cmd) && installWorks) ps[exe].line = true;
+        return { ok: true, stdout: '' };
+    };
+    su._policyOf = async (exe) => ps[exe].policy;
+    // locked: a group policy decides it, and nothing here changes it
+    su._allowScripts = async (exe) => { psRan.push(exe + ':allow'); if (!ps[exe].locked) ps[exe].policy = 'RemoteSigned'; return ps[exe].policy === 'RemoteSigned'; };
+    let answer2 = 'Add';
+    const asked2 = [];
+    stub.window.showInformationMessage = async (m, ...b) => { asked2.push(m); return b.length ? answer2 : undefined; };
+    stub.window.showWarningMessage = async (m, ...b) => { asked2.push('warn:' + m); return b.length ? 'Allow' : undefined; };
+    const pf = path.join(sbx, 'pf');
+    fs.mkdirSync(pf, { recursive: true });
+    const step = (action, force) => su._profileStep({ folder: pf, loader: 'L', version: '0.7.0', action, force, log: () => { } });
+    const reset2 = () => { psRan.length = 0; asked2.length = 0; su._writeState(pf, {}); };
+    reset2();
+    await step('update');
+    check('profile: Add - chatinstall where the line was missing, checked again; after an update also where it was; one restart',
+        psRan.filter(x => /chatinstall/.test(x)).sort().join() === 'A:chatinstall,B:chatinstall' && psRan.filter(x => /Restart-ChatBackground/.test(x)).length === 1 &&
+        su._readState(pf).profile === 'yes' && asked2.includes(su.texts.added), psRan.join() + ' | ' + asked2.join(' | '));
+    reset2();
+    ps.B.line = false;
+    installWorks = false;
+    await step('none');
+    installWorks = true;
+    check('profile: Add, and the line still not there after - no "Added", the answer not kept as yes, and said',
+        su._readState(pf).profile !== 'yes' && su._readState(pf).notNowFor === '0.7.0' && !asked2.includes(su.texts.added) &&
+        asked2.includes('warn:' + su.texts.addFailed), JSON.stringify(su._readState(pf)) + ' | ' + asked2.join(' | '));
+    reset2();
+    ps.B = { line: false, policy: 'Restricted' };
+    await step('none');
+    check('profile: the policy would stop the line - the question says so, and Add allows scripts before the line is written',
+        asked2[0] === su.texts.askPolicy('Restricted') && psRan.indexOf('B:allow') >= 0 && psRan.indexOf('B:allow') < psRan.indexOf('B:chatinstall') &&
+        su._readState(pf).profile === 'yes', psRan.join() + ' | ' + asked2.join(' | '));
+    reset2();
+    ps.B = { line: false, policy: 'Restricted', locked: true };
+    await step('none');
+    check('profile: a policy that will not change - the line is not written, and said',
+        !psRan.includes('B:chatinstall') && asked2.includes('warn:' + su.texts.policyStuck) && su._readState(pf).profile !== 'yes', psRan.join() + ' | ' + asked2.join(' | '));
+    reset2();
+    ps.B = { line: null, policy: 'RemoteSigned' };
+    await step('none');
+    check('profile: a PowerShell that gives no answer is neither asked about nor installed into', asked2.length === 0 &&
+        !psRan.some(x => /chatinstall/.test(x)), psRan.join() + ' | ' + asked2.join(' | '));
+    reset2();
+    ps.A = { line: true, policy: 'Restricted', locked: true };
+    ps.B = { line: true, policy: 'RemoteSigned' };
+    await step('none');
+    const firstAsk = asked2.slice();
+    asked2.length = 0;
+    await step('none');
+    check('profile: a line already there that the policy never runs - offered once a version, tried on the click, and a refusal said',
+        firstAsk[0] === 'warn:' + su.texts.policyHave('Restricted') && firstAsk.includes('warn:' + su.texts.policyStuck) &&
+        psRan.includes('A:allow') && asked2.length === 0, firstAsk.join(' | ') + ' / ' + asked2.join(' | '));
+    reset2();
+    ps.A = { line: false, policy: 'RemoteSigned' };
+    ps.B = { line: false, policy: 'RemoteSigned' };
+    answer2 = 'Never';
+    await step('none');
+    const afterNever = su._readState(pf).profile;
+    asked2.length = 0;
+    await step('none');
+    const askedAgain = asked2.length;
+    await step('none', true);
+    answer2 = 'Add';
+    check('profile: Never is kept and never asked again - until the palette asks', afterNever === 'never' && askedAgain === 0 && asked2.length >= 1,
+        afterNever + ' ' + askedAgain + ' ' + asked2.length);
+    Object.assign(su, { _hosts: real.hosts, _runPs: real.runPs, _policyOf: real.policyOf, _allowScripts: real.allowScripts });
+
+    check('build: the part names in the loader\'s own list, in its order', bj._partsOf("x\r\n$chatParts = 'core', 'providers', 'overlay'\r\n").join() === 'core,providers,overlay');
+    check('build: an SVG image is caught; a PNG, and a plain link to an SVG, are not',
+        bj._svgImages('![a](x/demo.svg) ![b](y.png) [c](z.svg) <img alt="w" src="w.SVG">').join() === 'x/demo.svg,w.SVG');
+    const realLoader = fs.readFileSync(path.join(__dirname, '..', su.LOADER), 'latin1');
+    const realParts = bj._partsOf(realLoader);
+    check('build: the real loader lists 14 parts, each one in src/', realParts.length === 14 &&
+        realParts.every(p => fs.existsSync(path.join(__dirname, '..', 'src', p + '.ps1'))), realParts.join());
+    const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'extension', 'package.json'), 'utf8'));
+    check('build: the extension\'s version is the script\'s', pkg.version === su._readVersion(realLoader), pkg.version + ' / ' + su._readVersion(realLoader));
+    check('build: the listing README shows no SVG', bj._svgImages(fs.readFileSync(path.join(__dirname, '..', 'extension', 'README.md'), 'utf8')).length === 0);
+
+    // the tool folder, as set
+    cfgVals['chatManager.folder'] = 'Tools/relative';
+    const relTo = ext._toolFolder();
+    delete cfgVals['chatManager.folder'];
+    cfgVals['chatManagerReload.signalFile'] = path.resolve('/c/Users/me/reload-request');
+    const oddTo = ext._toolFolder();
+    delete cfgVals['chatManagerReload.signalFile'];
+    const dflt = path.join(require('os').homedir(), 'Tools', 'VS-code-chat-manager');
+    check('the tool folder: a relative one, or a signalFile not in a data/ folder, falls back to the default - never C:\\ or C:\\Users',
+        relTo === dflt && oddTo === dflt, relTo + ' | ' + oddTo);
+
+    // runs of the setup, one at a time per window, a palette one after a
+    // start's rather than dropped
+    const realSetUp = su.setUp;
+    const runs = [];
+    su.setUp = async (o) => { runs.push(o.force ? 'force' : 'start'); await new Promise(r => setTimeout(r, 15)); return 'none'; };
+    const ctxR = { extensionPath: sbx };
+    const pr1 = ext._runSetup(ctxR, false);
+    const pr2 = ext._runSetup(ctxR, false);
+    const pr3 = ext._runSetup(ctxR, true);
+    await Promise.all([pr1, pr2, pr3]);
+    su.setUp = realSetUp;
+    check('setup runs one at a time; a second start joins the first, the palette\'s runs after it', runs.join() === 'start,force', runs.join());
+
+    // activation: the old extension left to handle requests where it watches
+    // the same file, and one window offering it away
+    const watched = [];
+    const realWatch = fs.watchFile;
+    fs.watchFile = (f) => { watched.push(f); };
+    stub.commands.registerCommand = () => ({ dispose() { } });
+    const acts = [];
+    stub.commands.executeCommand = async (c, a) => { acts.push(c + (a ? ':' + a : '')); };
+    const asks = [];
+    stub.window.showWarningMessage = async (m, ...b) => { asks.push(m); return b[0]; };
+    stub.window.showInformationMessage = async (m, ...b) => { asks.push(m); return undefined; };
+    cfgVals['chatManagerReload.signalFile'] = path.join(tool, 'data', 'reload-request');
+    oldHere = true;
+    const ctxA = { subscriptions: [], extensionPath: path.join(sbx, 'no-payload'), globalState: context.globalState };
+    ext.activate(ctxA);
+    await settle();
+    check('the old extension installed on the same file: none of it watched here, and the old one offered away',
+        watched.length === 0 && asks[0] === ext._texts.oldThere && acts.includes('workbench.extensions.uninstallExtension:phal40lax78.chat-manager-reload') &&
+        asks[1] === ext._texts.oldGone, acts.join() + ' | ' + asks.join(' | '));
+    asks.length = 0;
+    check('another window within 10 minutes does not ask again', (await ext._askToRemoveOld()) === 'elsewhere' && asks.length === 0);
+    cfgVals['chatManager.folder'] = path.join(sbx, 'tool2');
+    ext.activate(ctxA);
+    await settle();
+    check('the old one on another file than chatManager.folder\'s: this one handles its own', !ext._oldWatchesMine() && watched.length === 2 &&
+        watched[0] === path.join(sbx, 'tool2', 'data', 'reload-request'), watched.join());
+    watched.length = 0;
+    delete cfgVals['chatManager.folder'];
+    oldHere = false;
+    ext.activate(ctxA);
+    await settle();
+    check('without it, both request files are watched, in the tool folder', watched.length === 2 &&
+        watched[0] === path.join(tool, 'data', 'reload-request') && watched[1] === path.join(tool, 'data', 'open-request'), watched.join());
+    check('and the palette has both commands', ctxA.subscriptions.length >= 4);
+    fs.watchFile = realWatch;
+    delete cfgVals['chatManagerReload.signalFile'];
+    fs.rmSync(sbx, { recursive: true, force: true });
 
     try { fs.unlinkSync(file); } catch (e) { }
     try { fs.unlinkSync(ofile); } catch (e) { }

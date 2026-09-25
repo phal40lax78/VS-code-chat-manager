@@ -5,3 +5,9 @@
 data/
 # the test harness builds its fake homes here and deletes them afterwards
 tests/.sandbox/
+# what extension/build.js copies in before vsce packs the extension, and the
+# package itself
+extension/payload/
+extension/CHANGELOG.md
+extension/LICENSE
+*.vsix

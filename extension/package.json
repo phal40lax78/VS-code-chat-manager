@@ -1,40 +1,84 @@
 {
-    "name": "chat-manager-reload",
-    "displayName": "VS Code chat manager - reload",
-    "description": "Shows a chat up to date after VS-code-chat-manager runs a queued prompt into it, or the overlay's open chip asks for it - redrawing only the window's web views, or in a tab of its own - and offers to reload the window after a delete, so the panel shows what changed.",
-    "version": "2.1.0",
-    "publisher": "phal40lax78",
+    "name": "vs-code-chat-manager",
+    "displayName": "VS Code Chat Manager",
+    "description": "Find, delete and archive Claude Code, Codex and Copilot chats; queue prompts for when the usage limit resets; see every running chat in an always-on-top overlay. Installs its PowerShell commands and keeps them up to date.",
+    "version": "0.7.0",
+    "publisher": "redaechan",
     "license": "MIT",
+    "icon": "icon.png",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/phal40lax78/VS-code-chat-manager"
+    },
+    "homepage": "https://github.com/phal40lax78/VS-code-chat-manager#readme",
+    "bugs": {
+        "url": "https://github.com/phal40lax78/VS-code-chat-manager/issues"
+    },
     "engines": {
         "vscode": "^1.75.0"
     },
     "categories": [
         "Other"
     ],
+    "keywords": [
+        "claude",
+        "claude code",
+        "codex",
+        "copilot",
+        "chat",
+        "queue",
+        "usage limit",
+        "overlay",
+        "powershell"
+    ],
+    "extensionKind": [
+        "ui"
+    ],
+    "capabilities": {
+        "untrustedWorkspaces": {
+            "supported": true
+        },
+        "virtualWorkspaces": true
+    },
     "activationEvents": [
         "onStartupFinished"
     ],
     "main": "./extension.js",
+    "scripts": {
+        "vscode:prepublish": "node build.js"
+    },
     "contributes": {
+        "commands": [
+            {
+                "command": "chatManager.installTerminal",
+                "title": "Install terminal commands",
+                "category": "Chat Manager"
+            },
+            {
+                "command": "chatManager.showLog",
+                "title": "Show log",
+                "category": "Chat Manager"
+            }
+        ],
         "configuration": {
-            "title": "VS Code chat manager - reload",
+            "title": "VS Code Chat Manager",
             "properties": {
-                "chatManagerReload.signalFile": {
+                "chatManager.folder": {
                     "type": "string",
                     "default": "",
-                    "markdownDescription": "Path to the tool's `data/reload-request`. Empty means `~/Tools/VS-code-chat-manager/data/reload-request`. Set this if `VS-code-chat-manager.ps1` lives somewhere else - `data/` follows the script, so the path moves with it. The overlay's `open-request` beside it moves too. `chatinstall` prints the line to paste when it is not the default."
+                    "markdownDescription": "The tool folder: `VS-code-chat-manager.ps1`, its `src/`, and `data/` beside them. Empty means `~/Tools/VS-code-chat-manager`. The extension installs and updates the scripts there - never in a git checkout, never in a folder holding other files - and reads its requests from `data/`. A full path; `~` stands for your home folder. A change takes effect after a window reload. `chatinstall` prints the line to set when the script lives elsewhere."
                 },
-                "chatManagerReload.autoReload": {
+                "chatManager.autoReload": {
                     "type": "boolean",
                     "default": false,
                     "markdownDescription": "Reload without asking after a delete. Off by default: a reload restarts every extension in the window, so one taken mid-answer loses that answer. Never applies while a chat in the workspace is still working (a turn, a permission prompt, a workflow or background agent). A queued run has its own setting, `autoReloadAfterRun`."
                 },
-                "chatManagerReload.autoReloadAfterRun": {
+                "chatManager.autoReloadAfterRun": {
                     "type": "boolean",
                     "default": true,
                     "markdownDescription": "Show the chat fresh without asking after a queued prompt ran into a chat this window has open (with `showFresh` off: reload the window) - but only in a window whose one folder is that chat's, when nobody had used the PC for `quietMinutes` (5 by default, see `chatqnotify -QuietMinutes`; 0 means never away), no other chat in the folder was working or written in that time as the run ended, and that judgement is at most 20 seconds old. Otherwise the window asks, as with this off. A window opened after the run already shows it, and neither asks nor acts."
                 },
-                "chatManagerReload.showFresh": {
+                "chatManager.showFresh": {
                     "type": "boolean",
                     "default": true,
                     "markdownDescription": "After a queued run, redraw instead of reloading: the chat's old idle process is ended and the window runs **Developer: Reload Webviews**, showing the chat where you read it - only when no chat in the window is working, since that cuts a working chat off as a reload would. Otherwise the chat opens fresh in an editor tab of its own, which touches no other chat. Terminals, editors and other extensions keep running either way. Off brings back the window reload of 0.5.0. Needs the Claude Code extension."

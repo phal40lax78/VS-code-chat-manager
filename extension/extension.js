@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const cp = require('child_process');
+const setup = require('./setup');
 
 const SEEN_KEY = 'chatManagerReload.lastSeenId';
 const OPEN_SEEN_KEY = 'chatManagerReload.lastOpenId';
@@ -23,6 +24,51 @@ const timing = {
     openMaxAge: 120000, judgedMaxAge: 20000, verdictTimeout: 20000
 };
 
+// chatManager.* first. For one release the old extension's chatManagerReload.*
+// is read where the new one is unset, so nobody's settings are lost in the move.
+function isSet(i) { return !!i && [i.globalValue, i.workspaceValue, i.workspaceFolderValue].some(v => v !== undefined); }
+function setting(key) {
+    const now = vscode.workspace.getConfiguration('chatManager');
+    if (isSet(now.inspect && now.inspect(key))) return now.get(key);
+    const old = vscode.workspace.getConfiguration('chatManagerReload');
+    if (isSet(old.inspect && old.inspect(key))) return old.get(key);
+    return now.get(key);
+}
+
+const DEFAULT_FOLDER = () => path.join(os.homedir(), 'Tools', 'VS-code-chat-manager');
+function expandHome(p) { return path.normalize(String(p).replace(/^~(?=$|[\\/])/, os.homedir())); }
+
+// the old extension's signalFile, as it was set, else ''
+function oldSignalFile() {
+    const old = vscode.workspace.getConfiguration('chatManagerReload');
+    return isSet(old.inspect && old.inspect('signalFile')) ? String(old.get('signalFile') || '').trim() : '';
+}
+
+// The tool folder: the scripts, and data/ beside them - and where setup.js
+// writes, so only a full path is taken. chatManager.folder; else the folder
+// whose data/reload-request the old signalFile named, and only a path of
+// that shape; else ~/Tools/VS-code-chat-manager. What is set and refused is
+// logged once.
+let refusedLogged = false;
+function toolFolder() {
+    const refuse = (what) => {
+        if (!refusedLogged) { refusedLogged = true; log(what + ' - using ' + DEFAULT_FOLDER()); }
+        return DEFAULT_FOLDER();
+    };
+    const set = String(setting('folder') || '').trim();
+    if (set) {
+        const f = expandHome(set);
+        return path.isAbsolute(f) ? f : refuse('chatManager.folder is not a full path: ' + set);
+    }
+    const sig = oldSignalFile();
+    if (sig) {
+        const f = expandHome(sig);
+        if (path.isAbsolute(f) && /[\\/]data[\\/]reload-request$/i.test(f)) return path.dirname(path.dirname(f));
+        return refuse('chatManagerReload.signalFile does not name a data/reload-request: ' + sig);
+    }
+    return DEFAULT_FOLDER();
+}
+
 // VS-code-chat-manager writes data/reload-request after chatrm deletes a chat,
 // and after chatq runs a queued prompt into a chat this window still holds;
 // data/open-request when the overlay's open chip is clicked. A run's chat is
@@ -30,14 +76,10 @@ const timing = {
 // its own open commands, which no outside process can run - and otherwise the
 // window reloads, as it did before.
 function signalFiles() {
-    const set = vscode.workspace.getConfiguration('chatManagerReload').get('signalFile');
-    if (set && String(set).trim()) return [String(set).trim()];
-    // only this tool's own folder: standalone chatrm is retired, so nothing
-    // writes to ~/Tools/chatrm any more
-    return [path.join(os.homedir(), 'Tools', 'VS-code-chat-manager', 'data', 'reload-request')];
+    return [path.join(toolFolder(), 'data', 'reload-request')];
 }
 
-// open-request sits beside reload-request, so signalFile moves both
+// open-request sits beside reload-request, in the same data/
 function openFiles() {
     return signalFiles().map(f => path.join(path.dirname(f), 'open-request'));
 }
@@ -45,7 +87,7 @@ function openFiles() {
 let channel = null;
 function log(s) {
     try {
-        if (!channel && vscode.window.createOutputChannel) channel = vscode.window.createOutputChannel('chat manager');
+        if (!channel && vscode.window.createOutputChannel) channel = vscode.window.createOutputChannel('VS Code Chat Manager');
         if (channel) channel.appendLine(new Date().toISOString() + '  ' + s);
     } catch (e) { }
 }
@@ -109,7 +151,7 @@ function hasClaude() {
 
 // on unless turned off: unset reads as on
 function showFresh() {
-    return vscode.workspace.getConfiguration('chatManagerReload').get('showFresh') !== false;
+    return setting('showFresh') !== false;
 }
 
 function ageOf(req) {
@@ -128,7 +170,10 @@ const texts = {
     heldOpen: req => name(req) + ' is held by a process chatq could not end. Reload the window to see it up to date.',
     reloadOpen: req => 'The overlay asked for ' + name(req) + '. Reload the window to see it up to date?',
     running: req => 'A queued prompt is going into ' + name(req) + ' right now, so it was left as it is. chatq offers to show it again when that run finishes.',
-    checking: '$(sync~spin) Checking the chats in this window...'
+    checking: '$(sync~spin) Checking the chats in this window...',
+    oldThere: 'The old "VS Code chat manager - reload" extension is still installed. Both would act on the same requests, so this one waits until the old one is gone.',
+    oldGone: 'The old extension is uninstalled. Reload the window to finish.',
+    oldStuck: 'The old extension could not be uninstalled from here. Uninstall "VS Code chat manager - reload" in the Extensions view.'
 };
 
 // What to say, by what happened. A request written before 'kind' existed is a
@@ -396,7 +441,6 @@ async function offer(context, req, file) {
     // Not ours: left for the window it is for. Checked before marking it
     // seen, which every window shares.
     if (!isTarget(req)) return;
-    const cfg = vscode.workspace.getConfiguration('chatManagerReload');
     const exact = isExactlyMine(req);
     const age = ageOf(req);
     const fresh = req.kind === 'ran' && canShowFresh(req);
@@ -405,7 +449,7 @@ async function offer(context, req, file) {
     // without this the same request would prompt again on every reload.
     await context.globalState.update(SEEN_KEY, req.id);
 
-    const auto = reloadsItself(req, cfg.get('autoReload'), cfg.get('autoReloadAfterRun'), exact, age);
+    const auto = reloadsItself(req, setting('autoReload'), setting('autoReloadAfterRun'), exact, age);
     if (fresh) {
         if (auto) {
             const how = plan(req, { busy: req.busy, oldProcess: req.oldProcess },
@@ -490,10 +534,73 @@ async function checkOpen(context, file, onlyRecent) {
     return enqueue(() => perform(how, req));
 }
 
+// The extension this one replaces, VS Code chat manager - reload. Both would
+// act on every request, and a window would reload twice, so while it is
+// installed and watches the same file, this one handles none, and one window
+// offers to remove it.
+function oldExtension() {
+    return !!(vscode.extensions && vscode.extensions.getExtension && vscode.extensions.getExtension(setup.OLD_ID));
+}
+
+// Does the old one watch the file this one would? It read only its own
+// signalFile, else the default place. Where chatManager.folder points
+// elsewhere, it watches a file nobody writes, and this one takes over.
+function oldWatchesMine() {
+    const sig = oldSignalFile();
+    const oldFile = sig ? expandHome(sig) : path.join(DEFAULT_FOLDER(), 'data', 'reload-request');
+    return path.resolve(oldFile).toLowerCase() === path.resolve(signalFiles()[0]).toLowerCase();
+}
+
+async function askToRemoveOld() {
+    const data = path.join(toolFolder(), 'data');
+    // left in place: it keeps the other windows from asking for 10 minutes.
+    // A data/ that cannot be written asks anyway.
+    try {
+        fs.mkdirSync(data, { recursive: true });
+        if (!setup._takeLock(path.join(data, 'old-extension.lock'), Date.now(), 10 * 60 * 1000)) return 'elsewhere';
+    } catch (e) { log('cannot write ' + data + ' (' + (e && e.message) + '): asking anyway'); }
+    const go = 'Uninstall it';
+    if (await vscode.window.showWarningMessage(texts.oldThere, go, 'Not now') !== go) return 'kept';
+    try { await vscode.commands.executeCommand('workbench.extensions.uninstallExtension', setup.OLD_ID); }
+    catch (e) {
+        log('uninstalling ' + setup.OLD_ID + ' failed: ' + (e && e.message));
+        vscode.window.showWarningMessage(texts.oldStuck);
+        return 'failed';
+    }
+    const r = 'Reload';
+    if (await vscode.window.showInformationMessage(texts.oldGone, r) === r) reloadWindow();
+    return 'removed';
+}
+
+// The terminal half (setup.js), once at a time per window: at start, and
+// from the command palette, which asks again even after Never - and, asked
+// for while a start's run is going, runs after it rather than not at all.
+let settingUp = null;
+function runSetup(context, force) {
+    if (settingUp) return force ? settingUp.then(() => runSetup(context, true)) : settingUp;
+    settingUp = setup.setUp({ extensionPath: context.extensionPath, folder: toolFolder(), log, force })
+        .catch(e => log('setup failed: ' + ((e && e.stack) || e)))
+        .finally(() => { settingUp = null; });
+    return settingUp;
+}
+
 function activate(context) {
     // which extension host this is: the parent of this window's claude
     // processes, as the script's hostPids name it (S30)
     log('activated in extension host ' + process.pid);
+    if (vscode.commands.registerCommand) {
+        context.subscriptions.push(vscode.commands.registerCommand('chatManager.installTerminal', () => runSetup(context, true)));
+        context.subscriptions.push(vscode.commands.registerCommand('chatManager.showLog', () => { log('log shown'); if (channel) channel.show(); }));
+    }
+    setTimeout(() => runSetup(context, false), 0);
+    if (oldExtension()) {
+        askToRemoveOld().catch(e => log('asking about the old extension failed: ' + (e && e.message)));
+        if (oldWatchesMine()) {
+            log(setup.OLD_ID + ' is installed and watches ' + signalFiles()[0] + ': every request is left to it');
+            return;
+        }
+        log(setup.OLD_ID + ' is installed but watches another file: this one handles ' + signalFiles()[0]);
+    }
     for (const file of signalFiles()) {
         check(context, file, true);
         // watchFile polls. createFileSystemWatcher only reaches inside workspace
@@ -522,5 +629,7 @@ module.exports = {
     _plan: plan, _isTarget: isTarget, _alive: alive, _timing: timing, _hasClaude: hasClaude, _showFresh: showFresh,
     _isClaudeTab: isClaudeTab, _isGuid: isGuid, _psQuote: psQuote, _verdictCommand: verdictCommand,
     _parseVerdict: parseVerdict, _getVerdict: getVerdict, _showWebviews: showWebviews, _showTab: showTab,
-    _focus: focus, _enqueue: enqueue, _perform: perform, _offer: offer, _showIt: showIt, _judged: JUDGED
+    _focus: focus, _enqueue: enqueue, _perform: perform, _offer: offer, _showIt: showIt, _judged: JUDGED,
+    _setting: setting, _toolFolder: toolFolder, _oldExtension: oldExtension, _askToRemoveOld: askToRemoveOld, _runSetup: runSetup,
+    _oldWatchesMine: oldWatchesMine
 };

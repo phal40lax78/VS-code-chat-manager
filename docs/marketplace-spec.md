@@ -1,6 +1,10 @@
 # Spec: one extension on the VS Code Marketplace
 
-Status: accepted 2026-09-25, all three decisions as proposed; in progress.
+Status: accepted 2026-09-25, all three decisions as proposed. Built in
+0.7.0: steps 1 and 2 of the order of work, and spike M2, which passed.
+Left: M3 and M4 (TESTING.md S32), the first upload by hand, then M1 and
+`publish.yml`. The listing shows the overlay's PNG only; PNG renders of
+the terminal frames wait for a PNG output in `docs/make-demo.ps1`.
 Written against 0.6.0.
 
 ## Goal
@@ -68,7 +72,9 @@ The decision is a pure function, so it can be tested:
 | loader older than the payload | **update**: copy the payload over it, then run `chatinstall` |
 | loader the same version | nothing |
 | loader newer than the payload | nothing; log it (the one-liner or a pull got there first) |
-| a `.git` folder in it | **never write.** If the versions differ, say so once per version pair: "the scripts are 0.6.0, the extension 0.7.0 - pull" |
+| a loader whose version cannot be read | nothing; say so once (added after review) |
+| no loader, no `data/`, and other files in it | nothing, not even a `data/`; say so (added after review) |
+| a `.git` in it or any folder above it | **never write.** If the versions differ, say so once per version pair: "the scripts are 0.6.0, the extension 0.7.0 - pull" |
 
 - **The loader's version** is read from the file on disk, not from
   `data/version.txt`: that file records what `chatinstall` last registered,
@@ -149,7 +155,7 @@ The decision is a pure function, so it can be tested:
 
 ## Publishing
 
-1. **Publisher.** Create `phal40lax78` at marketplace.visualstudio.com/manage
+1. **Publisher.** `redaechan`, made at marketplace.visualstudio.com/manage
    with the owner's Microsoft account. The ID is permanent.
 2. **First release: by hand.** Build the VSIX, then upload it on the manage
    page. That needs no token, and it proves the listing before any
@@ -222,8 +228,11 @@ The decision is a pure function, so it can be tested:
 
 ## Decisions (taken 2026-09-25)
 
-1. **The name:** ID `phal40lax78.vs-code-chat-manager` (the repo's name),
-   display name "VS Code Chat Manager". Both are subject to M2.
+1. **The name:** ID `redaechan.vs-code-chat-manager` - the repo's name,
+   under the publisher the owner made, whose ID is not the GitHub name
+   `phal40lax78` the spec first assumed; an upload whose manifest names
+   another publisher is refused - and display name "VS Code Chat Manager".
+   Both passed M2.
 2. **The profile line:** asked once, as above, rather than only through
    the command.
 3. **Publishing:** by hand for 0.7.0, and from CI once M1 passes.
