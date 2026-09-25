@@ -5,9 +5,10 @@ Status: accepted 2026-09-25, all three decisions as proposed. Built in
 of the order of work, and spike M2, which passed. M4 is answered from VS
 Code's own code (below). `docs/make-demo.ps1` now draws PNGs of three
 terminal frames, which reach the listing with the next release.
-`.github/workflows/publish.yml` is written. Left: M3 by hand (TESTING.md
-S32), then M1, which needs the owner's Microsoft account. Written against
-0.6.0.
+`.github/workflows/publish.yml` is written, and spike M1 passed the same
+day. Left: M3 by hand (TESTING.md S32), and the first release through
+`publish.yml`, the last proof that `vsce publish --azure-credential`
+itself works. Written against 0.6.0.
 
 ## Goal
 
@@ -248,13 +249,19 @@ The decision is a pure function, so it can be tested:
   personal Microsoft account's app, made a member of the publisher, then
   `vsce publish --azure-credential` from a GitHub run. Or trusted
   publishing, if the publisher's page offers it. Researched 2026-09-25; the
-  steps are under Publishing. Two things are still unknown. First, whether
-  the owner's account has an Entra tenant: one exists if it ever signed up
-  for Azure, and Microsoft documents creating a new one as needing a
+  steps are under Publishing. Two things were unknown. First, whether the
+  owner's account had an Entra tenant: one exists if it ever signed up for
+  Azure, and Microsoft documents creating a new one as needing a
   subscription. Second, whether a publisher owned by a personal account
   takes an app as a member. vsce issues #976 and #1023 show
   `--azure-credential` failing for apps that had the role, both in work
-  tenants. Only a run answers it.
+  tenants. **Passed 2026-09-25.** The owner's account had a Default
+  Directory. The first run by hand signed in, printed the profile ID, and
+  was refused: "needs the following permission(s) on the resource
+  /redaechan". The Members page took that ID as Contributor, showing it as
+  `<tenant ID>\<object ID>`, and the second run's check passed. A passing
+  check is not yet a publish, since #1023 saw one pass and the publish
+  fail; the first `v*` tag settles it.
 - **M2: the name.** Both `name` and `displayName` must be unique on the
   Marketplace. Check the chosen ones are free before anything else is
   built around them.
@@ -295,5 +302,5 @@ The decision is a pure function, so it can be tested:
    check in CI.
 3. **Spikes M2 and M3**, then 0.7.0 packaged and uploaded by hand. Done
    2026-09-25, except M3.
-4. **Spike M1**, then `publish.yml`. `publish.yml` is written, and running
-   it by hand is M1.
+4. **Spike M1**, then `publish.yml`. Done 2026-09-25: `publish.yml` was
+   written first, and M1 was run with it.

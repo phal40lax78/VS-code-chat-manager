@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **A new icon:** the Marketplace and the Extensions view show a photo in
+  place of the chat bubble - all of it, the bands above and below filled
+  with its own background rather than cropped, on the same rounded square.
+  `docs/make-icon.ps1` makes it from `docs/icon-source.jpg`.
 - **The Marketplace listing shows the terminal too:** Tab filling in a
   title for `chatrm`, `chatq` queueing a prompt, and `chatqlist`. vsce
   takes no SVG there, so `docs/make-demo.ps1` now also draws those three
@@ -10,7 +14,7 @@
   once you click **Restart Extensions** or reload; VS Code restarts none by
   itself. An extension installed from a `.vsix` file is pinned and never
   updates by itself until **Auto Update** is turned on for it.
-- **Releases from CI, once set up:** `.github/workflows/publish.yml`
+- **Releases from CI:** `.github/workflows/publish.yml`
   publishes a `v*` tag and makes its GitHub release, signing in as an
   Entra app rather than with a PAT. Run by hand, it publishes nothing: it
   builds the VSIX, signs in, and checks that the publisher accepts the app

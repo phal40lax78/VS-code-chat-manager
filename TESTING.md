@@ -117,9 +117,14 @@ the listing's README or CHANGELOG fails the run before vsce reads the manifest.
 `.github/workflows/publish.yml` calls `test.yml` before it publishes a `v*`
 tag, and refuses a tag that is not `package.json`'s version or a version
 with no section in `CHANGELOG.md`. That step was run locally against
-0.7.0; the rest waits for M1.
+0.7.0. Run by hand on 2026-09-25, the workflow signed in and the publisher
+accepted it (S32 item 7); publishing itself waits for the first tag.
 
-`docs/make-icon.ps1` draws `extension/icon.png`, the Marketplace icon.
+`docs/make-icon.ps1` makes `extension/icon.png`, the Marketplace icon, from
+`docs/icon-source.jpg`: the whole photo, none of it cropped, on a 256 px
+square whose bands shade into the photo's edge rows with no line at the
+seam. Its corners are rounded and transparent; the straight edges are
+fully opaque. Checked by eye and by pixel on 2026-09-25.
 
 On pwsh 7 `Add-Type` builds libraries only, so the argument-quoting check builds
 its echo exe with .NET Framework's `csc.exe` instead. Where neither can, it says
@@ -576,13 +581,27 @@ would not recognise it.
      takes a copied-in, unpublished extension away, and the reload finishes it.
      The first two were seen on 2026-09-25: the log reads "every request is
      left to it", and `data/old-extension.lock` shows that one window asked.
-     The uninstall itself is still to see.
+     The uninstall itself is still to see. **The offer is easy to miss.** It
+     came up as the window opened, slid into the notification bell, and sat
+     there for four and a half hours. Asked to "uninstall the old one", the
+     owner went to the Extensions view and removed "VS Code Chat Manager" -
+     the new one - beside "VS Code chat manager - reload". The new
+     extension's log shows the offer was never answered: "asking about the
+     old extension failed: Canceled", as the extensions restarted. While
+     both are installed the new one handles nothing, and the old 2.0.0
+     ignores the overlay's open chip, so a missed offer leaves the chip dead.
+     Reinstalled with `code --install-extension redaechan.vs-code-chat-manager`,
+     which comes from the Marketplace and so is not pinned.
   5. **A Remote-SSH or WSL window:** the extension runs on the local side.
   6. **Spike M4:** after a Marketplace update, do open windows restart the
      extension by themselves, or wait for *Restart Extensions*? The code
      says they wait (docs/marketplace-spec.md). Watch it happen at 0.7.1.
   7. **publish.yml, run by hand,** once M1's app exists: it prints the
      profile ID, and after that ID is a member, "The publisher accepts it"
-     passes.
+     passes. Passed 2026-09-25, on the second run: the first was refused
+     before the ID was a member, as it should be.
+  8. **The first `v*` tag:** tests, publish, then a GitHub release with the
+     VSIX and the changelog section, and the new version on the
+     Marketplace page.
 - **macOS and Linux** are untested; the Unix branches are written but have never
   run.
