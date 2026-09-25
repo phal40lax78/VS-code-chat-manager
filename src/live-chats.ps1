@@ -486,11 +486,31 @@ function Get-ChatCodeWindowTitles {
     catch { return @() }
 }
 
+function Get-ChatRunningCodeExes {
+    # the Code.exe files VS Code runs from right now, Insiders' too; Windows
+    if ($script:ChatCodeExesSeam) { return @(& $script:ChatCodeExesSeam) }   # tests
+    if (-not $script:ChatqIsWindows) { return @() }
+    return @(Get-Process -Name 'Code', 'Code - Insiders' -EA SilentlyContinue |
+        ForEach-Object { try { $_.Path } catch { $null } } | Where-Object { $_ } | Select-Object -Unique)
+}
+
 function Find-ChatCodeCommand {
-    # CHATQ_CODE, else code on PATH (an Application, never a function or
-    # alias), else where the user and system installers put it. Reading VS
-    # Code's install place is not runtime data of ours.
+    # CHATQ_CODE, else the code.cmd beside the Code.exe that is running - the
+    # VS Code whose windows these are - else code on PATH (an Application,
+    # never a function or alias), else where the user and system installers
+    # put it. Running first: a machine can hold two installs, and PATH may
+    # name the other. Here a system install left half-updated since February
+    # came first on PATH, its code.cmd starting a Code.exe with no ICU data
+    # beside it, which crashed every time (0x80000003) - while the per-user
+    # install ran every window. Reading VS Code's install place is not
+    # runtime data of ours.
     if ($env:CHATQ_CODE) { return $env:CHATQ_CODE }
+    foreach ($exe in @(Get-ChatRunningCodeExes)) {
+        foreach ($n in 'code.cmd', 'code-insiders.cmd') {
+            $b = Join-Path (Join-Path (Split-Path $exe -Parent) 'bin') $n
+            if (Test-Path -LiteralPath $b) { return $b }
+        }
+    }
     $c = Get-Command code -CommandType Application -EA SilentlyContinue | Select-Object -First 1
     if ($c) { return $c.Source }
     foreach ($p in @(
@@ -504,8 +524,10 @@ function Find-ChatCodeCommand {
 function Get-ChatCodeEnvDrops {
     # What a child that starts code must not inherit. Run from inside a VS
     # Code terminal, or a Claude Code session's shell, VS Code's own VSCODE_*
-    # and ELECTRON_* variables reach the Code.exe that code.cmd starts, which
-    # then fails with "Invalid file descriptor to ICU data", exit 3 (S29).
+    # and ELECTRON_* variables would reach the Code.exe that code.cmd starts
+    # and speak for a process that is not its own. S29 blamed them for an
+    # "Invalid file descriptor to ICU data" crash; that was a broken install
+    # instead (Find-ChatCodeCommand), and it crashed with none of them.
     # code.cmd sets ELECTRON_RUN_AS_NODE again itself. Pure.
     param([string[]]$Names)
     return @($Names | Where-Object { $_ -match '^(VSCODE_|ELECTRON_)' })
@@ -560,10 +582,10 @@ function Open-ChatCodeWindow {
             Write-ChatqWatchLog 'open: code still running after 20 s - left to it'
             return [pscustomobject]@{ Ok = $true; Code = 'ok'; Why = $null; Slow = $true }
         }
-        if ($p.ExitCode -ne 0) { return (& $fail 'code-failed' "code exited $($p.ExitCode)") }
+        if ($p.ExitCode -ne 0) { return (& $fail 'code-failed' "code exited $($p.ExitCode) - $code") }
         return [pscustomobject]@{ Ok = $true; Code = 'ok'; Why = $null; Slow = $false }
     }
-    catch { return (& $fail 'code-failed' "code: $($_.Exception.Message)") }
+    catch { return (& $fail 'code-failed' "code: $($_.Exception.Message) - $code") }
 }
 
 #endregion

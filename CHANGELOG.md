@@ -78,6 +78,12 @@
   overlay - doubled only `'`. PowerShell also ends a quoted string on a
   curly quote, so a reply's excerpt with one could end the string early; all
   four are doubled now.
+- **Which `code`.** The chip's `code -n` uses the `code.cmd` beside the VS
+  Code that is running, before the one on PATH: a machine with two installs
+  may have the other first on PATH. On the machine this was built on that
+  was a system install left half-updated, whose `code` crashed every time,
+  so the first real clicks raised no window. `watcher.log` now names the
+  `code` that failed. `CHATQ_CODE` still overrides it.
 - **Fixed:** a new index that could not be swapped in was dropped without a
   word. Anything reading the index at that moment - the overlay's console,
   its 10-minute sync, a virus scan - fails the swap, and a restored or new

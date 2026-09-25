@@ -465,9 +465,10 @@ Clicked, it:
 - asks the window that has the chat to show it up to date;
 - brings that window forward with `code -n <folder>`: VS Code raises its own
   window on that folder, or opens one, which shows the chat as it starts.
-  `-n` keeps it from reusing an unrelated window. `code` is found on PATH,
-  where VS Code's installers put it, or through `CHATQ_CODE`. Nothing moves
-  the pointer, types or activates a window.
+  `-n` keeps it from reusing an unrelated window. `code` is the one beside
+  the VS Code that is running, else the one on PATH, else where VS Code's
+  installers put it; `CHATQ_CODE` overrides all three. Nothing moves the
+  pointer, types or activates a window.
 
 The tray says when it could not: a queued prompt running in that chat (open
 it once it finishes), a chat open in a terminal (never opened in VS Code as

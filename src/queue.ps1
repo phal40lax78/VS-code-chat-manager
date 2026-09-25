@@ -56,11 +56,12 @@ $script:ChatqHookTimeoutSec = $null
 $script:ChatqClipboardSeam = $null
 $script:ChatqAliveSeam = $null
 # and for showing a chat fresh: a chat process's parent, ending one, the code
-# CLI, the window titles and profile names, the overlay's child - none of
-# them real in a test
+# CLI and the Code.exe it is found beside, the window titles and profile
+# names, the overlay's child - none of them real in a test
 $script:ChatParentSeam = $null
 $script:ChatStopSeam = $null
 $script:ChatCodeSeam = $null
+$script:ChatCodeExesSeam = $null
 $script:ChatWindowTitlesSeam = $null
 $script:ChatCodeProfilesSeam = $null
 $script:ChatShowSpawnSeam = $null

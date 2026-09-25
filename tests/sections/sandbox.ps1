@@ -243,6 +243,7 @@ $script:ChatStopSeam = { param($e) 'gone' }
 $script:ChatParentSeam = { param($e) @{ Pid = 4242; Name = 'Code'; StartTime = [datetime]::MinValue } }
 $script:ChatCodeSeam = { param($f) [pscustomobject]@{ Ok = $true; Code = 'ok'; Why = $null; Slow = $false } }
 $script:ChatWindowTitlesSeam = { @() }
+$script:ChatCodeExesSeam = { @() }
 $script:ChatCodeProfilesSeam = { @() }
 $script:ChatShowSpawnSeam = { param($c) $null }
 # and no run waits out a window showing its chat: tests run one job after

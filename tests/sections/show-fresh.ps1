@@ -401,6 +401,21 @@ $null = New-Item -ItemType Directory -Path (Join-Path $pfS 'Microsoft VS Code\bi
 $env:ProgramFiles = $pfS; $env:LOCALAPPDATA = Join-Path $sb 'no-local'; $env:PATH = Join-Path $env:SystemRoot 'System32'
 try { $fc2 = Find-ChatCodeCommand } finally { $env:ProgramFiles = $pfWas; $env:LOCALAPPDATA = $laWas; $env:PATH = $pathWas }
 Check 'code found: CHATQ_CODE first, else where the system installer puts it' ($fc1 -eq 'C:\x\code.cmd' -and $fc2 -eq (Join-Path $pfS 'Microsoft VS Code\bin\code.cmd')) "$fc1 | $fc2"
+# two installs, as on the machine this was found on: the one running wins
+# over PATH and the installers' places, and a Code.exe with no bin\ beside
+# it is passed over
+$codeRun = Join-Path $sb 'code-running'
+$null = New-Item -ItemType Directory -Path (Join-Path $codeRun 'bin') -Force
+[System.IO.File]::WriteAllText((Join-Path $codeRun 'bin\code.cmd'), '@echo off', $utf8)
+$env:ProgramFiles = $pfS; $env:LOCALAPPDATA = Join-Path $sb 'no-local'; $env:PATH = Join-Path $env:SystemRoot 'System32'
+try {
+    $script:ChatCodeExesSeam = { @((Join-Path $sb 'code-bare\Code.exe'), (Join-Path $codeRun 'Code.exe')) }
+    $fc3 = Find-ChatCodeCommand
+    $script:ChatCodeExesSeam = { @(Join-Path $sb 'code-bare\Code.exe') }
+    $fc4 = Find-ChatCodeCommand
+}
+finally { $env:ProgramFiles = $pfWas; $env:LOCALAPPDATA = $laWas; $env:PATH = $pathWas; $script:ChatCodeExesSeam = { @() } }
+Check 'code found beside the running Code.exe first; one with no bin\ beside it passed over' ($fc3 -eq (Join-Path $codeRun 'bin\code.cmd') -and $fc4 -eq (Join-Path $pfS 'Microsoft VS Code\bin\code.cmd')) "$fc3 | $fc4"
 
 # the chip's child: every value quoted, the title only as base64
 $script:SfSpawn = $null
