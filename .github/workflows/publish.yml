@@ -1,0 +1,88 @@
+name: publish
+
+# A v* tag publishes that version to the VS Code Marketplace and attaches the
+# VSIX to a GitHub release. It signs in as an Entra app through GitHub's own
+# OIDC token - no PAT: Azure DevOps retires global PATs on 2026-12-01.
+#
+# Run by hand, it publishes nothing: it signs in, prints the app's Visual
+# Studio profile id - what the publisher's manage page takes as a member -
+# and checks that the publisher accepts it. That is spike M1; the setup is in
+# docs/marketplace-spec.md.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+jobs:
+  test:
+    if: github.event_name == 'push'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/test.yml
+
+  publish:
+    needs: test
+    # skipped tests are a run by hand, which publishes nothing
+    if: ${{ !cancelled() && (needs.test.result == 'success' || needs.test.result == 'skipped') }}
+    runs-on: windows-latest
+    # the federated credential trusts this environment, and nothing else
+    environment: marketplace
+    permissions:
+      contents: write
+      id-token: write
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      PUBLISHER: redaechan
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # build.js checks the script's version against package.json; this checks
+      # the tag against both, and that the release has notes, before anything
+      # leaves the runner
+      - name: Tag, version and changelog agree
+        if: github.event_name == 'push'
+        run: |
+          $v = (Get-Content extension/package.json -Raw | ConvertFrom-Json).version
+          if ($env:TAG -ne "v$v") { throw "tag $env:TAG is not v$v, the version in extension/package.json" }
+          $log = Get-Content CHANGELOG.md -Raw -Encoding utf8
+          $m = [regex]::Match($log, "(?ms)^## $([regex]::Escape($v)) \S+ ([^\r\n]+)\r?\n(.*?)(?=^## |\z)")
+          if (-not $m.Success) { throw "CHANGELOG.md has no '## $v' section" }
+          [IO.File]::WriteAllText((Join-Path $env:RUNNER_TEMP 'notes.md'), $m.Groups[2].Value.Trim())
+          "RELEASE_TITLE=$env:TAG - $($m.Groups[1].Value.Trim())" >> $env:GITHUB_ENV
+
+      - name: Package
+        working-directory: extension
+        run: npx --yes @vscode/vsce@3 package
+
+      - uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          allow-no-subscriptions: true
+
+      # 499b84ac-... is Azure DevOps, which the Marketplace signs in through
+      - name: The app's profile id, for the publisher's members
+        run: az rest -u https://app.vssps.visualstudio.com/_apis/profile/profiles/me --resource 499b84ac-1321-427f-aa17-267ca6975798 --query id -o tsv
+
+      - name: The publisher accepts it
+        working-directory: extension
+        run: npx --yes @vscode/vsce@3 verify-pat --azure-credential $env:PUBLISHER
+
+      - name: Publish
+        if: github.event_name == 'push'
+        working-directory: extension
+        run: npx --yes @vscode/vsce@3 publish --azure-credential --packagePath (Get-Item *.vsix).FullName
+
+      - name: GitHub release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create $env:TAG (Get-Item extension/*.vsix).FullName --title $env:RELEASE_TITLE --notes-file (Join-Path $env:RUNNER_TEMP 'notes.md')

@@ -4,6 +4,7 @@ Renders the README's frames:
     docs/demo-queue.svg, docs/demo-list.svg        chatq and chatqlist
     docs/demo-overlay.png                          chatoverlay's panel
     docs/demo-1-type.svg ... docs/demo-4-reloaded.svg   the chatrm walk-through
+    docs/demo-2-tab.png, demo-queue.png, demo-list.png  the same, for the Marketplace
 
     powershell -NoProfile -ExecutionPolicy Bypass -File docs\make-demo.ps1
 
@@ -371,6 +372,32 @@ ConvertTo-DemoSvg -Frame $d3 -Path (Join-Path $here 'demo-3-deleted.svg') @size 
 ConvertTo-DemoSvg -Frame @() -Path (Join-Path $here 'demo-4-reloaded.svg') -Panel $after -PanelRows $before.Count `
     -Caption 'the chat panel after a window reload, the deleted chat no longer listed'
 
+# --- PNG copies, for the Marketplace listing ----------------------------------------
+# vsce refuses SVG images in an extension's README, so extension/README.md shows
+# these instead. Edge draws each SVG, headless and at twice the size - no window,
+# and the fonts are the ones a browser would use for the SVG. Without Edge the
+# SVGs are written all the same.
+$edge = @("${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe", "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe") |
+    Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
+# the ones extension/README.md shows
+$pngs = 'demo-2-tab', 'demo-queue', 'demo-list'
+if ($edge) {
+    foreach ($n in $pngs) {
+        $svg = Join-Path $here "$n.svg"
+        $size = [regex]::Match([System.IO.File]::ReadAllText($svg), '<svg [^>]*width="(\d+)" height="(\d+)"')
+        $png = Join-Path $here "$n.png"
+        if (Test-Path -LiteralPath $png) { Remove-Item -LiteralPath $png }
+        # its own profile in the sandbox: never the owner's, nor an Edge already open
+        $null = Start-Process -FilePath $edge -Wait -PassThru -WindowStyle Hidden -ArgumentList @(
+            '--headless', '--disable-gpu', '--hide-scrollbars', "--user-data-dir=`"$(Join-Path $sb 'edge')`"",
+            '--force-device-scale-factor=2', '--default-background-color=00000000',
+            "--window-size=$($size.Groups[1].Value),$($size.Groups[2].Value)", "--screenshot=`"$png`"", ([Uri]$svg).AbsoluteUri)
+        if (-not (Test-Path -LiteralPath $png)) { throw "Edge drew no $n.png" }
+    }
+}
+else { Microsoft.PowerShell.Utility\Write-Host '  no Edge: the PNG copies were not drawn' -ForegroundColor Yellow }
+
 Set-Location -LiteralPath $here
 Remove-Item -LiteralPath $sb -Recurse -Force -EA SilentlyContinue
-Microsoft.PowerShell.Utility\Write-Host '  wrote docs/demo-queue.svg, docs/demo-list.svg, docs/demo-overlay.png, docs/demo-1-type.svg .. demo-4-reloaded.svg'
+Microsoft.PowerShell.Utility\Write-Host ('  wrote docs/demo-queue.svg, docs/demo-list.svg, docs/demo-overlay.png, docs/demo-1-type.svg .. demo-4-reloaded.svg' +
+    $(if ($edge) { ', and PNGs of ' + ($pngs -join ', ') } else { '' }))

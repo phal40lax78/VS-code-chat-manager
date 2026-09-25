@@ -15,6 +15,12 @@ queued prompt ran into it.
 - **Shows every running chat at a glance:** `chatoverlay` keeps a small panel above every app.
 - **After a queued run**, the window shows that chat up to date, without a reload when nothing else in it is working.
 
+![chatrm after Tab: the whole title filled in, quoted, with its age and match count, beside the chat panel](https://raw.githubusercontent.com/phal40lax78/VS-code-chat-manager/main/docs/demo-2-tab.png)
+
+![chatq queueing a prompt for a chat picked by its title, to be sent when the usage limit resets](https://raw.githubusercontent.com/phal40lax78/VS-code-chat-manager/main/docs/demo-queue.png)
+
+![chatqlist showing two queued prompts, the usage and when the limit resets](https://raw.githubusercontent.com/phal40lax78/VS-code-chat-manager/main/docs/demo-list.png)
+
 ## What it does on first start
 
 1. It puts the PowerShell scripts in `~/Tools/VS-code-chat-manager`
@@ -28,10 +34,14 @@ queued prompt ran into it.
    offers to allow local scripts for your user (`RemoteSigned`), and changes
    nothing unless you click.
 
-Updates come through VS Code. Each one replaces the scripts in the tool
-folder and moves a running watcher and overlay onto the new copy;
-terminals already open keep the old commands until they are reopened. A
-folder that is a git checkout is never written to.
+Updates come through VS Code. A window starts running a new version once
+you click **Restart Extensions** or reload. The first to do so replaces
+the scripts in the tool folder and moves a running watcher and overlay
+onto the new copy. Terminals already open keep the old commands until
+they are reopened. A folder that is a git checkout is never written to.
+If you installed the extension from a `.vsix` file, it is pinned and never
+updates by itself: right-click it in the Extensions view and turn on
+**Auto Update**.
 
 Then open a new terminal and type `chat` for the list of commands.
 

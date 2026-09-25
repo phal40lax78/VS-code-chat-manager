@@ -66,8 +66,12 @@ prints the line you meant.
 **Coming from chatrm or chatq?** `chatinstall` replaces their profile lines with
 this one — both define the same commands. The commands keep their names.
 
-**Updating:** with the extension, VS Code does it. Without it, run the
-one-liner again. It says `updated 0.2.0 -> 0.3.0` or `unchanged`; an
+**Updating:** with the extension, VS Code does it. VS Code fetches a new
+version by itself, and a window starts running it once you click **Restart
+Extensions** or reload. The first window to do so puts the new scripts in
+place. An extension installed from a `.vsix` file is pinned and never
+updates by itself: right-click it in the Extensions view and turn on **Auto
+Update**. Without the extension, run the one-liner again. It says `updated 0.2.0 -> 0.3.0` or `unchanged`; an
 `unchanged` right after a push is GitHub serving the old copy for a few
 minutes. Either way a background watcher that is running switches to the new
 copy after its current job, and a running overlay restarts on it at once. The

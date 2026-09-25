@@ -224,20 +224,24 @@ ask mid-run.
   `&|<>^()` when the executable is a `.cmd` or `.bat`, and refuse one
   holding `"` or `%`.
 
-## Publishing the Marketplace extension
+## Publishing the Marketplace extension from CI
 
-**Why it waits:** 0.7.0 builds the extension
-([docs/marketplace-spec.md](docs/marketplace-spec.md)), and `vsce package`
-packs it, but publishing needs the owner: the VSIX uploaded by hand to the
-`redaechan` publisher they made at marketplace.visualstudio.com/manage. Automating it waits on spike M1, since
-Azure DevOps retires global PATs on 2026-12-01 and the Entra ID route with no
-Azure subscription is unproven for a personal account. The listing also
-lacks PNG renders of the terminal frames.
+**Why it waits:** 0.7.0 was uploaded by hand on 2026-09-25, and later
+releases can be too, since the manage page needs no token.
+[publish.yml](.github/workflows/publish.yml) would publish a `v*` tag, but
+it has no identity to sign in with. Setting one up (spike M1) needs the
+owner's Microsoft account. Azure DevOps retires global PATs on 2026-12-01,
+so a PAT is not the way. Trusted publishing, which would need no identity,
+has no Marketplace side yet (microsoft/vsmarketplace#1422).
 
-**To close:** the publisher and the first upload; M3 and M4 by hand
-(TESTING.md S32); then M1 and a `publish.yml` that publishes a `v*` tag
-with `vsce publish --azure-credential`, or trusted publishing if the
-publisher's page offers it.
+**To close:** the five steps under Publishing in
+[docs/marketplace-spec.md](docs/marketplace-spec.md): an Entra app
+registration trusting the `marketplace` environment, its IDs as the repo's
+secrets, and the ID a run by hand prints added to the publisher as
+Contributor. Done when the run's "The publisher accepts it" passes. If a
+publisher owned by a personal account refuses the app, keep uploading by
+hand until trusted publishing ships. Also still to see by hand: M3
+(TESTING.md S32).
 
 ## A VS Code front end
 

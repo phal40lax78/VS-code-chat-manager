@@ -114,6 +114,11 @@ extension with `vsce package`, whose `vscode:prepublish` is `extension/build.js`
 a version that is not the script's, a script that is not ASCII, or an SVG in
 the listing's README or CHANGELOG fails the run before vsce reads the manifest.
 
+`.github/workflows/publish.yml` calls `test.yml` before it publishes a `v*`
+tag, and refuses a tag that is not `package.json`'s version or a version
+with no section in `CHANGELOG.md`. That step was run locally against
+0.7.0; the rest waits for M1.
+
 `docs/make-icon.ps1` draws `extension/icon.png`, the Marketplace icon.
 
 On pwsh 7 `Add-Type` builds libraries only, so the argument-quoting check builds
@@ -140,8 +145,16 @@ its echo exe with .NET Framework's `csc.exe` instead. Where neither can, it says
 - **The panel beside the terminal is a sketch:** the sandbox's Claude chats as
   the index lists them, before and after the delete. VS Code itself is never
   captured.
+- **The Marketplace listing gets PNGs of three:** `demo-2-tab.png`,
+  `demo-queue.png` and `demo-list.png`, since vsce refuses SVG images in
+  `extension/README.md`. Headless Edge draws them from the SVGs, at twice
+  the size, with a profile of its own in the sandbox. Without Edge the SVGs
+  are still written, and the script says the PNGs were not.
 
 Run it again after a change to what `chatq`, `chatqlist` or `chatrm` print.
+Each run moves the clock times in the queue frames; nothing else changes.
+The listing shows its images from `main` on GitHub, but its README text only
+changes with a new release.
 
 ## Spikes against the real CLIs
 
@@ -529,15 +542,24 @@ would not recognise it.
   empty chat homes. After the push that brings `src/`, with
   `$env:CHAT_MANAGER_DIR` on an empty folder: it prints `downloading`, the
   folder holds the script and every part in `src/`, `data/download/` is
-  gone, and `chat` works in that shell. In PowerShell 7 too.
+  gone, and `chat` works in that shell. In PowerShell 7 too. After the
+  0.7.0 push on 2026-09-25, GitHub's own zip was checked: its loader is
+  0.7.0 and every part the loader lists is in `src/`, and
+  raw.githubusercontent.com already served the new `install.ps1`. The full
+  run, `chatinstall` included, is left for a spare Windows user, since here
+  it would write this machine's profile.
 - **S32, the Marketplace extension** (docs/marketplace-spec.md). Checked here:
   `vsce package` packs 0.7.0 - the loader and all 14 parts in `payload/` -
   and, against this machine's own profile, the profile step's two read-only
   calls answer right (the line is there; the policy is RemoteSigned). Spike
   M2 on 2026-09-25: neither `vs-code-chat-manager` nor "VS Code Chat
   Manager" is taken - the page for the ID is a 404, and the Marketplace's
-  search for "chat manager" has neither. Still to see, in Windows Sandbox
-  or a spare Windows user:
+  search for "chat manager" has neither. 0.7.0 was uploaded by hand on
+  2026-09-25 and is live; the package step passed on GitHub's runner for
+  the first time with that push. **An install from a VSIX is pinned** and
+  never updates by itself (docs/marketplace-spec.md, M4). Turn **Auto
+  Update** on for it before items 2 and 6. Still to see, in Windows
+  Sandbox or a spare Windows user:
   1. **A clean install from the Marketplace:** the scripts in
      `~/Tools/VS-code-chat-manager`, the profile question, then - from
      `Restricted` - the policy question, and `chat` in a new terminal.
@@ -546,12 +568,21 @@ would not recognise it.
      and the overlay restarts, and the update note says terminals keep the
      old commands.
   3. **This machine:** the folder is a git checkout, so nothing is written;
-     at another version it says so once.
+     at another version it says so once. Half seen on 2026-09-25: the log
+     reads `setup: none - carries 0.7.0, ... has 0.7.0 (in a git
+     checkout)`. The message waits for versions that differ.
   4. **The old extension** (spike M3): the new one leaves requests to it,
      one window offers to uninstall it, `workbench.extensions.uninstallExtension`
      takes a copied-in, unpublished extension away, and the reload finishes it.
+     The first two were seen on 2026-09-25: the log reads "every request is
+     left to it", and `data/old-extension.lock` shows that one window asked.
+     The uninstall itself is still to see.
   5. **A Remote-SSH or WSL window:** the extension runs on the local side.
   6. **Spike M4:** after a Marketplace update, do open windows restart the
-     extension by themselves, or wait for *Restart Extensions*?
+     extension by themselves, or wait for *Restart Extensions*? The code
+     says they wait (docs/marketplace-spec.md). Watch it happen at 0.7.1.
+  7. **publish.yml, run by hand,** once M1's app exists: it prints the
+     profile ID, and after that ID is a member, "The publisher accepts it"
+     passes.
 - **macOS and Linux** are untested; the Unix branches are written but have never
   run.
