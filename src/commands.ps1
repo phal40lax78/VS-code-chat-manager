@@ -130,8 +130,12 @@ function New-ChatqJobSlot {
 function New-ChatqJobRecord {
     # The job as data/queue/<id>.json holds it. Pure: nothing is written.
     # -Resolve: how Resolve-ChatqTarget picked the chat, when it did.
+    # -JobHome: the config dir the chat lives under, when the caller knows it
+    # better than this process's environment does - $null for the default
+    # one. Left out, the environment's is taken.
     param($Slot, $Row, $Info, [string]$Kind = 'prompt', [string]$Mode, [string]$Model, $NotBefore,
-        [switch]$First, [switch]$SendNow, [string]$Typed, $Resolve, [string]$Rule, [string]$Title)
+        [switch]$First, [switch]$SendNow, [string]$Typed, $Resolve, [string]$Rule, [string]$Title, $JobHome)
+    $jobHomeGiven = $PSBoundParameters.ContainsKey('JobHome')
     [pscustomobject][ordered]@{
         v = 1
         # set before the prompt, when the files went in - the chat a re-pick
@@ -146,7 +150,8 @@ function New-ChatqJobRecord {
         cwd = $Info.Cwd
         # only when the user set one: pointing CLAUDE_CONFIG_DIR at the default
         # makes Claude look for .claude.json inside it, where it never lives
-        home = if ($Row.Provider -eq 'codex') { $env:CODEX_HOME } else { $env:CLAUDE_CONFIG_DIR }
+        home = if ($jobHomeGiven) { if ($JobHome) { [string]$JobHome } else { $null } }
+        elseif ($Row.Provider -eq 'codex') { $env:CODEX_HOME } else { $env:CLAUDE_CONFIG_DIR }
         chatWhen = $Row.When
         typed = $(if ($Typed) { $Typed } else { $null })
         rule = $(if ($Resolve) { $Resolve.Rule } elseif ($Rule) { $Rule } else { $null })
@@ -188,10 +193,12 @@ function New-ChatqJobRecord {
 function Register-ChatqJob {
     # Saved, with what the prompt links to in data/queue - an image pasted in
     # the editor tab - brought into its folder, and a line in jobs.log.
-    # Returns the files it has and those it could not take in.
-    param($Job)
+    # Returns the files it has and those it could not take in. -NoLinks: the
+    # prompt's links are left as text and bring nothing in - a prompt typed
+    # on the phone, where nobody at the PC chose a file.
+    param($Job, [switch]$NoLinks)
     Save-ChatqJob $Job
-    $missed = @(Sync-ChatqAttachments $Job)
+    $missed = if ($NoLinks) { @() } else { @(Sync-ChatqAttachments $Job) }
     $files = @(Get-ChatqAttachments $Job)
     Write-ChatqJobLog "#$($Job.seq) queued ($($Job.kind)$(if ($files) { ", $($files.Count) file$(if ($files.Count -ne 1) { 's' })" })) $($script:ChatqDot) $($Job.title)"
     return [pscustomobject]@{ Files = $files; Missed = $missed }
@@ -210,10 +217,16 @@ function New-ChatqJob {
     folder. Its session id is chosen now and handed to claude --session-id
     on the first run (spike S25), so its transcript's path is known from the
     start; -Title names it, or the prompt's first line does.
+    -JobHome: the chat's config dir, $null for the default one (see
+    New-ChatqJobRecord). -NoLinks: the prompt's links pull no files in -
+    text from the phone, where nobody at the PC chose a file: every "]("
+    in it is written "]\(", which no markdown link reads, so neither the
+    first sync nor the watcher's before it sends finds one. A link added
+    later at the PC (chatq <n>) works as in any job.
     #>
     param($Row, [string]$Prompt, [ValidateSet('prompt', 'continue', 'new')][string]$Kind = 'prompt', $Info,
         [string]$Mode, [string]$Model, $NotBefore, [switch]$First, [switch]$SendNow, $Sources, [switch]$MoveSources,
-        [string]$Typed, $Resolve, [string]$Rule, [string]$Title, [object[]]$Jobs, [string]$Cwd)
+        [string]$Typed, $Resolve, [string]$Rule, [string]$Title, [object[]]$Jobs, [string]$Cwd, $JobHome, [switch]$NoLinks)
     $fail = { param($c, $t) [pscustomobject]@{ Error = $t; Code = $c; Job = $null; Files = @(); Missed = @() } }
     if ($Kind -eq 'new') {
         $dir = if ($Cwd) { try { [System.IO.Path]::GetFullPath($Cwd) } catch { $null } } else { $null }
@@ -246,9 +259,12 @@ function New-ChatqJob {
         try { $null = Save-ChatqAttachSources $slot.Dir $Sources -Move:$MoveSources }
         catch { return & $fail 'copy' "a file could not be copied - nothing queued: $($_.Exception.Message)" }
     }
+    if ($NoLinks -and $Kind -ne 'continue') { $Prompt = ([string]$Prompt).Replace('](', ']\(') }
     Save-ChatqText $slot.Path ($slot.Header + $(if ($Kind -eq 'continue') { $script:ChatqContinueText } else { $Prompt }))
-    $job = New-ChatqJobRecord $slot $Row $Info -Kind $Kind -Mode $Mode -Model $Model -NotBefore $NotBefore -First:$First -SendNow:$SendNow -Typed $Typed -Resolve $Resolve -Rule $Rule -Title $Title
-    $reg = Register-ChatqJob $job
+    $homeArg = @{}
+    if ($PSBoundParameters.ContainsKey('JobHome')) { $homeArg['JobHome'] = $JobHome }
+    $job = New-ChatqJobRecord $slot $Row $Info -Kind $Kind -Mode $Mode -Model $Model -NotBefore $NotBefore -First:$First -SendNow:$SendNow -Typed $Typed -Resolve $Resolve -Rule $Rule -Title $Title @homeArg
+    $reg = Register-ChatqJob $job -NoLinks:$NoLinks
     return [pscustomobject]@{ Error = $null; Code = $null; Job = $job; Files = $reg.Files; Missed = $reg.Missed }
 }
 
@@ -742,7 +758,15 @@ function chatqrun {
     )
     Set-StrictMode -Off
     if ($Stop) {
-        if (-not (Test-ChatqWatcherAlive)) { Write-Host '  the watcher is not running' -ForegroundColor DarkGray; return }
+        # Listening for phone replies stops too, and before data/stop is
+        # written: while the window is open every new shell - and a watcher
+        # on its way out - starts a watcher to listen. The next alert that
+        # can be answered opens it again.
+        $closed = Close-ChatqReplyWindow
+        if (-not (Test-ChatqWatcherAlive)) {
+            Write-Host "  the watcher is not running$(if (-not $closed) { ' - data/replies.json could not be written, so a new shell may start one to listen for phone replies' })" -ForegroundColor DarkGray
+            return
+        }
         Save-ChatqText $script:ChatqStopPath 'stop'
         Write-Host '  stopping - within a few seconds' -ForegroundColor DarkGray
         return
@@ -810,6 +834,62 @@ function chatqlog {
     Write-Host ''
 }
 
+function Test-ChatqCanAsk {
+    # Can this shell ask a question and have it answered at the keyboard?
+    # Not a hidden process, not -NonInteractive, not input from a pipe or a
+    # file, and never the watcher. $script:ChatqAskSeam (tests): $false for
+    # no, a scriptblock that answers for yes.
+    if ($null -ne $script:ChatqAskSeam) { return ($script:ChatqAskSeam -is [scriptblock]) }
+    try {
+        if ($env:CHATQ_WATCHER -eq '1' -or -not [Environment]::UserInteractive -or $Host.Name -ne 'ConsoleHost') { return $false }
+        if ([Console]::IsInputRedirected) { return $false }
+        if (@([Environment]::GetCommandLineArgs() | Where-Object { $_ -match '^[-/]noni' }).Count) { return $false }
+        return $true
+    }
+    catch { return $false }
+}
+
+function Wait-ChatqPairCandidates {
+    <#
+    chatqnotify -Pair, after the pairing push went out: wait for the
+    phone's answer - until the pairing runs out - and put each one that
+    comes in to you, with its code, to confirm or not. The watcher is the
+    one reading the reply topic; this reads data/replies.json once a second.
+    Ctrl+C ends the wait and leaves the pairing open: chatqnotify shows the
+    answers, chatqnotify -Confirm takes one. Returns when a phone is paired
+    - here, or in the setup window meanwhile - or the pairing is over.
+    #>
+    param([datetime]$Until)
+    $asked = @{}
+    Write-Host '  waiting for the phone (Ctrl+C stops waiting; the pairing stays open)' -ForegroundColor DarkGray
+    while ((Get-Date) -lt $Until) {
+        $cfg = Get-ChatqConfig
+        $rc = Get-ChatqReplyConfig $cfg
+        if (-not $rc.PairId) {
+            if ($rc.Paired) { Write-Host "  paired - $($rc.Phone)" -ForegroundColor Green }
+            else { Write-Host '  the pairing is over - chatqnotify -Pair starts another' -ForegroundColor Yellow }
+            return
+        }
+        foreach ($pc in @(Get-ChatqPairCandidates $cfg)) {
+            if ($asked.ContainsKey($pc.Id)) { continue }
+            $asked[$pc.Id] = $true
+            Write-Host "  $($pc.Label) answered - code $($pc.Code)" -ForegroundColor Cyan
+            $q = 'same code on the phone? (y/n)'
+            $a = if ($script:ChatqAskSeam -is [scriptblock]) { [string](& $script:ChatqAskSeam $q) } else { Read-Host "  $q" }
+            if ($a.Trim() -notmatch '^(y|yes)$') {
+                Write-Host '  not that one - still waiting (an answer you do not recognise is someone else''s)' -ForegroundColor DarkGray
+                continue
+            }
+            $cr = Confirm-ChatqPairCandidate -Id $pc.Id
+            if ($cr.Error) { Write-Host "  $($cr.Error)" -ForegroundColor Yellow; return }
+            Write-Host "  paired - $($cr.Label)$(if ($cr.Sent) { ' - a push says so on the phone' })" -ForegroundColor Green
+            return
+        }
+        if ($script:ChatqPairWaitSeam) { & $script:ChatqPairWaitSeam } else { Start-Sleep -Seconds 1 }   # tests
+    }
+    Write-Host '  the pairing ran out - chatqnotify -Pair starts another' -ForegroundColor Yellow
+}
+
 function chatqnotify {
     <#
     .SYNOPSIS
@@ -835,85 +915,139 @@ function chatqnotify {
     $env:CHATQ_EVENT, CHATQ_TITLE, CHATQ_TEXT, CHATQ_PRIORITY, CHATQ_JOB and
     CHATQ_PRESENT (1 while you are at the PC). A desktop toast is on unless
     -Toast off. The phone stays quiet while you are at the PC - keyboard or
-    mouse used in the last -QuietMinutes (5; 0 turns that off).
+    mouse used in the last -QuietMinutes (5; 0 turns that off). -Events keeps
+    all but the named events off the phone (done, failed, 'needs input',
+    started, limited, overloaded, waiting; all for every one).
+
+    Chats you run yourself - in VS Code or a terminal, not through chatq -
+    alert too, from the overlay (Windows): 'needs input' when one has waited
+    on you for 20 s, 'done' when one finished a turn, and only while you are
+    away from the PC for -QuietMinutes (never with 0) - whichever window is
+    in front, since away means nobody is looking at it. -LiveAlerts off
+    keeps the phone to what chatq runs.
+
+    -Reply on: each phone alert carries a link to a page where you type the
+    next prompt for that chat - or allow edits, retry, skip, stop, ask for
+    the status - and the watcher picks it up. The phone is paired once first
+    (-Pair; -Reply on does it when none is): a push you tap on it, and the
+    page there makes a key that only that phone and this PC hold, and shows
+    a six-digit code. The same code comes up here - -Pair waits for it and
+    asks - and you confirm it (or later: -Confirm 123456); an answer whose
+    code you did not see on your phone is someone else's. Replies go
+    sealed with the key (AES and an HMAC) through a random ntfy.sh topic,
+    and no alert after the pairing push carries anything secret. A job a
+    reply queues or requeues runs in acceptEdits at most (reply.maxMode in
+    config.json sets another cap), and a Codex one in workspace-write at
+    most. -Pair again - or -Reply renew - pairs afresh: the phone paired
+    before stops working at once. -ReplyPage <https URL> serves the page
+    from a copy of your own: the page keeps the phone's key under its site,
+    and every <user>.github.io project page shares one. -Setup opens all of
+    this in a window (Windows); -Devices lists the devices on your Join
+    account.
+    .EXAMPLE
+    chatqnotify -Setup
     .EXAMPLE
     chatqnotify -ApiKey 0123abcd... -Device group.phone
+    .EXAMPLE
+    chatqnotify -Reply on
+    .EXAMPLE
+    chatqnotify -Pair
+    .EXAMPLE
+    chatqnotify -Confirm 123456
+    .EXAMPLE
+    chatqnotify -Events done, failed, 'needs input'
     .EXAMPLE
     chatqnotify -Ntfy chatq-7f3a9c1e2b
     .EXAMPLE
     chatqnotify -Command 'Invoke-RestMethod https://example.com/hook -Method Post -Body $env:CHATQ_TEXT'
     .EXAMPLE
     chatqnotify -Test
+    .EXAMPLE
+    chatqnotify -LiveAlerts off
     #>
     param(
         [string]$ApiKey, [string]$Device, [switch]$Test, [switch]$Off,
         [string]$Ntfy, [string]$NtfyServer, [string]$NtfyToken,
-        [string]$Command, [ValidateSet('on', 'off')][string]$Toast, [int]$QuietMinutes = -1
+        [string]$Command, [ValidateSet('on', 'off')][string]$Toast, [int]$QuietMinutes = -1,
+        [switch]$Setup, [ValidateSet('on', 'off', 'renew')][string]$Reply, [string[]]$Events, [switch]$Devices, [switch]$Pair,
+        [string]$Confirm, [string]$ReplyPage, [ValidateSet('on', 'off')][string]$LiveAlerts
     )
     Set-StrictMode -Off
-    $cfg = Get-ChatqConfig
-    $save = {
-        Save-ChatqJson $script:ChatqConfigPath $cfg
-        if (-not $script:ChatqIsWindows) { try { & chmod 600 $script:ChatqConfigPath } catch {} }
-    }
-    if ($Off) {
-        foreach ($k in 'join', 'ntfy', 'command') { if ($cfg.PSObject.Properties[$k]) { $cfg.PSObject.Properties.Remove($k) } }
-        & $save
-        Write-Host '  phone alerts and the command off - they still go to data/logs/alerts.log (and the toast)' -ForegroundColor DarkGray
+    if ($PSBoundParameters.ContainsKey('Confirm')) {
+        $cr = Confirm-ChatqPairCandidate -Code $Confirm
+        if ($cr.Error) { Write-Host "  $($cr.Error)" -ForegroundColor Yellow; return }
+        Write-Host "  paired - $($cr.Label)$(if ($cr.Sent) { ' - a push says so on the phone' })" -ForegroundColor Green
         return
     }
-    $changed = $false
-    # The Join page hands you a whole push URL, so pasting that is the obvious
-    # move. Take the key and the device out of it. Unquoted it never gets this
-    # far - PowerShell stops at the & itself, and nothing here can catch that -
-    # so the help says to paste the key alone.
-    if ($ApiKey -match '[?&]apikey=') {
-        $dev = if ($ApiKey -match '[?&]device(?:Id|Names)=([^&\s]+)') { $Matches[1] } else { '' }
-        $key = if ($ApiKey -match '[?&]apikey=([^&\s]+)') { $Matches[1] } else { '' }
-        if ($key) {
-            $ApiKey = $key
-            if (-not $Device -and $dev) { $Device = [uri]::UnescapeDataString($dev) }
-            Write-Host '  took the key out of the URL you pasted' -ForegroundColor DarkGray
+    if ($Setup) {
+        if ($script:ChatqIsWindows) { [void](Start-ChatqPhoneSetup); return }
+        Write-Host '  the setup window is Windows-only - the same from here:' -ForegroundColor Yellow
+        Write-Host '      chatqnotify -ApiKey <key> -Device <device id | group.phone>   Join' -ForegroundColor Cyan
+        Write-Host '      chatqnotify -Devices                                          the devices on that key' -ForegroundColor Cyan
+        Write-Host '      chatqnotify -Reply on                                         answer alerts from the phone' -ForegroundColor Cyan
+        Write-Host '      chatqnotify -Pair                                             pair the phone (again)' -ForegroundColor Cyan
+        Write-Host '      chatqnotify -Confirm 123456                                   confirm the code the phone shows' -ForegroundColor Cyan
+        Write-Host "      chatqnotify -Events done, failed, 'needs input'               what reaches the phone" -ForegroundColor Cyan
+        Write-Host '      chatqnotify -QuietMinutes 5 / -Toast on / -Test' -ForegroundColor Cyan
+        Write-Host '      chatqnotify -Ntfy <topic> [-NtfyServer <url>] / -Command <ps>   other channels' -ForegroundColor Cyan
+        Write-Host '      chatqnotify -LiveAlerts on|off / -ReplyPage <https URL>' -ForegroundColor Cyan
+        return
+    }
+    if ($Devices) {
+        # the key given (a pasted push URL too), else the one saved
+        $key = if ($ApiKey) { (ConvertFrom-ChatqJoinPaste $ApiKey).Key } else {
+            $c = Get-ChatqConfig
+            if ($c.PSObject.Properties['join'] -and $c.join) { Unprotect-ChatqSecret $c.join.apiKey }
         }
+        if (-not $key) { Write-Host '  no Join key - chatqnotify -Devices -ApiKey <key>, or save one first' -ForegroundColor Yellow; return }
+        $r = Get-ChatqJoinDevices $key
+        if ($r.Error) { Write-Host "  $($r.Error)" -ForegroundColor Yellow }
+        foreach ($dv in @($r.Devices)) {
+            $what = if ($dv.Model) { "$($dv.Name) ($($dv.Model))" } else { $dv.Name }
+            Write-Host ('  {0,-34} {1}' -f $dv.Id, $what) -ForegroundColor $(if ($dv.Type -eq 'group') { 'DarkGray' } else { 'Cyan' })
+        }
+        Write-Host '  chatqnotify -Device <id> sends to that one' -ForegroundColor DarkGray
+        return
     }
-    if ($ApiKey -or $Device) {
-        $j = if ($cfg.join) { $cfg.join } else { [pscustomobject]@{} }
-        if ($ApiKey) { Set-ChatqProp $j 'apiKey' ([pscustomobject](Protect-ChatqSecret $ApiKey.Trim())) }
-        if ($Device) { Set-ChatqProp $j 'device' $Device.Trim() }
-        if (-not $j.device) { Set-ChatqProp $j 'device' 'group.phone' }
-        Set-ChatqProp $cfg 'join' $j
-        $changed = $true
-        Write-Host "  Join saved $($script:ChatqDot) device $($j.device)$(if ($j.apiKey.protected) { " $($script:ChatqDot) key protected with DPAPI" })" -ForegroundColor Green
+    # the saving is shared with the setup window: Set-ChatqNotifyConfig
+    $ch = @{}
+    if ($Off) { $ch['Off'] = $true }
+    if ($ApiKey) { $ch['ApiKey'] = $ApiKey }
+    if ($Device) { $ch['Device'] = $Device }
+    if ($Ntfy) { $ch['Ntfy'] = $Ntfy }
+    if ($NtfyServer) { $ch['NtfyServer'] = $NtfyServer }
+    if ($NtfyToken) { $ch['NtfyToken'] = $NtfyToken }
+    if ($PSBoundParameters.ContainsKey('Command')) { $ch['Command'] = $Command }
+    if ($Toast) { $ch['Toast'] = $Toast }
+    if ($QuietMinutes -ge 0) { $ch['QuietMinutes'] = $QuietMinutes }
+    if ($PSBoundParameters.ContainsKey('Events')) { $ch['Events'] = $Events }
+    if ($PSBoundParameters.ContainsKey('ReplyPage')) { $ch['ReplyPage'] = $ReplyPage }
+    if ($LiveAlerts) { $ch['LiveAlerts'] = $LiveAlerts }
+    # renew is what pairing afresh used to be called, and does the same
+    if ($Reply -eq 'renew') { $Pair = $true }
+    elseif ($Reply) { $ch['Reply'] = $Reply }
+    $res = Set-ChatqNotifyConfig $ch
+    foreach ($m in @($res.Messages)) { Write-Host "  $($m.Text)" -ForegroundColor $m.Color }
+    if ($res.Error -or $Off) { return }
+    $changed = $res.Changed
+    if ($Pair -or $res.NeedsPairing) {
+        $pr = Start-ChatqReplyPairing
+        foreach ($r in @($script:ChatqAlertReport)) { Write-Host "  $r" -ForegroundColor $(if ($r -match ': (sent|shown|ran)$') { 'Green' } else { 'Yellow' }) }
+        if ($pr.Error) { Write-Host "  pairing: $($pr.Error)" -ForegroundColor Yellow; return }
+        Write-Host "  pairing alert sent - tap it on the phone by $($pr.Until.ToString('HH:mm')), then Pair on the page that opens" -ForegroundColor Green
+        Write-Host '  a phone paired before no longer works' -ForegroundColor DarkGray
+        if (Test-ChatqCanAsk) { Wait-ChatqPairCandidates $pr.Until }
+        else { Write-Host '  the phone then shows a code: chatqnotify -Confirm <that code> pairs it' -ForegroundColor DarkGray }
+        if (-not $Test) { return }
     }
-    if ($Ntfy -or $NtfyServer -or $NtfyToken) {
-        $n = if ($cfg.PSObject.Properties['ntfy'] -and $cfg.ntfy) { $cfg.ntfy } else { [pscustomobject]@{} }
-        if ($Ntfy) { Set-ChatqProp $n 'topic' ([pscustomobject](Protect-ChatqSecret $Ntfy.Trim())) }
-        if ($NtfyServer) { Set-ChatqProp $n 'server' $NtfyServer.Trim().TrimEnd('/') }
-        if ($NtfyToken) { Set-ChatqProp $n 'token' ([pscustomobject](Protect-ChatqSecret $NtfyToken.Trim())) }
-        Set-ChatqProp $cfg 'ntfy' $n
-        $changed = $true
-        $shown = Unprotect-ChatqSecret $n.topic
-        # never the whole topic: it is the password
-        if ($shown) { $shown = $shown.Substring(0, [Math]::Min(3, $shown.Length)) + '...' }
-        Write-Host "  ntfy saved $($script:ChatqDot) topic $shown $($script:ChatqDot) $(if ($n.server) { $n.server } else { 'https://ntfy.sh' })" -ForegroundColor Green
-    }
-    if ($PSBoundParameters.ContainsKey('Command')) {
-        if ($Command.Trim()) { Set-ChatqProp $cfg 'command' $Command; Write-Host '  command saved - it runs on every alert' -ForegroundColor Green }
-        elseif ($cfg.PSObject.Properties['command']) { $cfg.PSObject.Properties.Remove('command'); Write-Host '  command removed' -ForegroundColor DarkGray }
-        $changed = $true
-    }
-    if ($Toast) { Set-ChatqProp $cfg 'toast' ($Toast -eq 'on'); $changed = $true; Write-Host "  desktop toast $Toast" -ForegroundColor Green }
-    if ($QuietMinutes -ge 0) {
-        Set-ChatqProp $cfg 'quietMinutes' $QuietMinutes; $changed = $true
-        $what = if ($QuietMinutes) { "the phone stays quiet while you used the PC in the last $QuietMinutes min" } else { 'the phone is always sent to' }
-        Write-Host "  $what" -ForegroundColor Green
-    }
-    if ($changed) { & $save }
     if ($Test -or $ApiKey -or $Ntfy) {
         # -Loud: typed at the PC by definition, and meant for the phone anyway
         $ok = Send-ChatqAlert 'test' "chatq reaches this device $($script:ChatqDot) $([Environment]::MachineName)" 1 -Loud
         foreach ($r in @($script:ChatqAlertReport)) { Write-Host "  $r" -ForegroundColor $(if ($r -match ': (sent|shown|ran)$') { 'Green' } else { 'Yellow' }) }
-        if ($ok) { Write-Host '  check your phone' -ForegroundColor Green }
+        if ($ok) {
+            Write-Host '  check your phone' -ForegroundColor Green
+            if ((Get-ChatqReplyConfig).Links) { Write-Host '  tap it for the reply page - "Send a test reply" comes back here as a push' -ForegroundColor DarkGray }
+        }
         return
     }
     if (-not $changed) {
@@ -925,9 +1059,24 @@ function chatqnotify {
         $toastOn = -not ($cfg.PSObject.Properties['toast'] -and $cfg.toast -eq $false)
         $qm = if ($cfg.PSObject.Properties['quietMinutes']) { [int]$cfg.quietMinutes } else { 5 }
         Write-Host "  toast $(if ($toastOn) { 'on' } else { 'off' }) $($script:ChatqDot) phone quiet while at the PC: $(if ($qm) { "$qm min" } else { 'off' })" -ForegroundColor DarkGray
+        if ($cfg.PSObject.Properties['phoneEvents'] -and $null -ne $cfg.phoneEvents) {
+            Write-Host "  the phone gets: $(@($cfg.phoneEvents) -join ', ') (and tests and replies)" -ForegroundColor DarkGray
+        }
+        Write-Host "  chats you run yourself: $(Get-ChatqLiveAlertStatusText $cfg)" -ForegroundColor DarkGray
+        $rst = Get-ChatqPhoneStatusText $cfg
+        Write-Host "  replies from the phone: $rst" -ForegroundColor DarkGray
+        if ($rst -eq 'not paired') { Write-Host '    chatqnotify -Pair sends the pairing alert to tap' -ForegroundColor DarkGray }
+        # the answers to the pairing waiting: confirm the one whose code
+        # the phone shows
+        foreach ($pc in @(Get-ChatqPairCandidates $cfg)) {
+            Write-Host "    $($pc.Label) answered$(if ($pc.At) { " at $($pc.At.ToString('HH:mm'))" }) - code $($pc.Code)   chatqnotify -Confirm $($pc.Digits)" -ForegroundColor Cyan
+        }
+        $rcs = Get-ChatqReplyConfig $cfg
+        if ($rcs.Wanted -and $rcs.MaxMode -ne 'acceptEdits') { Write-Host "    a reply runs a job in $($rcs.MaxMode) at most" -ForegroundColor DarkGray }
         if ($any) { Write-Host '  chatqnotify -Test sends one' -ForegroundColor DarkGray }
         else {
             Write-Host '  no phone alerts yet - Join or ntfy:' -ForegroundColor DarkGray
+            if ($script:ChatqIsWindows) { Write-Host '      chatqnotify -Setup                                           all of it in a window' -ForegroundColor Cyan }
             Write-Host '      chatqnotify -ApiKey <key> -Device <device id | group.phone>   (https://joinjoaomgcd.appspot.com, Join API)' -ForegroundColor Cyan
             Write-Host '        the key itself, not the push URL - PowerShell stops at the & in one unless it is quoted' -ForegroundColor DarkGray
             Write-Host '      chatqnotify -Ntfy <long random topic>                        (https://ntfy.sh, free)' -ForegroundColor Cyan

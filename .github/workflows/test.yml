@@ -36,6 +36,13 @@ jobs:
         if: matrix.host == 'powershell'
         run: node tests/extension-check.js
 
+      # the phone's reply page: its WebCrypto held to the reference vector
+      # Node's own crypto made, its buttons and link driven under node, and
+      # nothing it may load or post but the one text/plain POST
+      - name: Reply page check
+        if: matrix.host == 'powershell'
+        run: node tests/reply-page-check.js
+
       # the Marketplace package: build.js fills payload/ and refuses a version
       # that is not the script's, a script that is not ASCII, an SVG in the
       # listing; vsce then checks the manifest the Marketplace will read

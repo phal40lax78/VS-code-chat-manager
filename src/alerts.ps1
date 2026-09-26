@@ -43,16 +43,34 @@ function Unprotect-ChatqSecret {
 
 function Get-ChatqJoinUrl {
     # Join's push API is one GET. Hangul is nine bytes per syllable once
-    # escaped, so the text is trimmed until the whole URL fits.
-    param([string]$Key, [string]$Device, [string]$Title, [string]$Text, [int]$Priority)
+    # escaped, so the text is trimmed until the whole URL fits. -Url is the
+    # reply link a tap opens; -NotificationId makes a later alert replace
+    # this one on the phone. When even 20 characters of text do not fit, the
+    # icon goes, then the chat's title inside the reply link (its c=).
+    param([string]$Key, [string]$Device, [string]$Title, [string]$Text, [int]$Priority,
+        [string]$Url, [string]$NotificationId, [string]$Icon, [switch]$DismissOnTouch)
     $base = 'https://joinjoaomgcd.appspot.com/_ah/api/messaging/v1/sendPush?'
     $dev = if ($Device -match '^[0-9a-fA-F]{32}$' -or $Device -match '^group\.') { 'deviceId' } else { 'deviceNames' }
     $t = [string]$Text
+    $link = $Url
     while ($true) {
         $q = [ordered]@{ apikey = $Key; $dev = $Device; title = $Title; text = $t; priority = $Priority; group = 'chatq' }
-        $url = $base + (($q.GetEnumerator() | ForEach-Object { $_.Key + '=' + [Uri]::EscapeDataString([string]$_.Value) }) -join '&')
-        if ($url.Length -le 1900 -or $t.Length -le 20) { return $url }
-        $t = $t.Substring(0, [int]($t.Length * 0.85)).TrimEnd() + $script:ChatqEllipsis
+        if ($link) { $q['url'] = $link }
+        if ($Icon) { $q['icon'] = $Icon }
+        if ($NotificationId) { $q['notificationId'] = $NotificationId }
+        if ($DismissOnTouch) { $q['dismissOnTouch'] = 'true' }
+        $url = $base + (($q.GetEnumerator() | ForEach-Object { $_.Key + '=' + (ConvertTo-ChatqUriPart ([string]$_.Value)) }) -join '&')
+        if ($url.Length -le 1900) { return $url }
+        if ($t.Length -gt 20) {
+            # never between the two halves of an emoji
+            $cut = [int]($t.Length * 0.85)
+            if ([char]::IsHighSurrogate($t[$cut - 1])) { $cut-- }
+            $t = $t.Substring(0, $cut).TrimEnd() + $script:ChatqEllipsis
+            continue
+        }
+        if ($Icon) { $Icon = ''; continue }
+        if ($link -and $link -match '[#&]c=[^&]') { $link = $link -replace '([#&]c=)[^&]*', '$1'; continue }
+        return $url
     }
 }
 
@@ -69,8 +87,20 @@ function Send-ChatqAlert {
     "chatq <dot> ", so a Tasker profile can filter them - or match only "needs
     input" and "failed". What the text carries (chat title, an excerpt of the
     reply) passes through the push service's servers.
+    config phoneEvents holds some events back from the phone (not 'test',
+    'reply' or 'pair'). With replies on and a phone paired (chatqnotify
+    -Pair) each phone alert carries a link to answer it from the phone - see
+    src/phone.ps1 - and a window opens in which the watcher listens for the
+    answer. -Job is the job the alert is about: the link says which chat to
+    answer, and Join shows alerts about one chat as one notification.
+      -Quick     each phone channel tried once, 8 s at most, and no command:
+                 for a push sent from inside a run, which waits on it
+      -NoReply   no link, nothing registered, no window: a refusal
+      -PairLink  the link is this one, the pairing push's, and nothing is
+                 registered; never through ntfy over http, which drops it
     #>
-    param([string]$Event, [string]$Text, [int]$Priority = 0, [switch]$Loud)
+    param([string]$Event, [string]$Text, [int]$Priority = 0, [switch]$Loud, $Job,
+        [switch]$Quick, [switch]$NoReply, [string]$PairLink)
     $title = "chatq $($script:ChatqDot) $Event"
     $script:ChatqAlertReport = [System.Collections.Generic.List[string]]::new()
     try {
@@ -86,44 +116,94 @@ function Send-ChatqAlert {
         try { Show-ChatqToast $title $Text; $script:ChatqAlertReport.Add('toast: shown') }
         catch { $script:ChatqAlertReport.Add("toast: $($_.Exception.Message)") }
     }
-    $e = Invoke-ChatqAlertCommand $cfg $Event $title $Text $Priority $present
-    if ($e) { $script:ChatqAlertReport.Add($e) }
-    elseif ($cfg.PSObject.Properties['command'] -and $cfg.command) { $script:ChatqAlertReport.Add('command: ran') }
+    if (-not $Quick) {
+        $e = Invoke-ChatqAlertCommand $cfg $Event $title $Text $Priority $present
+        if ($e) { $script:ChatqAlertReport.Add($e) }
+        elseif ($cfg.PSObject.Properties['command'] -and $cfg.command) { $script:ChatqAlertReport.Add('command: ran') }
+    }
 
     $phones = @()
     if ($cfg.PSObject.Properties['join'] -and $cfg.join) { $phones += 'join' }
     if ($cfg.PSObject.Properties['ntfy'] -and $cfg.ntfy) { $phones += 'ntfy' }
     if (-not $phones) { $script:ChatqLastAlertError = 'no phone channel set up'; return $false }
+    if (-not (Test-ChatqPhoneEvent $cfg $Event)) {
+        $script:ChatqAlertReport.Add("phone: skipped - $Event is not among the phone's events")
+        $script:ChatqLastAlertError = "the phone gets no '$Event' alerts (chatqnotify -Events)"
+        return $false
+    }
     if ($present -and -not $Loud) {
         $script:ChatqAlertReport.Add('phone: skipped - you are at the PC')
         $script:ChatqLastAlertError = 'you are at the PC, so the phone was left alone'
         return $false
     }
+    # an answerable alert: registered before it goes, so a reply that comes
+    # back at once finds it
+    $rc = $null
+    $reply = $null
+    if ($PairLink) { $reply = [pscustomobject]@{ Aid = $null; Link = $PairLink } }
+    elseif (-not $NoReply) {
+        try {
+            $rc = Get-ChatqReplyConfig $cfg
+            if ($rc.Links) { $reply = New-ChatqReplyAlert -Event $Event -Job $Job -Rc $rc }
+        }
+        catch { $reply = $null }
+    }
     $sent = $false
     $script:ChatqLastAlertError = $null
     foreach ($ch in $phones) {
-        $err = if ($ch -eq 'join') { Send-ChatqJoin $cfg $title $Text $Priority } else { Send-ChatqNtfy $cfg $title $Text $Priority }
+        # the pairing push is nothing without its link, which ntfy over
+        # plain http leaves out: through there it would count as sent and
+        # open nothing on the phone
+        if ($PairLink -and $ch -eq 'ntfy' -and $cfg.ntfy.server -and ([string]$cfg.ntfy.server) -notmatch '^https://') {
+            $script:ChatqAlertReport.Add('ntfy: skipped - not https, so the pairing link cannot go that way')
+            if (-not $sent -and -not $script:ChatqLastAlertError) { $script:ChatqLastAlertError = 'ntfy: not https - the pairing link cannot go that way' }
+            continue
+        }
+        $err = if ($ch -eq 'join') { Send-ChatqJoin $cfg $title $Text $Priority -Reply $reply -Job $Job -Quick:$Quick }
+        else { Send-ChatqNtfy $cfg $title $Text $Priority -Click $(if ($reply) { $reply.Link } else { '' }) -Quick:$Quick }
         if ($err) { $script:ChatqAlertReport.Add("${ch}: $err"); $script:ChatqLastAlertError = "${ch}: $err" }
         else { $script:ChatqAlertReport.Add("${ch}: sent"); $sent = $true }
+    }
+    if ($sent -and $reply) {
+        # Listen for the answer. A watcher that is running does that from
+        # its next pass; with none running, one is started just to listen.
+        # The window is written before the watcher's lock is looked at, and
+        # a watcher on its way out looks at the window after letting go of
+        # the lock, so one of the two always sees the other.
+        try {
+            if (-not $PairLink) { Open-ChatqReplyWindow $rc }
+            if ($env:CHATQ_WATCHER -ne '1' -and -not (Test-ChatqWatcherAlive)) { [void](Start-ChatqWatcherProcess) }
+        }
+        catch {}
     }
     return $sent
 }
 
 function Send-ChatqJoin {
-    # $null when sent, else what went wrong
-    param($Cfg, [string]$Title, [string]$Text, [int]$Priority)
+    # $null when sent, else what went wrong. -Reply: New-ChatqReplyAlert's
+    # answer, whose link a tap on the notification opens. -Quick: one try.
+    param($Cfg, [string]$Title, [string]$Text, [int]$Priority, $Reply, $Job, [switch]$Quick)
     $key = Unprotect-ChatqSecret $Cfg.join.apiKey
     if (-not $key -or -not $Cfg.join.device) { return 'no key or device set' }
+    # icon: chatq's own unless join.icon says otherwise ('' for none)
+    $icon = if ($Cfg.join.PSObject.Properties['icon']) { [string]$Cfg.join.icon } else { $script:ChatqJoinIcon }
+    # perChat (on unless false): "done" replaces "started" for the same chat
+    # instead of piling up under it
+    $perChat = -not ($Cfg.join.PSObject.Properties['perChat'] -and $Cfg.join.perChat -eq $false)
+    $nid = if ($perChat -and $Job -and $Job.sessionId) { 'chatq-' + ([string]$Job.sessionId).Substring(0, [Math]::Min(12, ([string]$Job.sessionId).Length)) } else { '' }
+    $link = if ($Reply) { [string]$Reply.Link } else { '' }
+    $url = Get-ChatqJoinUrl $key $Cfg.join.device $Title $Text $Priority -Url $link -NotificationId $nid -Icon $icon -DismissOnTouch:([bool]$link)
+    if ($script:ChatqJoinSeam) { return (& $script:ChatqJoinSeam $url) }   # tests
     Enable-ChatqTls12
-    $url = Get-ChatqJoinUrl $key $Cfg.join.device $Title $Text $Priority
     $last = $null
-    for ($try = 1; $try -le 3; $try++) {
+    $tries = if ($Quick) { 1 } else { 3 }
+    for ($try = 1; $try -le $tries; $try++) {
         try {
-            $r = Invoke-RestMethod -Uri $url -Method Get -TimeoutSec 20 -UseBasicParsing
+            $r = Invoke-RestMethod -Uri $url -Method Get -TimeoutSec $(if ($Quick) { 8 } else { 20 }) -UseBasicParsing
             if ($r.success) { return $null }
             return [string]$r.errorMessage
         }
-        catch { $last = $_.Exception.Message; Start-Sleep -Seconds (2 * $try) }
+        catch { $last = $_.Exception.Message; if ($try -lt $tries) { Start-Sleep -Seconds (2 * $try) } }
     }
     return $last
 }
@@ -132,15 +212,21 @@ function Send-ChatqNtfy {
     # Published as JSON to the server root rather than with Title/Priority
     # headers: .NET Framework will not put Hangul - or the middle dot every
     # title starts with - into a header. $null when sent, else the error.
-    param($Cfg, [string]$Title, [string]$Text, [int]$Priority)
+    # -Click: the reply link, opened by a tap on the notification - only over
+    # https: the pairing push's link names the reply topic, and a server
+    # reached in the clear would show it to the whole network. -Quick: one
+    # try.
+    param($Cfg, [string]$Title, [string]$Text, [int]$Priority, [string]$Click, [switch]$Quick)
     $topic = Unprotect-ChatqSecret $Cfg.ntfy.topic
     if (-not $topic) { return 'no topic set' }
     $server = if ($Cfg.ntfy.server) { ([string]$Cfg.ntfy.server).TrimEnd('/') } else { 'https://ntfy.sh' }
-    $body = [ordered]@{
+    $msg = [ordered]@{
         topic = $topic; title = $Title; message = $Text; tags = @('robot')
         # chatq's 0/1/2 onto ntfy's default/high/urgent
         priority = @(3, 4, 5)[[Math]::Min(2, [Math]::Max(0, $Priority))]
-    } | ConvertTo-Json -Compress
+    }
+    if ($Click -and $server -match '^https://') { $msg['click'] = $Click }
+    $body = $msg | ConvertTo-Json -Compress
     $bytes = (New-Object System.Text.UTF8Encoding $false).GetBytes($body)
     $headers = @{}
     $tok = if ($Cfg.ntfy.PSObject.Properties['token']) { Unprotect-ChatqSecret $Cfg.ntfy.token } else { $null }
@@ -148,13 +234,14 @@ function Send-ChatqNtfy {
     if ($script:ChatqNtfySeam) { & $script:ChatqNtfySeam $server $body $headers; return $null }   # tests
     Enable-ChatqTls12
     $last = $null
-    for ($try = 1; $try -le 3; $try++) {
+    $tries = if ($Quick) { 1 } else { 3 }
+    for ($try = 1; $try -le $tries; $try++) {
         try {
             $null = Invoke-RestMethod -Uri $server -Method Post -Body $bytes -ContentType 'application/json; charset=utf-8' `
-                -Headers $headers -TimeoutSec 20 -UseBasicParsing
+                -Headers $headers -TimeoutSec $(if ($Quick) { 8 } else { 20 }) -UseBasicParsing
             return $null
         }
-        catch { $last = $_.Exception.Message; Start-Sleep -Seconds (2 * $try) }
+        catch { $last = $_.Exception.Message; if ($try -lt $tries) { Start-Sleep -Seconds (2 * $try) } }
     }
     return $last
 }
@@ -327,10 +414,13 @@ function Test-ChatqWatcherAlive {
 function Get-ChatqBlocks {
     # When each lane is free again, keyed like the watcher keys it: its own
     # view while it runs - limits and overloads both - a fresh scan otherwise.
+    # A watcher only listening for phone replies runs nothing and so learns
+    # nothing about limits: its saved view would be hours stale, so that is
+    # scanned too.
     param([switch]$Scan)
     $out = @{}
     $s = Get-ChatqState
-    if (-not $Scan -and (Test-ChatqWatcherAlive)) {
+    if (-not $Scan -and -not $s.listening -and (Test-ChatqWatcherAlive)) {
         if ($s.blocked) {
             foreach ($p in $s.blocked.PSObject.Properties) {
                 $u = ConvertTo-ChatqDate $p.Value.until

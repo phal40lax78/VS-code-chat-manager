@@ -1394,6 +1394,50 @@ async function overlayAutoStart() {
     }
 }
 
+// Chat Manager: Phone alerts... - the setup window for Join alerts and for
+// answering them from the phone, as chatqnotify -Setup opens it from a
+// terminal. That window is WPF in a process of its own, so Windows only;
+// elsewhere the same settings are chatqnotify's switches, and this says so.
+// Run through the tool folder's loader and setup's runPs, as
+// overlayAutoStart is, so the tests stand in for PowerShell. The script's
+// one "phone setup ..." line says whether the window came; the window itself
+// is the answer when it did. Never throws.
+const phoneTexts = {
+    windowsOnly: 'The phone alerts window is Windows-only. In a terminal, chatqnotify -Setup lists the same settings as chatqnotify switches.',
+    noLoader: folder => 'The scripts are not in ' + folder + ', so the phone alerts window cannot open. Chat Manager: Install terminal commands puts them there.',
+    already: 'The phone alerts window is already open.',
+    failed: said => (said ? 'The phone alerts window: ' + said + '.' : 'The phone alerts window did not open.') + ' Chat Manager: Show log has the details.'
+};
+async function phoneAlerts() {
+    const io = module.exports._overlayIo;
+    const done = (outcome) => { log('phone alerts: ' + outcome); return outcome; };
+    try {
+        const platform = io.platform();
+        if (platform !== 'win32') {
+            vscode.window.showInformationMessage(phoneTexts.windowsOnly);
+            return done('Windows only');
+        }
+        const folder = toolFolder();
+        const loader = path.join(folder, setup.LOADER);
+        if (!io.exists(loader)) {
+            vscode.window.showWarningMessage(phoneTexts.noLoader(folder));
+            return done('no loader in ' + folder);
+        }
+        const exe = io.powershell(platform);
+        if (!exe) { vscode.window.showWarningMessage(phoneTexts.failed('')); return done('no PowerShell found'); }
+        // Write-Host is the information stream: *>&1 brings it to stdout
+        const r = await setup._runPs(exe, loader, 'chatqnotify -Setup *>&1 | Out-String -Width 200', 60000, log);
+        const said = lastSaid(r && r.stdout, /phone setup/);
+        if (/opens in its own window|is still starting/.test(said)) return done(said);
+        if (/already open/.test(said)) { vscode.window.showInformationMessage(phoneTexts.already); return done('already open'); }
+        vscode.window.showWarningMessage(phoneTexts.failed(said));
+        return done('failed - ' + (said || 'no word from the script'));
+    } catch (e) {
+        vscode.window.showWarningMessage(phoneTexts.failed(''));
+        return done('failed - ' + ((e && e.message) || e));
+    }
+}
+
 function activate(context) {
     // which extension host this is: the parent of this window's claude
     // processes, as the script's hostPids name it (S30)
@@ -1404,6 +1448,7 @@ function activate(context) {
         context.subscriptions.push(vscode.commands.registerCommand('chatManager.openChat',
             () => openChat().catch(e => log('the chat picker failed: ' + ((e && e.stack) || e)))));
         context.subscriptions.push(vscode.commands.registerCommand('chatManager.overlayAutoStart', () => overlayAutoStart()));
+        context.subscriptions.push(vscode.commands.registerCommand('chatManager.phoneAlerts', () => phoneAlerts()));
     }
     // The overlay from the setup's onReady alone: at once where the loader is
     // in place and nothing is to be copied - setUp calls it before its first
@@ -1458,3 +1503,4 @@ module.exports = {
     _ageText: ageText, _pickItem: pickItem, _openChat: openChat, _acceptChat: acceptChat, _claudeHome: claudeHome,
     _labelShared: labelShared, _noIcons: noIcons, _overlayAutoStart: overlayAutoStart
 };
+module.exports._phoneAlerts = phoneAlerts;

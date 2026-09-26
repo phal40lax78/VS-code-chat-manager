@@ -1,5 +1,79 @@
 # Changelog
 
+## 0.8.0 — replies from the phone, and alerts for the chats you run yourself
+
+- **Phone alerts in a window.** `chatqnotify -Setup` opens one window for
+  all of it: the Join key - the key itself, or the whole push URL Join's
+  page shows - **Find devices**, the device to send to, and **Send test**;
+  replies from the phone and **Pair phone**; which events reach the phone,
+  the quiet minutes, the chats you run yourself and the desktop toast; and,
+  folded away, ntfy and your own command. **Save** goes through the same
+  code as `chatqnotify`'s switches, so the two never disagree about
+  `data/config.json`. The overlay's tray has it as **Phone alerts...**, and
+  VS Code's command palette as **Chat Manager: Phone alerts...**. It is WPF,
+  so Windows only; elsewhere `chatqnotify -Setup` prints the switches that
+  do the same.
+- **Alerts for the chats you run yourself.** A chat you drive in VS Code or
+  a terminal's `claude` now reaches the phone too, not only what chatq
+  runs: `needs input` once it has waited on you for 20 seconds, `done` when
+  a turn ends. Only while you are away - no keyboard or mouse for
+  `quietMinutes` - and then whichever window is in front, its own VS Code
+  window included. Never about a chat chatq is running a prompt in, and one
+  alert per chat and event every 3 minutes at most. The overlay sends them,
+  so it must be
+  running (it starts by itself on Windows), and one started before this
+  version has to be restarted: `chatqnotify` says when it runs an older
+  copy. `chatqnotify -LiveAlerts off` keeps the phone to what chatq runs.
+- **Reply from the phone.** With `chatqnotify -Reply on` and a phone
+  paired, a tap on an alert opens a page to type the chat's next prompt, or
+  press **Allow edits & continue**, **Continue**, **Retry**, **Skip**,
+  **Stop** or **Status**, as the alert allows. The phone seals the reply and
+  posts it to an ntfy.sh topic; the watcher polls that topic, does what it
+  says, and answers with a push - itself an alert that can be answered.
+  After an alert that can be answered goes out, the watcher listens for
+  `reply.hours` (12) - one is started just for that when none runs - and
+  never keeps the PC awake for it. `chatqrun -Stop` stops the listening
+  too, until the next such alert.
+- **A reply never runs a job above `acceptEdits`.** A job a reply queues or
+  requeues runs in its old job's own mode, or the chat's, brought down to
+  `reply.maxMode` in `config.json` - `acceptEdits` unless set otherwise -
+  and a Codex one in `workspace-write` at most. Nothing in a reply picks a
+  mode, and links in its text pull no files from `data/queue`.
+- **Pairing, confirmed by a code.** `chatqnotify -Pair`, or **Pair phone**,
+  sends one push; the page it opens makes a key on the phone, sends it back
+  sealed, and shows a six-digit code. The phone is paired once you confirm
+  the same code on the PC - `chatqnotify -Pair` asks, or
+  `chatqnotify -Confirm 123456`, or the window's **Confirm**. Pairing again
+  replaces the phone at once, and every link already out stops working.
+- **No secret in an alert.** After the pairing, an alert's link names the
+  alert and nothing else, so Join - whose push is a GET, logged in full -
+  and whoever reads an ntfy alert topic cannot answer one. ntfy.sh sees the
+  reply topic and the sealed text only, and GitHub Pages serves a static
+  page that loads nothing. `chatqnotify -ReplyPage <https URL>` serves that
+  page from a copy on a site of your own.
+- **One notification per chat.** Join shows the alerts about one chat as
+  one notification: `done` replaces `started` instead of piling up under it
+  (`join.perChat`, on unless false). Join's alerts carry chatq's icon
+  (`join.icon`; `""` for none).
+- **Which events reach the phone.**
+  `chatqnotify -Events done, failed, 'needs input'`, or the window's
+  boxes, keeps the rest off the phone; the toast and your command still get
+  every one. `all` puts them back. Tests, replies and the pairing push
+  always go.
+- **`chatqnotify -Devices`** lists the devices on the Join key saved, or on
+  `-ApiKey`, with Join's groups after them.
+- **`chatqnotify` alone says more:** the events the phone gets, whether the
+  chats you run yourself alert and what stops them, whether replies are
+  on, the phone paired and since when, how long the watcher listens, the
+  last reply, and the answers to a pairing waiting for their code.
+- **Why:** on 2026-09-26 Join was set up, its test reached the phone, and
+  then no alert came. Nothing was broken: only prompts queued with `chatq`
+  alerted, and the chats run straight in VS Code never passed through
+  chatq. They alert now, through the overlay, while you are away. The
+  replies were asked for at the same time, so an alert can be answered
+  where it is read; the pairing, its code and the mode cap are there
+  because a push is read by more than the phone it goes to.
+
 ## 0.7.2 — chats open as tabs, and the overlay starts by itself
 
 - **The open chip opens a tab.** A click on a row's **open** opens the chat

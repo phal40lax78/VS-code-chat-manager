@@ -4,8 +4,10 @@
 #region the watcher -----------------------------------------------------------
 # One per machine, a hidden PowerShell that loads this same file. It sleeps
 # until a queued job's provider is free, checks with a probe, runs the job, and
-# exits when nothing is left. Nothing is registered with the OS: loading the
-# profile starts it again if jobs are pending, which covers a reboot.
+# exits when nothing is left - unless a phone alert out there can still be
+# answered, when it stays to poll for the reply (src/phone.ps1). Nothing is
+# registered with the OS: loading the profile starts it again if jobs are
+# pending or a reply is awaited, which covers a reboot.
 
 function Get-ChatqLane {
     # What a limit or an overload applies to: the provider, and the account
@@ -26,7 +28,7 @@ function Format-ChatqLane {
 function New-ChatqWatchState {
     @{
         blocked = @{}; lastAllowed = @{}; probeFails = @{}; scannedAt = @{}; outage = @{}; authAlerted = @{}
-        current = $null; next = $null; startedAt = $null; handoff = $false
+        current = $null; next = $null; startedAt = $null; handoff = $false; listening = $false
     }
 }
 
@@ -55,6 +57,9 @@ function Save-ChatqWatchState {
         # set by a watcher handing over to a newer copy of itself, so the one it
         # starts carries on from here instead of from nothing
         handoff = [bool]$W.handoff
+        # only listening for phone replies, nothing to run: its limits view
+        # goes stale, and Get-ChatqBlocks scans instead of trusting it
+        listening = [bool]$W.listening
     }
     try { Save-ChatqJson $script:ChatqStatePath $s } catch {}
 }
@@ -178,7 +183,7 @@ function Enter-ChatqOutage {
     Write-ChatqWatchLog "$lane overloaded ($Why)$page - next check $($o.NextCheck.ToString('HH:mm:ss'))"
     if (-not $o.Alerted) {
         $o.Alerted = $true
-        [void](Send-ChatqAlert 'overloaded' "$($Job.title) $($script:ChatqDot) $Why$page $($script:ChatqDot) resumes when Claude is back" 0)
+        [void](Send-ChatqAlert 'overloaded' "$($Job.title) $($script:ChatqDot) $Why$page $($script:ChatqDot) resumes when Claude is back" 0 -Job $Job)
     }
     Send-ChatqOutageReminder $o $Job
 }
@@ -190,7 +195,7 @@ function Send-ChatqOutageReminder {
     if ($O.Reminded -or ((Get-Date) - $O.Since).TotalHours -lt 6) { return }
     $O.Reminded = $true
     $page = if ($O.Status) { " $($script:ChatqDot) status.claude.com: $($O.Status -replace '_', ' ')" } else { '' }
-    [void](Send-ChatqAlert 'overloaded' "still overloaded after 6 h$page $($script:ChatqDot) $($Job.title) waits, checked every minute" 1)
+    [void](Send-ChatqAlert 'overloaded' "still overloaded after 6 h$page $($script:ChatqDot) $($Job.title) waits, checked every minute" 1 -Job $Job)
 }
 
 function Test-ChatqOutageOver {
@@ -257,7 +262,7 @@ function Confirm-ChatqAllowed {
     $W.probeFails[$lane] = $n
     $W.blocked[$lane] = [pscustomobject]@{ Until = (Get-Date).AddMinutes(5 * [Math]::Min($n, 6)); Type = 'probe failed'; Source = $r.Error }
     Write-ChatqWatchLog "$lane probe failed ($n): $($r.Error)"
-    if ($n -eq 3) { [void](Send-ChatqAlert 'failed' "can't reach $($Job.provider) to check the limit: $($r.Error)" 2) }
+    if ($n -eq 3) { [void](Send-ChatqAlert 'failed' "can't reach $($Job.provider) to check the limit: $($r.Error)" 2 -Job $Job) }
     return $false
 }
 
@@ -277,7 +282,7 @@ function Block-ChatqLogin {
     if (-not $W.authAlerted[$lane]) {
         $W.authAlerted[$lane] = $true
         $how = if ($Job.provider -eq 'codex') { 'codex login' } else { 'claude, then /login' }
-        [void](Send-ChatqAlert 'failed' "$(Format-ChatqLane $lane) $said $($script:ChatqDot) run $how, or check the subscription $($script:ChatqDot) queued prompts wait for it" 2)
+        [void](Send-ChatqAlert 'failed' "$(Format-ChatqLane $lane) $said $($script:ChatqDot) run $how, or check the subscription $($script:ChatqDot) queued prompts wait for it" 2 -Job $Job)
     }
 }
 
@@ -297,7 +302,7 @@ function Repair-ChatqInterrupted {
         Set-ChatqProp $j 'result' ([pscustomobject]@{ kind = 'failed'; reason = "interrupted - the watcher stopped mid-run; chatqrun $($j.seq) sends it again" })
         Set-ChatqProp $j 'endedAt' (Get-ChatqStamp)
         Set-ChatqJobState $j 'failed' 'interrupted'
-        [void](Send-ChatqAlert 'failed' "$($j.title) $($script:ChatqDot) interrupted mid-run" 2)
+        [void](Send-ChatqAlert 'failed' "$($j.title) $($script:ChatqDot) interrupted mid-run" 2 -Job $j)
     }
 }
 
@@ -346,7 +351,7 @@ function Invoke-ChatqJob {
         $meta = if ($fresh) { [pscustomobject]@{ Exists = $false } } else { Get-ChatqClaudeMeta $Job.path $Job.group }
         if (-not $meta.Exists) {
             Complete-ChatqJob $Job 'failed' ([pscustomobject]@{ kind = 'failed'; reason = 'the chat is gone - its transcript was deleted' }) 'chat gone'
-            [void](Send-ChatqAlert 'failed' "$($Job.title) $($script:ChatqDot) chat is gone" 2)
+            [void](Send-ChatqAlert 'failed' "$($Job.title) $($script:ChatqDot) chat is gone" 2 -Job $Job)
             return
         }
         # A "continue" only makes sense into a chat still stopped where the
@@ -362,7 +367,7 @@ function Invoke-ChatqJob {
     }
     if (-not $Job.cwd -or -not (Test-Path -LiteralPath $Job.cwd)) {
         Complete-ChatqJob $Job 'failed' ([pscustomobject]@{ kind = 'failed'; reason = "the chat's folder is gone: $($Job.cwd)" }) 'folder gone'
-        [void](Send-ChatqAlert 'failed' "$($Job.title) $($script:ChatqDot) folder gone" 2)
+        [void](Send-ChatqAlert 'failed' "$($Job.title) $($script:ChatqDot) folder gone" 2 -Job $Job)
         return
     }
 
@@ -395,12 +400,12 @@ function Invoke-ChatqJob {
         $hours = ($now - $since).TotalHours
         if ($hours -ge 24) {
             Complete-ChatqJob $Job 'failed' ([pscustomobject]@{ kind = 'failed'; reason = 'the chat stayed busy for 24 h' }) 'busy 24h'
-            [void](Send-ChatqAlert 'failed' "$($Job.title) $($script:ChatqDot) busy for 24 h, gave up" 2)
+            [void](Send-ChatqAlert 'failed' "$($Job.title) $($script:ChatqDot) busy for 24 h, gave up" 2 -Job $Job)
             return
         }
         if ($hours -ge 2 -and -not $Job.busyAlerted) {
             Set-ChatqProp $Job 'busyAlerted' $true
-            [void](Send-ChatqAlert 'waiting' "$($Job.title) $($script:ChatqDot) has been busy for 2 h - chatq waits until it is idle" 0)
+            [void](Send-ChatqAlert 'waiting' "$($Job.title) $($script:ChatqDot) has been busy for 2 h - chatq waits until it is idle" 0 -Job $Job)
         }
         # sent "now" from the console: looked at again soon, not in 5 minutes
         $back = if ($Job.PSObject.Properties['sendNow'] -and $Job.sendNow) { 30 } else { 300 }
@@ -426,7 +431,10 @@ function Invoke-ChatqJob {
     $files = @()
     if ($sendsContinue) { $prompt = $script:ChatqContinueText }
     else {
-        # an image pasted into the prompt since it was queued comes along too
+        # an image pasted into the prompt since it was queued comes along
+        # too. A prompt typed on the phone had every link in it defused as
+        # it was written (New-ChatqJob -NoLinks), so only what someone at
+        # the PC linked since counts.
         foreach ($x in @(Sync-ChatqAttachments $Job)) { Write-ChatqWatchLog "#$($Job.seq) could not take in $x - sent without it" }
         $prompt = Read-ChatqPrompt $Job
         $files = @(Get-ChatqAttachments $Job)
@@ -455,9 +463,18 @@ function Invoke-ChatqJob {
     Write-ChatqBoard
     Write-ChatqWatchLog "#$($Job.seq) running: $($Job.title)"
 
-    $beat = @{ At = Get-Date }
+    $beat = @{ At = Get-Date; Poll = Get-Date }
     $onTick = {
         if (((Get-Date) - $beat.At).TotalSeconds -ge 60) { $beat.At = Get-Date; Save-ChatqWatchState $W }
+        # the phone mid-run, every 30 s and briefly: a "stop" for this very
+        # run lands as the cancel file checked just below, a new prompt waits
+        # in the queue for this run to end. Two messages a tick at most, and
+        # their answers one short try each: the run's output is not read
+        # while this goes on.
+        if (((Get-Date) - $beat.Poll).TotalSeconds -ge 30) {
+            $beat.Poll = Get-Date
+            $null = Invoke-ChatqReplyPoll -TimeoutSec 5 -MinSeconds 30 -MaxMessages 2 -Quick
+        }
         (Test-Path -LiteralPath $cancel) -or (Test-Path -LiteralPath $script:ChatqStopPath)
     }
     $onStart = {
@@ -465,7 +482,7 @@ function Invoke-ChatqJob {
         $m = if ($st.Mode) { $st.Mode } else { $Job.mode }
         $what = if ($prompt -eq $script:ChatqContinueText) { 'continue' } else { (Get-ChatqPromptStats $prompt).First }
         if ($what.Length -gt 80) { $what = $what.Substring(0, 80) + $script:ChatqEllipsis }
-        [void](Send-ChatqAlert 'started' "$($Job.title) $($script:ChatqDot) $m $($script:ChatqDot) $what" 0)
+        [void](Send-ChatqAlert 'started' "$($Job.title) $($script:ChatqDot) $m $($script:ChatqDot) $what" 0 -Job $Job)
     }
     $runStart = Get-Date
     $out = Invoke-ChatqRun $Job $prompt $onTick $onStart -Files $files
@@ -557,7 +574,7 @@ function Invoke-ChatqJob {
         if ($stuck -ge $cap) {
             $why = "gave up: $stuck tries in a row got no reply ($($out.kind): $($out.reason))"
             Complete-ChatqJob $Job 'failed' ([pscustomobject]@{ kind = 'failed'; reason = $why }) 'gave up'
-            [void](Send-ChatqAlert 'failed' "$($Job.title) $($script:ChatqDot) $why" 2)
+            [void](Send-ChatqAlert 'failed' "$($Job.title) $($script:ChatqDot) $why" 2 -Job $Job)
             Write-ChatqWatchLog "#$($Job.seq) $why"
             Save-ChatqWatchState $W
             Write-ChatqBoard
@@ -574,7 +591,7 @@ function Invoke-ChatqJob {
             if ($k -gt 3) {
                 $out.reason = "$($out.reason) - gave up after 3 retries"
                 Complete-ChatqJob $Job 'failed' $out 'network'
-                [void](Send-ChatqAlert 'failed' "$($Job.title) $($script:ChatqDot) $($out.reason)" 2)
+                [void](Send-ChatqAlert 'failed' "$($Job.title) $($script:ChatqDot) $($out.reason)" 2 -Job $Job)
                 Write-ChatqWatchLog "#$($Job.seq) $($out.reason)"
                 break
             }
@@ -604,13 +621,13 @@ function Invoke-ChatqJob {
             $W.blocked[$lane] = [pscustomobject]@{ Until = $until; Type = $out.limitType; Source = 'run' }
             foreach ($k in @($W.lastAllowed.Keys)) { if ($k -like "$lane|*") { $W.lastAllowed[$k] = $null } }
             Set-ChatqJobState $Job 'queued' "limited mid-run, continues at $($until.ToString('HH:mm'))"
-            if ($landed) { [void](Send-ChatqAlert 'limited' "$($Job.title) $($script:ChatqDot) hit the limit mid-run, continues at $($until.ToString('HH:mm'))" 0) }
+            if ($landed) { [void](Send-ChatqAlert 'limited' "$($Job.title) $($script:ChatqDot) hit the limit mid-run, continues at $($until.ToString('HH:mm'))" 0 -Job $Job) }
             Write-ChatqWatchLog "#$($Job.seq) limited until $($until.ToString('HH:mm'))"
         }
         'needs-input' {
             Complete-ChatqJob $Job 'needs-input' $out $out.reason
             $x = if ($out.excerpt) { " $($script:ChatqDot) `"$($out.excerpt)`"" } else { '' }
-            [void](Send-ChatqAlert 'needs input' "$($Job.title) $($script:ChatqDot) $($out.reason)$x$reload" 2)
+            [void](Send-ChatqAlert 'needs input' "$($Job.title) $($script:ChatqDot) $($out.reason)$x$reload" 2 -Job $Job)
             Write-ChatqWatchLog "#$($Job.seq) needs input: $($out.reason)"
         }
         'done' {
@@ -618,13 +635,13 @@ function Invoke-ChatqJob {
             $turns = if ($out.turns) { ", $($out.turns) turns" } else { '' }
             $ask = if ($out.asks) { 'asks: ' } else { '' }
             $x = if ($out.excerpt) { " $($script:ChatqDot) $ask`"$($out.excerpt)`"" } else { '' }
-            [void](Send-ChatqAlert 'done' "$($Job.title) $($script:ChatqDot) $dur$turns$x$reload" 1)
+            [void](Send-ChatqAlert 'done' "$($Job.title) $($script:ChatqDot) $dur$turns$x$reload" 1 -Job $Job)
             Write-ChatqWatchLog "#$($Job.seq) done"
         }
         default {
             if ($wasCancelled) { $out.reason = 'cancelled' }
             Complete-ChatqJob $Job 'failed' $out $out.reason
-            if (-not $wasCancelled) { [void](Send-ChatqAlert 'failed' "$($Job.title) $($script:ChatqDot) $($out.reason)" 2) }
+            if (-not $wasCancelled) { [void](Send-ChatqAlert 'failed' "$($Job.title) $($script:ChatqDot) $($out.reason)" 2 -Job $Job) }
             Write-ChatqWatchLog "#$($Job.seq) failed: $($out.reason)"
         }
     }
@@ -695,6 +712,7 @@ function Invoke-ChatqWatchLoop {
     $W = New-ChatqWatchState
     $W.startedAt = Get-ChatqStamp
     $restart = $false
+    $emptied = $false
     try {
         Set-Content -LiteralPath $script:ChatqPidPath -Value $PID -Encoding ASCII
         if (Test-Path -LiteralPath $script:ChatqStopPath) { Remove-Item -LiteralPath $script:ChatqStopPath -Force }
@@ -702,6 +720,9 @@ function Invoke-ChatqWatchLoop {
         if (Restore-ChatqWatchState $W) { Write-ChatqWatchLog 'carrying on from the watcher before it' }
         Repair-ChatqInterrupted
         $wakeSeen = $null
+        $replyWasOpen = $false
+        $listening = $false
+        $boardAt = [datetime]::MinValue
         while ($true) {
             if (Test-Path -LiteralPath $script:ChatqStopPath) {
                 Remove-Item -LiteralPath $script:ChatqStopPath -Force -EA SilentlyContinue
@@ -739,7 +760,37 @@ function Invoke-ChatqWatchLoop {
                     }
                 }
             }
+            # Phone replies: while an alert that can be answered is out, look
+            # at the reply topic - at most every 15 s, however often this
+            # loop comes round. What a reply queues is picked up below.
+            $replyOpen = Test-ChatqReplyOpen
+            if ($replyWasOpen -and -not $replyOpen) { Write-ChatqWatchLog 'replies closed' }
+            $replyWasOpen = $replyOpen
+            $polled = if ($replyOpen) { Invoke-ChatqReplyPoll } else { 0 }
             $queued = @(Get-ChatqJobs | Where-Object { $_.state -eq 'queued' })
+            if (-not $queued -and $replyOpen) {
+                # Nothing to run, only listening: the machine may sleep - no
+                # reply is worth keeping a laptop awake for, and the poll
+                # simply resumes when it wakes - and the board and the state
+                # are written on the way in and when a reply did something,
+                # not every 15 s.
+                if (-not $listening -or $polled) {
+                    Set-ChatqKeepAwake $false
+                    $W.current = $null; $W.next = $null
+                    $W.listening = $true
+                    Save-ChatqWatchState $W
+                    Write-ChatqBoard
+                }
+                if (-not $listening) {
+                    $listening = $true
+                    $u = try { ConvertTo-ChatqDate (Get-ChatqReplyState).openUntil } catch { $null }
+                    Write-ChatqWatchLog "listening for phone replies until $(if ($u) { $u.ToString('HH:mm') })"
+                }
+                if (-not $polled) { Wait-ChatqUntil (Get-Date).AddSeconds(15) }
+                continue
+            }
+            $listening = $false
+            $W.listening = $false
             if (-not $queued) {
                 # Tidy up first and look once more last thing: a job queued
                 # while this one is on its way out gets only a poke, and a
@@ -749,7 +800,11 @@ function Invoke-ChatqWatchLoop {
                 Save-ChatqWatchState $W
                 Write-ChatqBoard
                 if (@(Get-ChatqJobs | Where-Object { $_.state -eq 'queued' })) { continue }
+                # the same for an alert sent meanwhile by a shell, which saw
+                # this watcher alive and so started none of its own
+                if (Test-ChatqReplyOpen) { continue }
                 Write-ChatqWatchLog 'queue empty'
+                $emptied = $true
                 break
             }
             $now = Get-Date
@@ -777,7 +832,7 @@ function Invoke-ChatqWatchLoop {
                     $j = Find-ChatqJob $pick.id
                     if ($j -and $j.state -in 'queued', 'running') {
                         try { Complete-ChatqJob $j 'failed' ([pscustomobject]@{ kind = 'failed'; reason = "chatq error: $($_.Exception.Message)" }) 'chatq error' } catch {}
-                        [void](Send-ChatqAlert 'failed' "$($j.title) $($script:ChatqDot) chatq error: $($_.Exception.Message)" 2)
+                        [void](Send-ChatqAlert 'failed' "$($j.title) $($script:ChatqDot) chatq error: $($_.Exception.Message)" 2 -Job $j)
                     }
                 }
                 $script:ChatqAlertJob = $null
@@ -789,15 +844,22 @@ function Invoke-ChatqWatchLoop {
             # weekly limit days out should not keep a laptop from sleeping
             Set-ChatqKeepAwake (($nextAt - $now).TotalHours -le 6)
             $W.next = $nextAt.ToUniversalTime().ToString('o')
-            Save-ChatqWatchState $W
-            Write-ChatqBoard
-            Wait-ChatqUntil $nextAt
+            # listening shortens the wait to 15 s, which must not make the
+            # board be rewritten twice as often as it was
+            if (-not $replyOpen -or $polled -or ((Get-Date) - $boardAt).TotalSeconds -ge 30) {
+                Save-ChatqWatchState $W
+                Write-ChatqBoard
+                $boardAt = Get-Date
+            }
+            $wakeAt = $nextAt
+            if ($replyOpen -and $wakeAt -gt (Get-Date).AddSeconds(15)) { $wakeAt = (Get-Date).AddSeconds(15) }
+            Wait-ChatqUntil $wakeAt
         }
     }
     finally {
         Set-ChatqKeepAwake $false
         try { Remove-Item -LiteralPath $script:ChatqPidPath -Force -EA SilentlyContinue } catch {}
-        $W.current = $null; $W.next = $null
+        $W.current = $null; $W.next = $null; $W.listening = $false
         Save-ChatqWatchState $W
         $lock.Dispose()
         Write-ChatqWatchLog "watcher $PID stopped"
@@ -806,6 +868,15 @@ function Invoke-ChatqWatchLoop {
     # successor started any sooner would find its pid file deleted by this
     # one, or this one still holding the lock.
     if ($restart) { [void](Start-ChatqWatcherProcess) }
+    # A shell that sent an answerable alert in the moment between the last
+    # look at the window and the lock let go saw this watcher alive and
+    # started none. It wrote the window first, so it is there to see now.
+    # Never over a stop: chatqrun -Stop shuts the window before it writes
+    # data/stop, and a watcher started now would delete that file unread.
+    elseif ($emptied -and -not (Test-Path -LiteralPath $script:ChatqStopPath) -and (Test-ChatqReplyOpen)) {
+        Write-ChatqWatchLog 'a phone alert went out as this watcher left - starting another to listen'
+        [void](Start-ChatqWatcherProcess)
+    }
 }
 
 function Send-ChatqWake {

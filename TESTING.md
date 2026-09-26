@@ -61,8 +61,9 @@ behind for poking at. It uses no Pester, no network and no model.
 - **Synthetic streams only** in `tests/fixtures/stream/`. The repo is public, so
   no real transcript goes in it.
 
-What it covers (at 0.7.2, 561 checks in `run-tests.ps1`, 215 in
-`extension-check.js` and 23 in `overlay-mac-check.js`):
+What it covers (at 0.8.0, 683 checks in `run-tests.ps1`, 219 in
+`extension-check.js`, 195 in `reply-page-check.js` and 23 in
+`overlay-mac-check.js`):
 
 | area | checks |
 |---|---|
@@ -139,6 +140,166 @@ by pixel on 2026-09-25.
 On pwsh 7 `Add-Type` builds libraries only, so the argument-quoting check builds
 its echo exe with .NET Framework's `csc.exe` instead. Where neither can, it says
 `skip` and is not counted as passed.
+
+## Phone alerts and replies
+
+```powershell
+node tests/reply-page-check.js    # docs/reply.html, the page the phone pairs and replies from
+```
+
+The PowerShell half is `tests/sections/phone.ps1`, the last section of
+`run-tests.ps1`, so it runs in both CI legs; the page check is its own step,
+**Reply page check**, on the 5.1 leg. Neither reaches Join, ntfy or GitHub:
+Join's push goes to `ChatqJoinSeam`, the reply topic's poll comes from
+`ChatqReplyPollSeam`, Join's device list from `ChatqJoinDevicesSeam`, a live
+chat's alert to `ChatqLiveSendSeam` instead of the hidden sender, and
+`chatqnotify -Pair`'s question is answered through `ChatqAskSeam`. The phone
+is played by the tests themselves: they pair as the page pairs - a key
+sealed to the public key in the pairing push - and seal replies as the page
+seals them ([Protect-ChatqReplyMessage](src/phone.ps1)).
+
+**What `phone.ps1` holds:**
+- **The wire format** against the fixtures below, byte for byte, and a
+  changed byte, the wrong key or junk failing at the MAC or the format.
+- **Pairing:** the pairing link carries a 2048-bit public key and nothing
+  that answers an alert; an answer is a candidate, never a pairing, until
+  its code is confirmed; the same answer twice is one candidate, six
+  answers keep the newest five; a code no answer has, an answer for another
+  pairing or 30 minutes old, and one after the pairing ended pair nothing;
+  confirming kills every alert and candidate from before; `-Pair` again
+  kills the old phone at once; pairing with only ntfy over http is refused
+  with nothing changed; an unreadable `replies.json` is put aside as
+  `replies.json.bad`; a pairing push that did not go out says so and leaves
+  no pairing waiting.
+- **The link:** the Join push carries it with the icon, a `notificationId`
+  for the chat and `dismissOnTouch`; the link names the alert, the job and
+  the chat, and no key, topic or server; Join and ntfy carry one link; an
+  ntfy server that is not https gets none; the Join URL stays within 1900
+  characters with Hangul in it, dropping the icon, then the title in the
+  link, when 20 characters of text do not fit, and never cutting an emoji.
+- **Acting on a reply:** a prompt queues a job and skips the `needs input`
+  job it answered; the push that answers carries a fresh link; the same
+  message again - by the same id, a new id or a new watcher - does nothing;
+  a message id with a line break is skipped; the mode cap for prompt, retry
+  and allow, `reply.maxMode` set elsewhere, and Codex's sandbox; the chat's
+  config dir kept; links in phone text defused, and an image linked later
+  at the PC still taken; skip, stop, status (700 characters, no half emoji),
+  ping and an unknown act.
+- **Refusals and replays:** junk refused and logged once per stage every 5
+  minutes; twelve junk lines before a real reply do not hold it back; a save
+  that fails acts on nothing after it and moves polling past nothing; an
+  expired alert, a reply 13 hours old and the 21st use each told once, with
+  no link and no longer window; the reply state locked by another process,
+  then let go - acted on once; spent nonces kept as long as their message
+  could be taken, with `reply.hours` above 12 too.
+- **The watcher:** a listening watcher's saved limits are not trusted; it
+  listens while a window is open, holds nothing awake, writes the board
+  coming in and going out, and leaves when the window shuts; one started as
+  the last left, but never over a stop; `chatqrun -Stop` shuts the window.
+- **Chats you run yourself,** driven through
+  [Update-ChatqLiveAlerts](src/phone.ps1) with registry entries made in the
+  test and the clock moved by hand: nothing on the first pass; `needs input`
+  at 20 s and not at 19; `done` 5 s after busy to idle, `asks:` and all; once
+  per chat and event every 3 minutes; nothing at the PC, sent once away
+  while still news and never later; sent away with the chat's window in
+  front; nothing for the watcher's own run or a non-interactive entry;
+  `-LiveAlerts off`, no phone channel and `-Events` each silence it; the
+  status line saying the overlay runs an older copy; the outbox sent through
+  Join as about the chat and deleted, one 31 minutes old dropped; the link
+  saying `j=live`; a prompt to it capped, and while the chat still waits on
+  a prompt at the PC, a push saying it goes once that is answered; retry on
+  it refused.
+
+**What `reply-page-check.js` holds:** it lifts the page's two marked blocks
+out - the crypto between `/* chatq-crypto-begin */` and
+`/* chatq-crypto-end */`, the logic between the `chatq-logic` markers - runs
+them under Node's WebCrypto, and holds them to the fixtures: the reply
+vector byte for byte, random replies that Node opens as the watcher does, a
+pairing sealed by the page that Node's `privateDecrypt` opens with the
+fixture's key, a payload over RSA-OAEP's 190 bytes refused, and the code for
+the fixture's key and 300 random ones. Then the links (a v1 link, which held
+a key, refused; `k`, `s` and `t` in an alert link never read), the buttons
+per event and for `j=live`, every act one the watcher knows, and the 2,900
+byte limit. Then what the page must never do: a byte that is not ASCII, a
+URL of its own, a `<script src>`, anything CSS could load, a CSP that allows
+more than inline code and https posts, a referrer, a request but one
+`fetch`, a header but `Content-Type: text/plain`. Last, the whole page under
+a small fake DOM and an in-memory IndexedDB: the unpaired card, pairing -
+nothing kept on the phone until the POST went through, the key kept as a
+CryptoKey that will not export, the code shown - the replace card's second
+tap, the `localStorage` fallback and its move into IndexedDB, drafts per
+alert, **Try again** posting the very same sealed message, and a new link
+while a POST is out. `docs/.nojekyll` is checked too.
+
+**The fixtures**, made by Node's own crypto and neither implementation, so
+a mistake the two share cannot hide:
+- `tests/fixtures/reply-vector.json`, from
+  `node tests/fixtures/make-reply-vector.js`: one reply sealed with fixed
+  inputs - the key bytes `0x00..0x1f`, alert id `abcdefghij`, IV bytes
+  `0x10..0x1f`, and a payload with two Hangul syllables fed verbatim. The
+  file is kept ASCII, the Hangul as JSON escapes, so 5.1 reads it the same
+  on any code page.
+- `tests/fixtures/pair-vector.json`, from
+  `node tests/fixtures/make-pair-vector.js`: an RSA-2048 key, its private
+  half in the shape .NET's `RSAParameters` wants, one pairing message and
+  the code of its key. The key is made once and checked in: a run keeps it,
+  and keeps the message while it still opens to the payload, since OAEP is
+  random and each side proves itself by decrypting, not by comparing bytes.
+  `--new-key` makes a new key, which the PowerShell side then reads too.
+
+Run either only when the wire format changes, and commit what it writes.
+
+**Not covered by the run:** the setup window - only the VS Code command
+that opens it is checked, with PowerShell stood in for - and everything
+past the seams: Join, ntfy.sh, GitHub Pages, a phone's browser, a PC that
+sleeps, and a real overlay sending a live alert.
+
+**S34, by hand with a real phone.** Android and Chrome, Join installed.
+Each step leaves lines in `data/logs/replies.log` and `watcher.log`; a live
+alert also in `overlay.log` and `outbox.log`.
+1. **The page is served.** The repository's **Settings → Pages**: deploy
+   from a branch, `main`, `/docs`. On the phone,
+   <https://phal40lax78.github.io/VS-code-chat-manager/reply.html> opens
+   and says the phone is not paired.
+2. **The window.** `chatqnotify -Setup`, the tray's **Phone alerts...** and
+   **Chat Manager: Phone alerts...** each open it, and a second ask says it
+   is open already. Paste a whole Join push URL: the device is picked out
+   of it. **Find devices** lists the phone and the groups without the
+   window stalling; **Send test** reaches the phone while the window stays
+   live. From a pwsh 7 shell whose Windows PowerShell policy is
+   `Restricted`, it still opens.
+3. **Pair.** `chatqnotify -Pair`: the push arrives; tap it, **Pair**, and a
+   code shows on the phone. The same code comes up at the PC; `y`, and a
+   `paired` push arrives. Pair again from the window: the phone warns that
+   it is paired already, names the server and topic, and wants a second
+   tap; confirm in the window this time.
+4. **The way back.** `chatqnotify -Test`, tap it, **Send a test reply**:
+   `reply reached <PC> after N s` comes back as a push within about 15 s.
+5. **Reply to a job.** Queue a prompt that stops on a permission prompt,
+   and leave the PC past `quietMinutes`. On its `needs input` alert, type a
+   prompt and **Send**: a `queued #n` push, the job queued in `acceptEdits`
+   at most, the old one skipped. On a `started` alert, **Stop** - two taps -
+   stops the run within about 30 s. **Status** answers with the queue.
+6. **A live alert.** `chatqnotify` says the chats you run yourself are on,
+   with no older copy running. Start a turn in a VS Code chat, leave VS
+   Code in front and the PC alone: once `quietMinutes` pass and the turn
+   ends, a `done` arrives. A permission prompt left 20 s gives
+   `needs input`; its page offers only **Send** and **Status**. Send a
+   prompt from it: the push says it goes once the prompt at the PC is
+   answered, and after you answer it there, it does.
+7. **A reply while the PC slept.** Send an alert, let the PC sleep, and
+   send a prompt from the phone. Wake it: within about 15 s the watcher
+   reads the reply and queues it; `replies.log` has the one line, not two.
+8. **Off and on.** `chatqnotify -Reply off`, then answer an old alert: the
+   page says sent, and nothing runs. `-Reply on`: still nothing from that
+   answer, and a new alert can be answered.
+
+The phone features went through three reviews before release - 28, 17 and
+6 findings, some found by two lenses - covering the crypto and what each
+server sees, the reply state and the watcher, the pairing, the setup window
+and the page, and the live alerts. Their fixes are held by `phone.ps1` and
+`reply-page-check.js` where a test can hold them; what was left on purpose
+is in FUTURE_WORK.md.
 
 ## The demo frames
 

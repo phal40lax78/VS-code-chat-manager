@@ -110,7 +110,7 @@ scripts there are another version than itself.
 | `chatqrm <n> [-Force]` | drop a job; `-Force` cancels a running one |
 | `chatqrun [<n>] [-Now] [-First] [-Stop]` | requeue *n*, move it up, stop waiting and try now, stop the watcher |
 | `chatqlog <n> [-Raw]` | what a run did |
-| `chatqnotify` | desktop, phone and command alerts |
+| `chatqnotify [-Setup] [-Pair] [-Test]` | desktop, phone and command alerts, and replies from the phone; `-Setup` has all of it in a window (Windows) |
 | `chatoverlay [-Stop] [-Collapse] [-Refresh] [-Console] [-Theme dark\|light\|system] [-Print]` | every open chat, the queue and live usage in a panel that stays on top; `-Console` opens the console |
 | `chatconsole` | all of the above in the panel, grown into a console: write, send now, queue, continue, new chats; Esc for the panel again (Windows) |
 | `chatproviders` / `chatindex` | which tools were found / rebuild the index |
@@ -379,19 +379,78 @@ to watch.
 
 ## Alerts
 
+chatq tells you how a queued prompt went - and, while you are away, how
+the chats you run yourself are doing - with a desktop toast, a push to your
+phone through Join or ntfy, or a command of your own. With a phone paired,
+you can answer an alert from the phone.
+
+**The setup window.** `chatqnotify -Setup` opens all of it in one window -
+also **Phone alerts...** in the overlay's tray menu, and **Chat Manager:
+Phone alerts...** in VS Code's command palette:
+- **Join:** paste the API key from <https://joinjoaomgcd.appspot.com> (the
+  **Join API** button) - the key alone, or the whole push URL that page
+  shows, whose key and device are taken out of it. **Find devices** (or
+  Enter in the key box) asks Join which devices the key has, with Join's
+  groups after them - all phones, all Android, every device. Pick one, then
+  **Send test**.
+- **Replies:** **Reply from the phone**, **Pair phone**, a line saying
+  which phone is paired and how long the watcher listens, and the answers
+  to a pairing, each with **Confirm** ([Pairing](#pairing)).
+- **What reaches the phone:** a box per event; **Quiet while I use this PC
+  for** *n* minutes; **Chats I run myself, when I'm away**
+  ([below](#chats-you-run-yourself)); **Desktop toast**.
+- **Other channels**, folded away: an ntfy topic, server and token, and
+  your own command.
+
+**Save** (Ctrl+S) writes `data/config.json` through the same code as the
+switches below, so the two never disagree. **Send test** saves first, and
+sends in the background, so the window stays live however slow the network
+is; closing it with something unsaved asks first, in the window. One window
+at a time. It is WPF, so Windows only; elsewhere `chatqnotify -Setup` prints
+the switches that do the same.
+
 ```powershell
+chatqnotify -Setup                                   # all of it in a window (Windows)
 chatqnotify -ApiKey <Join key> -Device group.phone   # Join
 chatqnotify -Ntfy <long random topic>                # ntfy.sh, free
 chatqnotify -Command '<PowerShell>'                  # anything else
 chatqnotify -Test
+chatqnotify                                          # what is set up, and the phone's state
 ```
 
 | channel | |
 |---|---|
 | desktop toast | on by default (`-Toast off`); nothing leaves the PC |
-| Join | keys at <https://joinjoaomgcd.appspot.com>, the **Join API** button; DPAPI-protected on Windows |
+| Join | keys at <https://joinjoaomgcd.appspot.com>, the **Join API** button; DPAPI-protected on Windows. The alerts about one chat are one notification on the phone, and carry chatq's icon |
 | ntfy | published as JSON, so Hangul survives; the topic works as a password — pick a long random one, or your own server with `-NtfyServer` / `-NtfyToken` |
 | your command | runs with `$env:CHATQ_EVENT`, `CHATQ_TITLE`, `CHATQ_TEXT`, `CHATQ_PRIORITY`, `CHATQ_JOB`, `CHATQ_PRESENT`; the text never goes on a command line; 30 s at most |
+
+| `chatqnotify` switch | |
+|---|---|
+| `-Setup` | the setup window (Windows); elsewhere it prints these switches |
+| `-ApiKey <key>` `-Device <id>` | Join. `-Device` takes a device id, a group (`group.phone`, `group.android`, `group.all`) or a device's name. A push URL pasted bare never reaches chatq - PowerShell stops at its first `&` - so paste the key, or the URL in quotes |
+| `-Devices [-ApiKey <key>]` | the devices on the Join key saved, or on the one given, and Join's groups |
+| `-Ntfy <topic>` `-NtfyServer <url>` `-NtfyToken <token>` | ntfy |
+| `-Command '<PowerShell>'` | your own command on every alert; `''` removes it |
+| `-Toast on\|off` | the desktop toast |
+| `-QuietMinutes <n>` | how long since your last keyboard or mouse input the phone stays quiet; 5 by default, 0 never quiet |
+| `-Events done, failed, 'needs input'` | only these reach the phone - of `started`, `needs input`, `done`, `failed`, `limited`, `overloaded`, `waiting`; `all` for every one. The toast, the command and `alerts.log` still get every event, and tests, replies and the pairing push always go |
+| `-LiveAlerts on\|off` | alerts about [the chats you run yourself](#chats-you-run-yourself); on by default |
+| `-Reply on\|off` | [answer alerts from the phone](#reply-from-the-phone); `on` with no phone paired starts a pairing |
+| `-Pair` | pair a phone, afresh ([Pairing](#pairing)); `-Reply renew` is the old name for it |
+| `-Confirm 123456` | confirm the code the phone shows |
+| `-ReplyPage <https URL>` | serve the reply page from a copy of your own; `''` for the default again |
+| `-Test` | a test alert, through everything set up, even while you are at the PC |
+| `-Off` | Join, ntfy and the command off; alerts still go to `alerts.log` and the toast |
+
+A few settings are only in `data/config.json`:
+
+| key | default | |
+|---|---|---|
+| `join.perChat` | `true` | alerts about one chat share one notification on the phone, so `done` replaces `started`; `false` stacks them |
+| `join.icon` | chatq's icon | the icon URL Join shows; `""` for none |
+| `reply.hours` | `12` | how long an alert can be answered, and the watcher listens after it |
+| `reply.maxMode` | `acceptEdits` | the highest permission mode a job a reply queues or requeues runs in |
 
 **The phone stays quiet while you are at the PC** — keyboard or mouse used in
 the last 5 minutes (`-QuietMinutes`, 0 turns it off) — since the toast already
@@ -400,15 +459,193 @@ says it there. `chatqnotify -Test` always goes through.
 | event | priority | says |
 |---|---|---|
 | `chatq · started` | 0 | chat, mode, first line of the prompt |
-| `chatq · needs input` | 2 | chat, what was denied, the end of the reply |
+| `chatq · needs input` | 2 | chat, what was denied, the end of the reply; for a chat you run yourself, what it waits for and its folder |
 | `chatq · done` | 1 | chat, how long, the end of the reply (`asks:` when it ends on a question) |
 | `chatq · failed` | 2 | chat, why — including a refused login, in the CLI's own words, or giving up |
 | `chatq · limited` | 0 | the limit came back mid-run; when it continues |
 | `chatq · overloaded` | 0 | a 529; what status.claude.com says; a reminder after 6 h |
+| `chatq · waiting` | 0 | a queued prompt's chat has been busy for 2 h; chatq waits until it is idle |
+| `chatq · test` | 1 | `chatqnotify -Test` or the window's **Send test** |
+| `chatq · reply` | 1 | the PC's answer to a reply from the phone, or to a pairing |
+| `chatq · pair` | 2 | the pairing push |
 
 Every title starts `chatq ·`, so a Tasker profile can filter on it. Alerts also
 go to `data/logs/alerts.log`. What they carry — the chat title, the end of the
-reply — passes through the push service's servers.
+reply — passes through the push service's servers
+([what else](#what-passes-through-whose-servers)).
+
+`chatqnotify` alone prints what is set up: Join and its device, ntfy, the
+command, the toast and the quiet minutes, the events the phone gets, whether
+the chats you run yourself alert and what stops them (quiet minutes 0, no
+overlay running, or an overlay running an older copy), and whether replies
+are on - the phone paired and since when, how long the watcher listens, the
+last reply, and the answers to a pairing still waiting for their code.
+
+### Reply from the phone
+
+Turn it on with `chatqnotify -Reply on`, or **Reply from the phone** in the
+setup window, and [pair the phone](#pairing). From then on every phone alert
+carries a link: tap the notification, and a page opens on the phone with the chat's
+title, the job's number and the event. Type the chat's next prompt and press
+**Send**, or press one of the buttons the alert offers:
+
+| alert | buttons |
+|---|---|
+| `done`, `limited`, `overloaded`, `waiting` | **Send** · Status |
+| `needs input` | **Send** · Allow edits & continue (Claude) · Continue · Skip · Status |
+| `failed` | **Send** · Retry · Skip · Status |
+| `started` | **Send** (queued after this run) · Stop · Status |
+| `test` | **Send a test reply** |
+| about no chat - the PC's answer to Status, a test reply or a pairing | **Status** · Send a test reply |
+| a chat you run yourself | **Send** · Status |
+
+- **Send** queues the text as the chat's next prompt, as `chatq` would. A
+  `needs input` job answered this way is skipped, "answered from the phone
+  with #13". Links in the text are written so that none resolves: nothing in
+  `data/queue` comes along with it.
+- **Continue** and **Retry** queue the job again - as "continue" when its
+  prompt already reached the chat, else with its prompt.
+- **Allow edits & continue** queues a `needs input` Claude job again in
+  `acceptEdits`, when its mode was below that.
+- **Skip** skips a job queued, failed or waiting on input; **Stop** stops
+  a running one. Both take a second tap, at least half a second after the
+  first, so a double tap does neither.
+- **Status** answers with the status line, each open job and the usage.
+- **Send a test reply** answers with `reply reached <PC> after 3 s`: the
+  whole way back, checked. `chatqnotify -Test`, then a tap on the test
+  alert, is the way to try it.
+
+The page seals what you send on the phone - AES-256 and an HMAC-SHA256,
+under a key made from the phone's own key and that alert's id - and posts it
+to an ntfy.sh topic chatq made for this. The watcher polls that topic,
+outbound only - nothing listens on the PC - does what the reply says, and
+answers with a `chatq · reply` push, itself an alert with a link, so the
+answer can be answered in turn.
+
+**Never above `acceptEdits`.** A job a reply queues or requeues runs in its
+old job's own mode, or else the chat's own, brought down to
+`reply.maxMode` - `acceptEdits` unless `data/config.json` says otherwise;
+the ladder is `plan`, `default`, `manual`, `acceptEdits`, `auto`,
+`dontAsk`, `bypassPermissions`. Nothing in a reply picks a mode, and the
+push says so when one was brought down:
+`runs in acceptEdits, the phone's limit`. A Codex job never keeps a sandbox
+wider than `workspace-write`.
+
+**How long.** An alert can be answered for `reply.hours` (12), and 20 times.
+Once one has gone out, the watcher listens that long: a running one from its
+next pass, and when none runs one is started just to listen - and started
+again by the next shell after a reboot. It polls every 15 s, and every 30 s
+while a job runs, so a **Stop** reaches the run it is about. It never keeps
+the PC awake to listen: a reply sent while the PC sleeps waits on ntfy.sh,
+which keeps a message 12 hours, and is read when it wakes. `chatqrun -Stop`
+stops the listening too, until the next alert that can be answered.
+
+**Refusals.** A reply to an alert that expired, a reply the phone's clock
+says was sent more than `reply.hours` and 10 minutes ago, and the 21st reply
+to one alert do nothing; the phone is told so, at most once per alert every
+10 minutes, with no link. The same message posted again runs once. The
+text is 8,000 characters at most (the page stops at about 2,900 bytes).
+`chatqnotify -Reply off` keeps the phone paired but makes every alert out
+there dead, and stops the listening; `-Reply on` picks up again with no new
+pairing, and nothing sent while it was off is ever run.
+`data/logs/replies.log` says what became of each reply, for one that seemed
+to go nowhere.
+
+**The page** is `docs/reply.html`, one static file served by GitHub Pages at
+<https://phal40lax78.github.io/VS-code-chat-manager/reply.html>: the
+repository's **Settings → Pages** has it deploy from the `main` branch,
+`/docs` folder. A fork that serves its own copy the same way points
+`chatqnotify -ReplyPage` at it.
+
+### Pairing
+
+A reply needs the phone paired once. `chatqnotify -Pair` - or **Pair
+phone** in the setup window, or `-Reply on` with no phone paired - sends
+one push, `tap to let this phone answer chatq alerts - within 15 min`:
+
+1. **On the phone,** tap it. The page says **Pair this phone with chatq on**
+   and your PC's name; tap **Pair**. The phone makes a key of its own, sends it to
+   the PC sealed to a public key the push carried, and shows a six-digit
+   code, `123 456`.
+2. **On the PC,** confirm the same code. `chatqnotify -Pair`, in a console
+   that can ask, waits for the answer and asks,
+   `Android - Chrome 128 answered - code 123 456` and
+   `same code on the phone? (y/n)`; Ctrl+C stops waiting and leaves the
+   pairing open. Later, `chatqnotify -Confirm 123456`; in the window, the
+   **Confirm** beside the answer with that code. A push saying
+   `paired - Android - Chrome 128` follows.
+
+**Why the code.** The pairing push goes where alerts go, and more than your
+phone may read it: Join's servers log it, and an ntfy topic is read by
+anyone who has its name. Whoever reads it could answer it first, with a key
+of their own. So an answer pairs nothing by itself: it waits, up to five of
+them, each with the code of the key it carries, and the phone that is paired
+is the one whose code you confirm. An answer whose code your phone does not
+show is someone else's. `-Confirm` refuses a code two answers share - pair
+again then.
+
+**Pairing again replaces the phone.** Each `-Pair` makes a new reply topic
+and drops the old phone's key at once, so the phone paired before - or
+whoever held its key - stops working, and so does every link already out
+there. A phone that is already paired says so before it pairs again: only
+continue if you just pressed Pair phone on your PC, and it shows where
+replies would go. The pairing needs a way to the phone that carries a link -
+Join, or ntfy on an https server - and is refused, with nothing changed,
+without one.
+
+### Chats you run yourself
+
+Only prompts queued with `chatq` went through the watcher, so they were all
+that alerted: a chat you run straight in VS Code, or a terminal's `claude`,
+never reached the phone. Now it does, from [the overlay](#the-overlay),
+which reads every open chat's state on each pass anyway:
+- `needs input` (priority 2) once a chat has waited on you for 20 seconds -
+  a prompt answered at once never alerts - saying what it waits for, where
+  that is known, and its folder;
+- `done` (priority 1) when a chat finishes a turn, with the end of its reply.
+
+**Only while you are away:** no keyboard or mouse for `quietMinutes`. While
+you are at the PC nothing is sent at all, not even the toast - the overlay
+shows it. Once you are away they go whichever window is in front, the
+chat's own VS Code window included. A `done` that finished while you were
+still at the PC is not news by then, and is dropped; one that finished after
+you left goes as soon as you count as away. With `quietMinutes` 0 you never
+count as away, so none go.
+
+**Never** about a chat chatq itself is running a prompt in (that one alerts
+through the watcher), a side chat, or twice for one chat and event within 3
+minutes. An overlay that has just started sends nothing about chats already
+waiting. `-Events` filters these as it filters the rest, and each carries a
+reply link: **Send** queues the text for that chat, and it goes in once the
+chat is idle - while the chat still waits on a prompt at the PC, the push
+says it goes once that is answered there.
+
+**The overlay has to be running** - on Windows it starts by itself - and
+only the Windows overlay sends them; there are none on macOS or Linux. The
+overlay loads its code once, as it starts: one started before an update
+runs the old code, which may have none of this, and `chatqnotify` says
+`the overlay runs an older copy`. `chatoverlay -Stop`, then `chatoverlay`.
+The alert is written to `data/outbox/` and a hidden process sends it, so the
+panel waits on no network; `data/logs/outbox.log` says what became of each,
+and one not sent within 30 minutes is dropped.
+`chatqnotify -LiveAlerts off`, or **Chats I run myself, when I'm away** in
+the window, keeps the phone to what chatq runs.
+
+### What passes through whose servers
+
+| | what it sees |
+|---|---|
+| Join | the alert's text, as before, and its link: the page's address, an alert id, the event, the job's number, the first 20 characters of the chat's title, which tool and the job's state. No key: without the phone's own, none of it answers an alert. Join's push is a GET, so its server logs have all of that. The pairing push carries more - the reply topic, a public key made for that pairing, and the PC's name - and still nothing that answers an alert |
+| ntfy.sh | the reply topic, and what the phone posts to it: sealed, so ntfy.sh sees when a reply came and how long it is, never what it says. With ntfy as your alert channel too, its alert topic carries the alert text and the link, as Join does |
+| GitHub Pages | only that the page was loaded. It is one static file that loads nothing else and posts only to the reply topic; the part of the link after `#`, which says which alert, never leaves the phone. The phone keeps its key in the browser, in IndexedDB, as a key that will not export - in `localStorage` only where there is no IndexedDB, and the page says so |
+
+**The page's site is shared.** A browser keeps the key per site, and every
+`<user>.github.io` project page is one site: a script on another of that
+account's pages, opened in the same browser, could use the key - not copy
+it, but post replies with it. `chatqnotify -ReplyPage <https URL>` serves
+the page from a copy on a site of its own, a custom domain or a
+`<name>.github.io` of its own. A phone paired on the old site has no key on
+the new one, so pair it again there.
 
 ## The overlay
 

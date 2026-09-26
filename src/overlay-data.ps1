@@ -1699,6 +1699,7 @@ function Invoke-ChatOverlayCycle {
     # window in front is read to spare one, so every chat that finished a
     # turn would carry it for good
     if ($Ctx.WantUnread) { Update-ChatOverlayUnread $Ctx $live }
+    if ($Ctx.WantPhone) { try { Update-ChatqLiveAlerts $Ctx $live } catch { } }
     $rows = @(Get-ChatOverlayRows -Sessions $live -Texts $Ctx.Text -Jobs $Ctx.Jobs -Eta $eta -Now $now -CutOff $Ctx.CutOff -Unread $Ctx.Unread)
     # the newest chats not open, less any with a row of its own already -
     # not for the macOS panel, which draws none (Start-ChatOverlayMacHost);

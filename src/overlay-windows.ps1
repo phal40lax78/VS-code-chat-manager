@@ -2295,6 +2295,11 @@ function New-ChatOverlayTrayIcon {
     # a menu's own items say nothing on hover unless it is told to
     $menu.ShowItemToolTips = $true
     $open.ToolTipText = 'In the panel''s place, grown from its top-right corner - Esc brings the panel back'
+    # the setup window chatqnotify -Setup opens, reached from here too: Join,
+    # answering alerts from the phone, and which alerts go there
+    $phone = $menu.Items.Add('Phone alerts...')
+    $phone.ToolTipText = 'Join alerts, and answering them from the phone - a window of its own'
+    $phone.add_Click({ Invoke-ChatOverlayVerb 'phone' })
     [void]$menu.Items.Add([System.Windows.Forms.ToolStripSeparator]::new())
     $head = $menu.Items.Add("VS-code-chat-manager $script:ChatVersion")
     $head.Enabled = $false
@@ -2428,6 +2433,16 @@ function Invoke-ChatOverlayVerb {
             $active = if ($script:ChatConsoleActiveSeam) { [bool](& $script:ChatConsoleActiveSeam) } else { $H.Win.IsActive }
             if ($H.Mode -eq 'console' -and $active) { Exit-ChatOverlayConsoleMode $H }
             else { Enter-ChatOverlayConsoleMode $H -Activate }
+        }
+        # The tray's Phone alerts...: the setup window, a process of its own.
+        # -NoWait: this is the window's thread, and a wait for the dialog's
+        # lock would freeze the panel for seconds. Held like the rest while
+        # the console runs a loop of its own - the dialog would come up over
+        # a picker that is still waiting for its answer. Whatever goes wrong
+        # is the overlay log's, never thrown into the dispatcher.
+        'phone' {
+            if ($busy -and $H.Mode -eq 'console') { $H.Held += @($Verb); return }
+            try { [void](Start-ChatqPhoneSetup -NoWait) } catch { Write-ChatOverlayLog "phone setup: $($_.Exception.Message)" }
         }
     }
 }
@@ -2585,6 +2600,7 @@ function Start-ChatOverlayHost {
         Write-ChatOverlayLog "overlay $PID started ($script:ChatVersion)"
         Initialize-ChatOverlayNative
         $H.Ctx = New-ChatOverlayContext
+        $H.Ctx.WantPhone = $true
         Restore-ChatOverlayUsage $H.Ctx
         $H.State = Read-ChatOverlayState
         $H.Locked = [bool]$H.State.locked

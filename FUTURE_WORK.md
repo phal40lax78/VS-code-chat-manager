@@ -176,12 +176,166 @@ than 30 s after the chip's click, or the side bar's idle process under
 
 ## Approve permission prompts from the phone
 
-**Why deferred:** the chosen behaviour is to alert and park.
+**Why deferred:** the chosen behaviour is to alert and park. Since 0.8.0 the
+way back from the phone exists: a `needs input` alert can be answered, and
+**Allow edits & continue** queues the parked job again in `acceptEdits`
+([Invoke-ChatqReply](src/phone.ps1)). That answers after the fact - the run
+already ended on the denial - and allows a mode, not the one tool call that
+was asked for. A chat run straight in VS Code that waits on a prompt cannot
+be answered at all: a reply to it is queued behind the prompt, which only
+someone at the PC can answer.
 
-**To close:** a `--permission-prompt-tool` MCP bridge that pushes an Allow/Deny
-alert and waits for the answer with a timeout. Join would reach it through
-Tasker, or ntfy through a reply topic. This is Claude only; `codex exec` cannot
-ask mid-run.
+**To close:**
+1. A `--permission-prompt-tool` MCP bridge for the headless run: on a
+   prompt it sends an alert through
+   [Send-ChatqAlert](src/alerts.ps1) - naming the tool and its input -
+   whose link offers **Allow** and **Deny**, and waits for the answer with
+   a timeout that denies.
+2. The answer comes the way every reply does: sealed, through the reply
+   topic, verified by the watcher ([Receive-ChatqReply](src/phone.ps1)).
+   Two new acts, bound to that alert's id; the watcher hands the verdict to
+   the waiting bridge through a file in `data/`, since the bridge is a
+   child of `claude -p` and cannot poll the topic itself.
+3. An Allow approves that call only. It never raises the job's mode, so
+   `reply.maxMode` still holds.
+4. Claude only; `codex exec` cannot ask mid-run. A chat in VS Code would
+   need Claude Code's own hooks instead (the `PermissionRequest` hook),
+   installed in the user's settings.
+
+## An inline reply without the browser
+
+**Why deferred:** a reply opens a page in the phone's browser, which works
+on any phone with Join and nothing more. Join, with Tasker and
+AutoNotification, can show a notification with a text field and buttons of
+its own, so a reply could be typed in the notification itself. But a reply
+has to be sealed with the phone's key, and the page keeps that key as one
+that will not export, in the browser's IndexedDB: nothing outside the page
+can use it.
+
+**To close:**
+1. A Tasker profile on Join's notifications (every title starts `chatq ·`)
+   that shows an AutoNotification with a reply field and the buttons
+   [buttonsFor](docs/reply.html) gives the event.
+2. Seal in a Tasker JavaScriptlet with the page's wire format - byte for
+   byte, held to `tests/fixtures/reply-vector.json` - which needs a key the
+   profile can read. That is a second copy of the phone's key, readable,
+   and would have to be a pairing of its own ([Start-ChatqReplyPairing](src/phone.ps1))
+   rather than the page's key copied out.
+3. Or skip the sealing on the phone: Tasker opens the page with the typed
+   text in the link's `#` part, and the page asks once and sends. Cheaper,
+   and still one tap into the browser.
+
+## The reply page on an origin of its own by default
+
+**Why deferred:** the page is served from
+`https://phal40lax78.github.io/VS-code-chat-manager/`, and every project
+page of that account is the same site to a browser: a script on another of
+them, opened in the phone's browser, could use the phone's key - not copy
+it, since it will not export, but post replies with it. An origin of its
+own means a custom domain or a GitHub account or organisation just for the
+page, which the project does not have. `chatqnotify -ReplyPage` lets a user
+serve a copy from their own
+([Set-ChatqNotifyConfig](src/phone.ps1), `ReplyPage`).
+
+**To close:**
+1. A site used for nothing else - a `<name>.github.io` of its own, or a
+   domain - serving `docs/reply.html`.
+2. `$script:ChatqReplyPage` in [src/phone.ps1](src/phone.ps1) pointed at
+   it.
+3. The phone keeps its key per site, so every phone pairs again. The
+   release says so, and [Get-ChatqPhoneStatusText](src/phone.ps1) says so
+   while the phone was paired on the old site.
+
+## The watcher starts with no execution policy
+
+**Why deferred:** found in review, outside the phone work's scope.
+[Start-ChatqWatcherProcess](src/watcher.ps1) starts the watcher as
+`-NoProfile -NonInteractive -EncodedCommand` in the PowerShell it is called
+from, with no `-ExecutionPolicy`. Until 0.8.0 that was a shell of the
+user's, where scripts already ran. Now the setup window and the outbox's
+sender - Windows PowerShell 5.1, started with `-ExecutionPolicy Bypass` -
+start a watcher to listen for replies, and drop the Bypass from their
+environment first, so it does not reach the jobs that watcher runs
+([Get-ChatqOutboxLaunch](src/phone.ps1)). For someone who only ever set a
+policy in PowerShell 7, 5.1 is still `Restricted`: that watcher fails to
+load the script, says nothing, and no reply is read until a shell starts
+one.
+
+**To close:**
+1. In [Start-ChatqWatcherProcess](src/watcher.ps1), pass
+   `-ExecutionPolicy Bypass`, and have the encoded command remove
+   `env:PSExecutionPolicyPreference` right after the script has loaded, as
+   the sender's does - so jobs and your own command still run under your
+   policy.
+2. A check on the launch line, as `phone.ps1` has for the sender's.
+
+## A pairing confirmed while the setup window saves
+
+**Why deferred:** needs two things in the same instant, and every writer of
+`data/config.json` would have to change. [Confirm-ChatqPairCandidate](src/phone.ps1)
+reads `config.json`, adds the phone's key and saves it, with no lock, as
+[Set-ChatqNotifyConfig](src/phone.ps1) does for the window's **Save**. A
+Save that read the file just before the confirm wrote it can put back the
+copy without the key, while the confirm has already cleared the pairing's
+answers from `data/replies.json`. The phone is then not paired after all;
+`chatqnotify` says `not paired`, and `chatqnotify -Pair` pairs it again.
+
+**To close:** one lock around every read, change and save of
+`config.json`, as [Use-ChatqReplyState](src/phone.ps1) holds
+`data/replies.lock` for `replies.json`, taken by chatqnotify, the window,
+the pairing and the overlay's settings alike.
+
+## Live alerts without the Windows overlay
+
+**Why deferred:** the alerts about the chats you run yourself come from the
+Windows overlay's collector ([Update-ChatqLiveAlerts](src/phone.ps1)),
+which reads every chat's state anyway. The macOS collector runs the same
+pass but never sends: only the Windows host sets `WantPhone`, since the Mac
+panel has never run (S24 in TESTING.md). There is no overlay on Linux.
+
+**To close:**
+1. macOS: after S24, set `WantPhone` on the Mac host, and check the
+   sender's launch there ([Get-ChatqOutboxLaunch](src/phone.ps1) starts the
+   PowerShell it runs in off Windows).
+2. Or, with no overlay at all: Claude Code's own hooks - `Notification`
+   when a chat waits on you, `Stop` when a turn ends - calling a small
+   chatq command that writes the outbox file. They work on every OS, but
+   fire whether or not you are away, so the hook needs the away check
+   ([Test-ChatqUserAway](src/alerts.ps1)), and they go into the user's
+   Claude settings, which chatq has never written.
+
+## A running overlay keeps its old code after an update
+
+**Why deferred:** the overlay loads the script once, as it starts. An update
+through the extension or `chatinstall` restarts it; files changed any
+other way - a `git pull` in a checkout, a copy by hand - leave the old code
+running for days, and `ChatVersion` may not even move. 0.8.0 only tells:
+[Test-ChatqOverlayStale](src/phone.ps1) compares the overlay's start with
+`src/phone.ps1`'s write time, and `chatqnotify` says
+`the overlay runs an older copy`. Nothing restarts it.
+
+**To close:**
+1. Note the newest write time of the script and every part in `src/` as
+   the overlay loads them, and look again on the overlay's own pass, once
+   a minute.
+2. When a newer copy is on disk, restart through the same command
+   `chatinstall` sends - but not while it is the console with a draft, or
+   a drag is under way.
+3. Drop the phone-only check once this covers it.
+
+## Replies with neither Join nor ntfy over https
+
+**Why deferred:** a reply starts with a tap on a push that opens the page.
+Only Join and ntfy on an https server carry such a link: ntfy over plain
+http drops it, since the pairing push's link names the reply topic and
+would cross the network in the clear. The toast and your own command carry
+none. Pairing is refused without a way ([Test-ChatqLinkChannel](src/phone.ps1)),
+and alerts through ntfy over http carry no link.
+
+**To close:** give your command the link, as `$env:CHATQ_LINK` beside
+`CHATQ_TEXT` ([Invoke-ChatqAlertCommand](src/alerts.ps1)), so a Pushover or
+Telegram command can carry it, and let the pairing go that way too. For
+ntfy over http, https is the fix.
 
 ## The console: what 0.5.0 left out
 

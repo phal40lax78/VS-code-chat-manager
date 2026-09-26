@@ -15,6 +15,7 @@ queued prompt ran into it.
 - **Shows every running chat at a glance:** `chatoverlay` keeps a small panel above every app, started with VS Code on Windows. Click a chat there to open it as a tab.
 - **Open chat...** in the command palette lists this window's Claude chats, newest first, with what runs each - open, working, a terminal, or a queued prompt - and opens the one you pick in a tab. A chat working elsewhere, in a terminal, or taking a queued prompt is never opened a second time.
 - **After a queued run**, once the chat's old idle process is ended, the window shows it up to date in a tab of its own, with no window reload. Where that process is still running, it offers a reload instead.
+- **Phone alerts...** in the command palette opens the window that sets up alerts on your phone through Join - and answering them from the phone, with the phone paired once - with no terminal needed (Windows).
 
 ![chatrm after Tab: the whole title filled in, quoted, with its age and match count, beside the chat panel](https://raw.githubusercontent.com/phal40lax78/VS-code-chat-manager/main/docs/demo-2-tab.png)
 

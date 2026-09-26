@@ -1,0 +1,1248 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- resizes-content: the on-screen keyboard shrinks the page instead of
+     sliding over it, so Send stays just above the keys, under the thumb -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<!-- Nothing loads from anywhere: the only request the page makes is the POST
+     to the ntfy server this phone was paired with. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src https:; img-src data:; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#f4f5f7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#101217" media="(prefers-color-scheme: dark)">
+<!-- an empty icon, so the browser does not ask the host for /favicon.ico -->
+<link rel="icon" href="data:,">
+<title>chatq reply</title>
+<style>
+:root {
+    --bg: #f4f5f7; --card: #ffffff; --fg: #15171c; --muted: #6a717d; --line: #d5d9e0;
+    --accent: #2459d6; --accent-fg: #ffffff; --ok: #177a3b; --warn: #a65b00; --bad: #c0262d;
+    --ok-bg: #e6f4ea; --warn-bg: #fff3e0; --bad-bg: #fdeaea; --wait-bg: #e9eef9;
+}
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg: #101217; --card: #1a1d24; --fg: #e9ebef; --muted: #99a0ac; --line: #2e333d;
+        --accent: #3f7cf0; --accent-fg: #ffffff; --ok: #5fd08a; --warn: #f2b14c; --bad: #ff7b7f;
+        --ok-bg: #16281d; --warn-bg: #2d2412; --bad-bg: #331a1c; --wait-bg: #1b2336;
+    }
+}
+[hidden] { display: none !important; }
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--fg); }
+body {
+    font: 16px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+    -webkit-text-size-adjust: 100%;
+    -webkit-tap-highlight-color: transparent;
+}
+.app, .card {
+    display: flex; flex-direction: column; gap: 12px;
+    min-height: 100vh; min-height: 100dvh; max-width: 40rem; margin: 0 auto;
+    padding: max(14px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+}
+.top { display: flex; flex-direction: column; gap: 6px; }
+.line1 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-height: 26px; }
+.chip {
+    display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 13px; font-weight: 600;
+    letter-spacing: .01em; color: #fff; background: var(--chip, #6a717d);
+}
+.chip[data-ev="done"] { --chip: #1f8a4c; }
+.chip[data-ev="needs input"] { --chip: #b86e00; }
+.chip[data-ev="failed"] { --chip: #c0262d; }
+.chip[data-ev="started"] { --chip: #2459d6; }
+.chip[data-ev="limited"], .chip[data-ev="overloaded"] { --chip: #b54708; }
+.chip[data-ev="test"] { --chip: #6b4fd8; }
+.meta { color: var(--muted); font-size: 14px; }
+.title {
+    margin: 0; font-size: 22px; line-height: 1.3; font-weight: 650;
+    word-break: keep-all; overflow-wrap: anywhere;
+}
+.compose { flex: 1 1 auto; display: flex; flex-direction: column; gap: 6px; min-height: 9rem; }
+textarea {
+    flex: 1 1 auto; width: 100%; min-height: 7rem; resize: none;
+    font: inherit; font-size: 17px; line-height: 1.45;
+    padding: 12px 14px; border-radius: 14px;
+    border: 1px solid var(--line); background: var(--card); color: var(--fg);
+    transition: color .15s;
+}
+textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
+textarea.sent { color: var(--muted); }
+.under { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; color: var(--muted); min-height: 18px; }
+.count { margin-left: auto; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.count[data-state="warn"] { color: var(--warn); font-weight: 600; }
+.count[data-state="over"] { color: var(--bad); font-weight: 700; }
+.status {
+    display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 12px;
+    font-size: 15px; background: var(--wait-bg); border-left: 4px solid var(--accent);
+}
+.status[data-kind="ok"] { background: var(--ok-bg); border-left-color: var(--ok); }
+.status[data-kind="bad"] { background: var(--bad-bg); border-left-color: var(--bad); }
+.status span { flex: 1 1 auto; }
+.status button {
+    flex: 0 0 auto; min-height: 40px; padding: 6px 14px; border-radius: 10px; font: inherit; font-weight: 600;
+    border: 1px solid var(--bad); background: transparent; color: var(--bad);
+}
+.log { list-style: none; margin: 0; padding: 0; font-size: 13px; color: var(--muted); }
+.log li { padding: 2px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.actions { margin-top: auto; display: flex; flex-direction: column; gap: 10px; }
+.more { display: flex; flex-wrap: wrap; gap: 8px; }
+.more button {
+    flex: 1 1 0; min-width: 6.5rem; min-height: 44px; padding: 8px 12px;
+    font: inherit; font-size: 15px; border-radius: 12px;
+    border: 1px solid var(--line); background: var(--card); color: var(--fg);
+}
+.more button[data-armed="1"] { border-color: var(--bad); color: var(--bad); font-weight: 600; }
+.primary {
+    width: 100%; min-height: 56px; padding: 10px 16px; border: 0; border-radius: 16px;
+    font: inherit; font-size: 18px; font-weight: 650;
+    background: var(--accent); color: var(--accent-fg);
+}
+button { cursor: pointer; touch-action: manipulation; }
+button:active:not(:disabled) { transform: scale(.98); }
+button:disabled { opacity: .45; cursor: default; }
+/* four small buttons sit two by two rather than three and a lone one */
+.more button:first-child:nth-last-child(4), .more button:first-child:nth-last-child(4) ~ button { flex-basis: calc(50% - 4px); }
+.fine { margin: 0; text-align: center; font-size: 12px; color: var(--muted); }
+.about { margin: 0; color: var(--muted); font-size: 15px; line-height: 1.5; }
+/* the cards: pairing, not paired, a link that cannot be used. What to read
+   sits high, the one button low, where the thumb is */
+.card { max-width: 32rem; }
+.card-body { flex: 1 1 auto; display: flex; flex-direction: column; justify-content: center; gap: 12px; padding: 6vh 4px 12px; }
+.mark {
+    width: 56px; height: 56px; border-radius: 18px; display: flex; align-items: center; justify-content: center;
+    background: var(--wait-bg); color: var(--accent); margin-bottom: 4px;
+}
+.mark[data-mark="ok"] { background: var(--ok-bg); color: var(--ok); }
+.mark[data-mark="bad"] { background: var(--bad-bg); color: var(--bad); }
+.mark svg { width: 30px; height: 30px; display: none; }
+.mark[data-mark="pair"] .m-pair, .mark[data-mark="ok"] .m-ok, .mark[data-mark="phone"] .m-phone, .mark[data-mark="bad"] .m-bad { display: block; }
+.kicker { margin: 0; color: var(--muted); font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.card h1 { margin: 0; font-size: 25px; line-height: 1.25; font-weight: 700; overflow-wrap: anywhere; }
+.card-body p { margin: 0; line-height: 1.5; }
+.card-body .say { color: var(--muted); font-size: 16px; }
+.code {
+    margin: 2px 0; padding: 12px 14px; border-radius: 12px; border: 1px solid var(--line);
+    background: var(--card); color: var(--fg); white-space: pre-wrap; overflow-wrap: anywhere;
+    font: 600 17px/1.4 ui-monospace, "Cascadia Mono", "SF Mono", Consolas, Menlo, monospace;
+    -webkit-user-select: all; user-select: all;
+}
+/* the pairing code, read off the phone and matched on the PC */
+.big {
+    margin: 4px 0 2px; padding: 14px 12px; border-radius: 16px; text-align: center;
+    background: var(--card); border: 1px solid var(--line); color: var(--fg);
+    font: 700 46px/1.1 ui-monospace, "Cascadia Mono", "SF Mono", Consolas, Menlo, monospace;
+    letter-spacing: .08em; font-variant-numeric: tabular-nums; white-space: pre;
+    -webkit-user-select: all; user-select: all;
+}
+.primary[data-armed="1"] { background: var(--bad); }
+.warn { padding: 10px 12px; border-radius: 12px; background: var(--warn-bg); border-left: 4px solid var(--warn); font-size: 15px; }
+.card-foot { display: flex; flex-direction: column; gap: 10px; }
+/* the keyboard is up (or the screen is small): only what sending needs, the
+   small buttons in one row, so Send stays on screen above the keys */
+@media (max-height: 520px) {
+    .app { gap: 8px; padding-top: max(8px, env(safe-area-inset-top)); }
+    .log, .app .fine, .about { display: none; }
+    .title { font-size: 18px; }
+    .compose { min-height: 0; }
+    textarea { min-height: 4.5rem; }
+    .actions { gap: 8px; }
+    .more { flex-wrap: nowrap; gap: 6px; }
+    .more button, .more button:first-child:nth-last-child(4), .more button:first-child:nth-last-child(4) ~ button {
+        flex: 1 1 0; min-width: 0; min-height: 40px; padding: 4px 6px; font-size: 14px; line-height: 1.2;
+    }
+    .primary { min-height: 50px; }
+    .card-body { padding-top: 8px; }
+}
+.broken { max-width: 30rem; margin: 0 auto; padding: 18vh 24px 24px; text-align: center; }
+.broken h1 { font-size: 21px; margin: 0 0 10px; }
+.broken p { margin: 0 auto; color: var(--muted); line-height: 1.5; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+</style>
+</head>
+<body>
+<main id="app" class="app" hidden>
+    <header class="top">
+        <div class="line1"><span id="ev" class="chip"></span><span id="meta" class="meta"></span></div>
+        <h1 id="title" class="title"></h1>
+    </header>
+    <div id="compose" class="compose">
+        <label for="text" class="sr">Message to the chat</label>
+        <textarea id="text" autofocus rows="5" autocapitalize="sentences" autocomplete="off"></textarea>
+        <div class="under"><span id="hint"></span><span id="count" class="count"></span></div>
+    </div>
+    <p id="about" class="about" hidden></p>
+    <div id="status" class="status" role="status" aria-live="polite" hidden><span id="statusText"></span><button id="again" type="button" hidden>Try again</button></div>
+    <ol id="log" class="log"></ol>
+    <footer class="actions">
+        <div id="more" class="more"></div>
+        <button id="send" class="primary" type="button"></button>
+        <p id="fine" class="fine"></p>
+    </footer>
+</main>
+<section id="card" class="card" hidden>
+    <div class="card-body">
+        <div id="mark" class="mark" aria-hidden="true">
+            <svg class="m-pair" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg>
+            <svg class="m-ok" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>
+            <svg class="m-phone" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="2.5" width="12" height="19" rx="2.5"/><path d="M11 18h2"/></svg>
+            <svg class="m-bad" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.5"/><path d="M12 16.5v.01"/></svg>
+        </div>
+        <p id="kicker" class="kicker" hidden></p>
+        <h1 id="cardHead"></h1>
+        <p id="cardBig" class="big" hidden></p>
+        <p id="cardBody" class="say"></p>
+        <p id="cardCode" class="code" hidden></p>
+        <p id="cardAfter" class="say" hidden></p>
+        <p id="cardWarn" class="warn" hidden></p>
+    </div>
+    <footer class="card-foot">
+        <div id="cardStatus" class="status" role="status" aria-live="polite" hidden><span id="cardStatusText"></span></div>
+        <button id="pair" class="primary" type="button" hidden>Pair</button>
+        <p id="cardFine" class="fine" hidden></p>
+    </footer>
+</section>
+<noscript><section class="broken"><h1>This page needs JavaScript</h1><p>It encrypts the reply on the phone before sending it.</p></section></noscript>
+<script>
+/* chatq-crypto-begin */
+// The reply and the pairing on the wire. Pure functions over bytes, so
+// tests/reply-page-check.js can lift this block out, run it under Node's
+// webcrypto and hold it to tests/fixtures/reply-vector.json and
+// pair-vector.json - the files the watcher's PowerShell side is held to as
+// well, so the two agree byte for byte.
+//
+// Pairing: the phone makes its own key D and sends it once, sealed to the
+// RSA public key the pairing link carries; the PC takes it only once the user
+// confirms there the code this phone shows. From then on an alert's link
+// carries no secret at all: the key of one alert is derived here, from D and
+// the alert's id, the same way the PC derives it.
+var ChatqCrypto = (function () {
+    'use strict';
+    var encoder = new TextEncoder();
+    // RSA-OAEP with SHA-256 on a 2048-bit key seals at most this many bytes
+    var MAX_PAIR_PAYLOAD = 190;
+    function utf8(s) { return encoder.encode(s); }
+    function b64url(bytes) {
+        var s = '';
+        for (var i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+        return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    }
+    // null for anything that is not base64url, rather than a guess
+    function unb64url(s) {
+        if (typeof s !== 'string' || !/^[A-Za-z0-9_-]*$/.test(s) || s.length % 4 === 1) return null;
+        var bin;
+        try { bin = atob(s.replace(/-/g, '+').replace(/_/g, '/') + '=='.slice(0, (4 - s.length % 4) % 4)); } catch (e) { return null; }
+        var out = new Uint8Array(bin.length);
+        for (var i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+        return out;
+    }
+    function randomBytes(n) {
+        var b = new Uint8Array(n);
+        crypto.getRandomValues(b);
+        return b;
+    }
+    // D as the phone keeps it: an HMAC key WebCrypto will sign with but never
+    // hand back, so a script on this origin can use it while the page is
+    // open but cannot copy it off the phone
+    function phoneKey(d) {
+        return crypto.subtle.importKey('raw', d, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    }
+    // a CryptoKey as it is, or raw bytes
+    function isKey(key) {
+        return !!key && typeof key === 'object' && typeof key.type === 'string' && !!key.algorithm && !!key.usages;
+    }
+    async function hmac(key, data) {
+        var ck = isKey(key) ? key : await phoneKey(key);
+        return new Uint8Array(await crypto.subtle.sign('HMAC', ck, data));
+    }
+    // the key of one alert, from the phone's key (bytes or the kept
+    // CryptoKey, the same k either way): the PC makes the same one
+    async function alertKey(d, aid) {
+        return hmac(d, utf8('chatq-alert:' + aid));
+    }
+    // The six digits the user matches between the phone and the PC before
+    // the PC takes a pairing answer: the first 4 bytes of HMAC(D,
+    // "chatq-confirm") big-endian, mod a million. Anyone who answers a
+    // pairing alert in the phone's place holds another D, so another code.
+    async function confirmCode(d) {
+        var h = await hmac(d, utf8('chatq-confirm'));
+        var n = h[0] * 16777216 + h[1] * 65536 + h[2] * 256 + h[3];
+        return ('00000' + (n % 1000000)).slice(-6);
+    }
+    // two keys from the alert's one, so the cipher and the MAC never share a key
+    async function deriveKeys(k) {
+        return { enc: await hmac(k, utf8('enc')), mac: await hmac(k, utf8('mac')) };
+    }
+    // key order and spelling are the wire format: JSON.stringify keeps both
+    function buildPayload(act, text, nonce, ts) {
+        return JSON.stringify({ v: 1, act: act, text: text, nonce: nonce, ts: ts });
+    }
+    // encrypt-then-MAC: the watcher checks the MAC over everything before
+    // it decrypts a byte
+    async function sealPayload(k, aid, payload, iv) {
+        var keys = await deriveKeys(k);
+        var ek = await crypto.subtle.importKey('raw', keys.enc, { name: 'AES-CBC' }, false, ['encrypt']);
+        var ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-CBC', iv: iv }, ek, utf8(payload)));
+        var head = 'chatq1.' + aid + '.' + b64url(iv) + '.' + b64url(ct);
+        return head + '.' + b64url(await hmac(keys.mac, utf8(head)));
+    }
+    // fixed: { iv, nonce, ts } for the test vector; a real send leaves it out
+    // and gets a fresh iv and nonce each time, which is what the watcher's
+    // replay guard counts on
+    async function seal(k, aid, act, text, fixed) {
+        fixed = fixed || {};
+        var nonce = fixed.nonce !== undefined ? fixed.nonce : b64url(randomBytes(16));
+        var ts = fixed.ts !== undefined ? fixed.ts : Date.now();
+        var iv = fixed.iv !== undefined ? fixed.iv : randomBytes(16);
+        var payload = buildPayload(act, text, nonce, ts);
+        return { message: await sealPayload(k, aid, payload, iv), payload: payload, nonce: nonce, ts: ts };
+    }
+    function buildPairPayload(d, label, ts) {
+        return JSON.stringify({ v: 2, d: d, label: label, ts: ts });
+    }
+    // n and e as the pairing link has them, base64url: exactly a JWK's own
+    // spelling, so the key goes in with no parsing of ours
+    async function sealPair(n, e, pid, payload) {
+        var bytes = utf8(payload);
+        if (bytes.length > MAX_PAIR_PAYLOAD) throw new Error('pairing payload over ' + MAX_PAIR_PAYLOAD + ' bytes');
+        var pk = await crypto.subtle.importKey('jwk', { kty: 'RSA', n: n, e: e, alg: 'RSA-OAEP-256', ext: true },
+            { name: 'RSA-OAEP', hash: 'SHA-256' }, false, ['encrypt']);
+        var ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'RSA-OAEP' }, pk, bytes));
+        return 'chatq2p.' + pid + '.' + b64url(ct);
+    }
+    // fixed: { d, ts } for the tests; a real pairing makes a new D
+    async function pair(n, e, pid, label, fixed) {
+        fixed = fixed || {};
+        var d = fixed.d !== undefined ? fixed.d : randomBytes(32);
+        var ts = fixed.ts !== undefined ? fixed.ts : Date.now();
+        var payload = buildPairPayload(b64url(d), label, ts);
+        return { message: await sealPair(n, e, pid, payload), payload: payload, d: d, ts: ts };
+    }
+    return {
+        MAX_PAIR_PAYLOAD: MAX_PAIR_PAYLOAD,
+        utf8: utf8, b64url: b64url, unb64url: unb64url, randomBytes: randomBytes, phoneKey: phoneKey, isKey: isKey, hmac: hmac,
+        alertKey: alertKey, confirmCode: confirmCode, deriveKeys: deriveKeys, buildPayload: buildPayload, sealPayload: sealPayload, seal: seal,
+        buildPairPayload: buildPairPayload, sealPair: sealPair, pair: pair
+    };
+})();
+/* chatq-crypto-end */
+
+/* chatq-logic-begin */
+// What the page shows and offers, from the link and what this phone keeps.
+// Pure functions too, driven by tests/reply-page-check.js the same way.
+var ChatqPage = (function () {
+    'use strict';
+    // sealed, a payload this size stays under ntfy's 4096-byte message limit
+    var MAX_PAYLOAD = 2900;
+    // warned from here: room left to trim before Send turns off
+    var WARN_AT = 2400;
+    var ACTS = ['prompt', 'retry', 'allow', 'skip', 'stop', 'status', 'ping'];
+    var LABEL_MAX = 40, HOST_MAX = 30;
+
+    function normEvent(e) {
+        return String(e || '').trim().toLowerCase().replace(/[-_\s]+/g, ' ');
+    }
+    function clean(s, max) {
+        return String(s || '').replace(/[\x00-\x1f\x7f]+/g, ' ').trim().slice(0, max);
+    }
+    // only https: the page is https, and the CSP lets it talk to nothing else
+    function serverOf(s) {
+        if (!s) return null;
+        var u;
+        try { u = new URL(s); } catch (e) { return null; }
+        if (u.protocol !== 'https:' || u.username || u.password || u.search || u.hash) return null;
+        return u.origin + u.pathname.replace(/\/+$/, '');
+    }
+    function topicOk(t) { return /^[A-Za-z0-9_-]{1,64}$/.test(t || ''); }
+    function idOk(a) { return /^[a-z2-7]{10}$/.test(a || ''); }
+
+    // { ok: true, mode: alert | pair, f } or
+    // { ok: false, why: missing | old | version | bad }.
+    // Two kinds of link. The pairing link is the one push that carries where
+    // replies go (s, t) and the PC's public key (n, x). An alert's link
+    // carries no secret and nothing about where to send: k, s and t in one
+    // are never read, so a link made up to send this phone's replies
+    // elsewhere, or with a key of its own, gets nowhere.
+    function parseFragment(hash) {
+        var h = String(hash || '').replace(/^#/, '');
+        if (!h) return { ok: false, why: 'missing' };
+        var q = Object.create(null);
+        var parts = h.split('&');
+        for (var i = 0; i < parts.length; i++) {
+            var eq = parts[i].indexOf('=');
+            if (eq < 1) continue;
+            var val;
+            try { val = decodeURIComponent(parts[i].slice(eq + 1)); } catch (e) { return { ok: false, why: 'bad' }; }
+            q[parts[i].slice(0, eq)] = val;
+        }
+        if (q.v === undefined && q.k === undefined && q.m === undefined && q.a === undefined) return { ok: false, why: 'missing' };
+        // v1 put the alert's key in the link; such a link is refused whole
+        if (q.v === '1') return { ok: false, why: 'old' };
+        if (q.v !== '2') return { ok: false, why: /^[0-9]+$/.test(q.v || '') && +q.v > 2 ? 'version' : 'bad' };
+        if (q.m === 'pair') {
+            var server = serverOf(q.s);
+            var n = /^[A-Za-z0-9_-]+$/.test(q.n || '') ? ChatqCrypto.unb64url(q.n) : null;
+            var x = /^[A-Za-z0-9_-]+$/.test(q.x || '') ? ChatqCrypto.unb64url(q.x) : null;
+            // 2048 bits at least: the pairing payload is sized for that
+            if (!server || !topicOk(q.t) || !idOk(q.a) || !n || n.length < 256 || n.length > 512 || !x || x.length < 1 || x.length > 8) {
+                return { ok: false, why: 'bad' };
+            }
+            return { ok: true, mode: 'pair', f: { server: server, topic: q.t, pid: q.a, n: q.n, e: q.x, host: clean(q.h, HOST_MAX) } };
+        }
+        if (q.m !== undefined) return { ok: false, why: 'version' };
+        if (!idOk(q.a)) return { ok: false, why: 'bad' };
+        return {
+            ok: true,
+            mode: 'alert',
+            f: {
+                aid: q.a,
+                event: normEvent(q.e),
+                seq: /^[0-9]{1,9}$/.test(q.n || '') ? q.n : '',
+                title: clean(q.c, 200),
+                provider: String(q.p || '').trim().toLowerCase(),
+                job: String(q.j || '').trim(),
+                jobless: q.x === '1'
+            }
+        };
+    }
+    // what is kept for this tab so a reload still works: the alert's own
+    // fields and nothing else, rebuilt rather than copied from the link
+    function alertFragment(f) {
+        var q = [['v', '2'], ['a', f.aid], ['e', f.event], ['n', f.seq], ['c', f.title], ['p', f.provider], ['j', f.job]];
+        if (f.jobless) q.push(['x', '1']);
+        return q.map(function (p) { return p[0] + '=' + encodeURIComponent(p[1] || ''); }).join('&');
+    }
+    // What the phone keeps, in IndexedDB (db 'chatq', store 'phone'): where
+    // replies go and the phone's key as a CryptoKey that will not export.
+    // null for anything but a whole, sane record - then the phone is not
+    // paired. The phone object the page works with: { server, topic, key,
+    // at, host, code, readable } - key a CryptoKey here, raw bytes only when
+    // this browser has no IndexedDB (readable: true)
+    function codeOk(c) { return /^[0-9]{6}$/.test(c || ''); }
+    function storedRecord(pf, key, at, code) {
+        return { v: 3, s: pf.server, t: pf.topic, key: key, at: at, h: pf.host, code: code };
+    }
+    function parseStored(o) {
+        if (!o || typeof o !== 'object' || o.v !== 3 || !ChatqCrypto.isKey(o.key)) return null;
+        var k = o.key, server = serverOf(o.s);
+        if (k.type !== 'secret' || k.extractable !== false || !k.algorithm || k.algorithm.name !== 'HMAC' ||
+            Array.prototype.indexOf.call(k.usages, 'sign') < 0) return null;
+        if (!server || !topicOk(o.t)) return null;
+        return {
+            server: server, topic: o.t, key: k, at: typeof o.at === 'number' ? o.at : 0, host: clean(o.h, HOST_MAX),
+            code: codeOk(o.code) ? o.code : '', readable: false
+        };
+    }
+    // localStorage 'chatq-phone', v2: the raw key in a string. Read to move it
+    // into IndexedDB (and then removed), and written only by a browser that
+    // has no IndexedDB. null for anything but a whole, sane record
+    function parsePhone(text) {
+        var o;
+        try { o = JSON.parse(text); } catch (e) { return null; }
+        if (!o || o.v !== 2 || typeof o.d !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(o.d)) return null;
+        var server = serverOf(o.s), d = ChatqCrypto.unb64url(o.d);
+        if (!server || !topicOk(o.t) || !d || d.length !== 32) return null;
+        return { server: server, topic: o.t, d: d, at: typeof o.at === 'number' ? o.at : 0, host: clean(o.h, HOST_MAX) };
+    }
+    function phoneRecord(pf, d, at) {
+        return JSON.stringify({ v: 2, s: pf.server, t: pf.topic, d: ChatqCrypto.b64url(d), at: at, h: pf.host });
+    }
+    // "123 456": two groups of three read aloud and compared at a glance
+    function codeText(c) { return codeOk(c) ? c.slice(0, 3) + ' ' + c.slice(3) : ''; }
+    // where a pairing link sends this phone's replies, short enough to read:
+    // the server's host and the topic's start. chatq's own topics all begin
+    // chatq-, so six characters past that, which are what tells two apart
+    function whereTo(pf) {
+        var t = String(pf.topic || ''), m = /^chatq-/.test(t) ? 6 : 0;
+        var head = t.slice(0, m + 6);
+        return hostOf(pf.server) + ', topic ' + head + (t.length > head.length ? '\u2026' : '');
+    }
+    // "Android - Chrome 128": how the PC names this phone in its status.
+    // Printable ASCII with no quote or backslash, so the pairing payload is
+    // exactly as many bytes as characters and never outgrows RSA's 190
+    function deviceLabel(ua) {
+        ua = String(ua || '');
+        var os = /Android/i.test(ua) ? 'Android' : /iPhone/.test(ua) ? 'iPhone' : /iPad/.test(ua) ? 'iPad' :
+            /CrOS/.test(ua) ? 'ChromeOS' : /Windows/.test(ua) ? 'Windows' : /Macintosh|Mac OS X/.test(ua) ? 'Mac' :
+            /Linux/.test(ua) ? 'Linux' : 'Phone';
+        var m, br = '';
+        if ((m = /\b(?:EdgA|EdgiOS|Edg)\/(\d+)/.exec(ua))) br = 'Edge ' + m[1];
+        else if ((m = /SamsungBrowser\/(\d+)/.exec(ua))) br = 'Samsung Internet ' + m[1];
+        else if ((m = /\b(?:OPR|OPT)\/(\d+)/.exec(ua))) br = 'Opera ' + m[1];
+        else if ((m = /\b(?:Firefox|FxiOS)\/(\d+)/.exec(ua))) br = 'Firefox ' + m[1];
+        else if ((m = /\b(?:Chrome|CriOS)\/(\d+)/.exec(ua))) br = 'Chrome ' + m[1];
+        else if ((m = /Version\/(\d+).*Safari/.exec(ua))) br = 'Safari ' + m[1];
+        return (br ? os + ' - ' + br : os).replace(/[^\x20-\x7e]|["\\]/g, '').slice(0, LABEL_MAX);
+    }
+    // { text: shows the box, send: the big button, more: the small ones,
+    //   placeholder, hint }. Every act here must be one the watcher knows.
+    // job 'live' (j=live): the alert is about a chat run directly in VS Code,
+    // not a chatq job, so there is no run to continue, retry, skip or stop
+    function buttonsFor(event, provider, jobless, job) {
+        var e = normEvent(event);
+        var status = { act: 'status', label: 'Status' };
+        var ping = { act: 'ping', label: 'Send a test reply' };
+        if (e === 'test') {
+            return {
+                text: false, send: ping, more: [], placeholder: '', hint: '',
+                about: 'Checks the whole way back: from this phone through ntfy to the PC, which answers with a push. Nothing is queued.'
+            };
+        }
+        // about no chat (the PC's answers, a pairing's confirmation): there
+        // is nothing a prompt could go to, so no box to type one in
+        if (jobless) {
+            return {
+                text: false, send: status, more: e === 'reply' ? [ping] : [], placeholder: '', hint: '',
+                about: 'This alert is not about a chat, so there is nothing to answer. Status asks the PC what its queue is doing.'
+            };
+        }
+        // a prompt is the one thing it can take: queued, and handed to that
+        // chat once it is idle. Whatever the event, nothing else. Waiting on
+        // a permission or a question, it cannot be answered from here: the
+        // text waits until someone at the PC answers, so the box says so
+        if (job === 'live') {
+            var held = e === 'needs input';
+            return {
+                text: true, send: { act: 'prompt', label: 'Send' }, more: [status],
+                placeholder: held ? 'Prompt for after it is answered' : 'Next prompt for this chat',
+                hint: held ? 'goes into this chat once its prompt is answered at the PC' : 'goes into this chat when it is idle', about: ''
+            };
+        }
+        var skip = { act: 'skip', label: 'Skip', confirm: 'Tap again to skip' };
+        var r = { text: true, send: { act: 'prompt', label: 'Send' }, more: [status], placeholder: 'Next prompt for this chat', hint: '', about: '' };
+        if (e === 'needs input') {
+            r.more = [];
+            // raising the mode is Claude's alone; the watcher refuses it for Codex
+            if (normEvent(provider) === 'claude') r.more.push({ act: 'allow', label: 'Allow edits & continue' });
+            r.more.push({ act: 'retry', label: 'Continue' }, skip, status);
+            r.placeholder = 'Answer it, or give the next prompt';
+        } else if (e === 'failed') {
+            r.more = [{ act: 'retry', label: 'Retry' }, skip, status];
+            r.placeholder = 'A new prompt for this chat';
+        } else if (e === 'started') {
+            r.more = [{ act: 'stop', label: 'Stop', confirm: 'Tap again to stop' }, status];
+            r.placeholder = 'Prompt to queue after this run';
+            r.hint = 'runs once this run finishes';
+        }
+        return r;
+    }
+    // the bytes the payload will take, the nonce and ts at their real widths
+    function payloadBytes(text) {
+        return ChatqCrypto.utf8(ChatqCrypto.buildPayload('prompt', text, 'AAAAAAAAAAAAAAAAAAAAAA', 1790000000000)).length;
+    }
+    // bytes: the whole payload's, which the limit is on. The label counts the
+    // text alone against what the payload leaves it, so an empty box reads 0
+    function counter(text) {
+        var n = payloadBytes(text), base = payloadBytes('');
+        if (n > MAX_PAYLOAD) return { bytes: n, state: 'over', label: (n - MAX_PAYLOAD) + ' bytes too long' };
+        if (n >= WARN_AT) return { bytes: n, state: 'warn', label: (MAX_PAYLOAD - n) + ' bytes left' };
+        return { bytes: n, state: 'ok', label: (n - base) + ' / ' + (MAX_PAYLOAD - base) + ' bytes' };
+    }
+    function heading(f) {
+        var t = f.title || (f.event === 'test' ? 'chatq test' : 'chatq');
+        return f.seq ? '#' + f.seq + ' ' + t : t;
+    }
+    function hostOf(server) {
+        return String(server).replace(/^[a-z]+:\/\//, '').replace(/\/.*$/, '');
+    }
+    function postUrl(to) { return to.server + '/' + to.topic; }
+    function sentText(b) {
+        if (b.act === 'prompt') return 'Sent. The PC queues it and answers with a push.';
+        if (b.act === 'ping') return 'Test reply sent. The PC answers with a push.';
+        return 'Sent "' + b.label + '". The PC answers with a push.';
+    }
+    function errorText(r, host) {
+        if (r.kind === 'timeout') return 'No answer from ' + host + ' in 15 s.';
+        if (r.kind === 'network') return 'Could not reach ' + host + ' - check the connection.';
+        if (r.kind === 'crypto') return 'This browser could not encrypt the reply.';
+        if (r.status === 429) return host + ' is rate limiting - wait a minute.';
+        if (r.status === 413) return 'Too long for ' + host + ' - shorten it.';
+        return host + ' answered ' + r.status + '.';
+    }
+    function onPc(host) { return host ? 'chatq on ' + host : 'chatq on your PC'; }
+    var PAIR_CMD = 'chatqnotify -Pair';
+    var READABLE = 'IndexedDB is not available here, so this browser keeps the key readable to this site\'s pages.';
+    // Every screen that is not the reply form: { mark, kicker, head, big,
+    // body, code, after, warn, button, fine }. ctx: { pf (the pairing link),
+    // phone (what this phone keeps), f (an alert), when (a paired time, as
+    // text) }
+    function cardText(kind, ctx) {
+        ctx = ctx || {};
+        var pf = ctx.pf || {}, phone = ctx.phone || {};
+        var about = ctx.f ? heading(ctx.f) + (ctx.f.event ? ' - ' + ctx.f.event : '') : '';
+        var since = ctx.when ? ' since ' + ctx.when : '';
+        var readable = phone.readable ? READABLE : '';
+        if (kind === 'pair' || kind === 'replace') {
+            // A pairing link names its PC by its own h=, so a made-up one can
+            // name yours. What it cannot fake is where it sends the key, and
+            // that the user did not just start a pairing
+            return {
+                mark: 'pair', head: 'Pair this phone with ' + onPc(pf.host),
+                body: 'This phone makes a key of its own and hands it, sealed, to that PC. Once you confirm there the code this phone then shows, you can answer its chatq alerts from here.',
+                warn: kind === 'replace' ? 'Only continue if you just pressed Pair phone on your PC. Replies from this phone would go to ' + whereTo(pf) +
+                    ', and the pairing with ' + onPc(phone.host) + ' ends here: its alerts stop working on this phone.' : '',
+                button: kind === 'replace' ? 'Replace pairing' : 'Pair',
+                confirm: kind === 'replace' ? 'Tap again to replace' : '',
+                fine: 'Within 15 minutes of the pairing alert. Only the PC can open what is sent; ' + hostOf(pf.server) + ' only passes it on.'
+            };
+        }
+        // The key went out; the PC takes it only once the user confirms this
+        // code there - a stranger who answered the same pairing alert shows
+        // up with a code of their own
+        if (kind === 'paired') {
+            return {
+                mark: 'ok', kicker: onPc(pf.host), head: 'On the PC, confirm this code', big: codeText(phone.code),
+                body: 'chatqnotify -Pair lists the answers, and so does Replies in the setup window. Confirm the one with this code; any other is not this phone.',
+                warn: readable,
+                fine: 'Nothing to confirm on the PC? The pairing alert may have run out - run ' + PAIR_CMD + ' there again.'
+            };
+        }
+        if (kind === 'same') {
+            return {
+                mark: 'ok', kicker: onPc(phone.host), head: 'This pairing alert is already used', big: codeText(phone.code),
+                body: 'If the PC has not confirmed this phone yet, confirm this code there. Then tap a chatq alert to answer it.',
+                warn: readable,
+                fine: 'To pair again, run ' + PAIR_CMD + ' on the PC.'
+            };
+        }
+        if (kind === 'home') {
+            return {
+                mark: 'ok', head: 'This phone is paired',
+                body: 'With ' + onPc(phone.host) + since + '. Tap a chatq alert to answer it.',
+                after: phone.code ? 'Its code is ' + codeText(phone.code) + ' - the one to confirm on the PC, if that is not done yet.' : '',
+                warn: readable
+            };
+        }
+        if (kind === 'unpaired') {
+            return {
+                mark: 'phone', kicker: about, head: 'This phone is not paired',
+                body: 'Pair it once, and every chatq alert can be answered from here. On the PC, run',
+                code: PAIR_CMD,
+                after: 'or press Pair phone in the setup window. Then tap the pairing alert that comes to this phone.'
+            };
+        }
+        if (kind === 'old') {
+            return {
+                mark: 'phone', head: 'This alert is from before pairing',
+                body: 'Replies now need this phone paired once. On the PC, run',
+                code: PAIR_CMD,
+                after: 'then answer a newer alert.'
+            };
+        }
+        if (kind === 'version') {
+            return { mark: 'bad', head: 'This link is from a newer chatq', body: 'This page cannot read it. Reply at the PC, or update chatq there and use a new alert.' };
+        }
+        if (kind === 'crypto') {
+            return { mark: 'bad', head: 'This browser cannot encrypt here', body: 'The reply is encrypted on the phone before it is sent. Open the link in Chrome, over https.' };
+        }
+        if (kind === 'storage') {
+            return { mark: 'bad', head: 'This browser will not keep the key', body: 'Pairing keeps a key on this phone, and this browser (a private tab?) will not store it. Open the pairing alert in Chrome, not in a private tab.' };
+        }
+        return { mark: 'bad', head: 'This link is incomplete', body: 'Part of it is missing or damaged, perhaps cut short when copied. Open it again from the chatq alert.' };
+    }
+    return {
+        MAX_PAYLOAD: MAX_PAYLOAD, WARN_AT: WARN_AT, ACTS: ACTS, LABEL_MAX: LABEL_MAX,
+        normEvent: normEvent, serverOf: serverOf, parseFragment: parseFragment, alertFragment: alertFragment,
+        storedRecord: storedRecord, parseStored: parseStored, codeText: codeText, whereTo: whereTo, READABLE: READABLE,
+        parsePhone: parsePhone, phoneRecord: phoneRecord, deviceLabel: deviceLabel, buttonsFor: buttonsFor,
+        payloadBytes: payloadBytes, counter: counter, heading: heading, hostOf: hostOf, postUrl: postUrl,
+        sentText: sentText, errorText: errorText, cardText: cardText
+    };
+})();
+/* chatq-logic-end */
+
+(function () {
+    'use strict';
+    var P = ChatqPage, C = ChatqCrypto;
+    // Per tab: the alert a reload shows once the fragment is gone from the
+    // bar, and what was typed for each alert. Neither holds a secret.
+    var STORE = 'chatq-reply', DRAFT = 'chatq-draft:';
+    // Per phone: where replies go and the phone's key, in IndexedDB as a
+    // CryptoKey that will not export. Storage belongs to the page's origin,
+    // and every <user>.github.io project site shares one: a script on any of
+    // them could sign with the key while it runs here, but it cannot read it
+    // out and take it along. reply.page can point at a copy on an origin of
+    // its own.
+    var DB = 'chatq', DB_STORE = 'phone', DB_KEY = 'phone';
+    // v2 kept the raw key in localStorage under this name. Such a record is
+    // moved into IndexedDB once and removed; a browser with no IndexedDB
+    // still keeps one there, and the page says the key is readable
+    var PHONE = 'chatq-phone';
+    // a browser whose IndexedDB never answers (it happens) falls back rather
+    // than leave the page blank
+    var DB_WAIT_MS = 3000;
+    // a second tap on Skip or Stop counts only this long after the first,
+    // so a double tap or a bouncing touch does not confirm itself
+    var CONFIRM_MS = 500;
+    var $ = function (id) { return document.getElementById(id); };
+    var mode = null, f = null, pf = null, phone = null, spec = null;
+    var busy = false, pending = null, sentText = null, reinit = false, pairing = null;
+    // each init counts up: one that finds a newer one started when its
+    // storage read comes back leaves the screen to that one
+    var gen = 0, armedAt = 0;
+
+    function sget(k) { try { return sessionStorage.getItem(k); } catch (e) { return null; } }
+    function sset(k, v) { try { sessionStorage.setItem(k, v); return true; } catch (e) { return false; } }
+    function sdel(k) { try { sessionStorage.removeItem(k); } catch (e) { } }
+    function stripBar() {
+        try { history.replaceState(null, '', location.pathname + location.search); } catch (e) { }
+    }
+
+    // The link in the bar, or the alert this tab kept. An alert's link is
+    // kept (only its own fields) and then taken out of the bar; a pairing
+    // link stays until the pairing is done, so a reload can still pair and
+    // its topic is never copied into this tab's storage.
+    function readLink() {
+        var h = location.hash.replace(/^#/, '');
+        if (h) {
+            var r = P.parseFragment(h);
+            if (r.ok && r.mode === 'alert') {
+                if (sset(STORE, P.alertFragment(r.f))) stripBar();
+            } else if (r.ok && r.mode === 'pair') {
+                sdel(STORE);
+            } else if (r.why === 'old') {
+                // a v1 link holds a key: out of the bar, and never kept
+                stripBar();
+            }
+            return r;
+        }
+        var kept = sget(STORE);
+        var s = kept ? P.parseFragment(kept) : null;
+        if (s && s.ok && s.mode === 'alert') return s;
+        if (kept) sdel(STORE);
+        return { ok: false, why: 'missing' };
+    }
+
+    // --- what the phone keeps ---------------------------------------------------
+
+    function lget(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+    function ldel(k) { try { localStorage.removeItem(k); } catch (e) { } }
+
+    // The database, or null: no IndexedDB, one that refuses (a private tab),
+    // or one that does not answer in time
+    function dbOpen() {
+        return new Promise(function (resolve) {
+            var done = false, req;
+            var finish = function (db) {
+                if (done) { if (db) try { db.close(); } catch (e) { } return; }
+                done = true;
+                resolve(db);
+            };
+            try {
+                if (typeof indexedDB === 'undefined' || !indexedDB) return finish(null);
+                req = indexedDB.open(DB, 1);
+            } catch (e) { return finish(null); }
+            setTimeout(function () { finish(null); }, DB_WAIT_MS);
+            req.onupgradeneeded = function () {
+                try { if (!req.result.objectStoreNames.contains(DB_STORE)) req.result.createObjectStore(DB_STORE); } catch (e) { }
+            };
+            req.onsuccess = function () { finish(req.result); };
+            req.onerror = function (e) { if (e && e.preventDefault) e.preventDefault(); finish(null); };
+            req.onblocked = function () { finish(null); };
+        });
+    }
+
+    // one request in one transaction: { ok, value }, ok only once the
+    // transaction has completed - a put is kept then, not before
+    async function dbDo(mode, make) {
+        var db = await dbOpen();
+        if (!db) return { ok: false };
+        return new Promise(function (resolve) {
+            var value, tx;
+            var end = function (ok) {
+                try { db.close(); } catch (e) { }
+                resolve({ ok: ok, value: value });
+            };
+            try {
+                tx = db.transaction(DB_STORE, mode);
+                var req = make(tx.objectStore(DB_STORE));
+                req.onsuccess = function () { value = req.result; };
+            } catch (e) { return end(false); }
+            // a failed request aborts the transaction (nothing here calls
+            // preventDefault on it, which would let it complete as if kept)
+            tx.oncomplete = function () { end(true); };
+            tx.onabort = function () { end(false); };
+        });
+    }
+
+    // D into IndexedDB as a key that will not export; the phone object on
+    // success, null when the database would not take it
+    async function keepInDb(to, d, at) {
+        var key = await C.phoneKey(d);
+        var rec = P.storedRecord(to, key, at, await C.confirmCode(key));
+        var r = await dbDo('readwrite', function (st) { return st.put(rec, DB_KEY); });
+        if (!r.ok) return null;
+        // the record in IndexedDB is the one: a v2 copy left beside it would
+        // be the raw key for nothing
+        ldel(PHONE);
+        return P.parseStored(rec);
+    }
+
+    // a phone paired where there is no IndexedDB: the raw key it has in
+    // localStorage, used as it is
+    async function readable(v2) {
+        return {
+            server: v2.server, topic: v2.topic, key: v2.d, at: v2.at, host: v2.host,
+            code: await C.confirmCode(v2.d), readable: true
+        };
+    }
+
+    // The phone's pairing, or null. A v2 record in localStorage is newer than
+    // anything in IndexedDB (a pairing into IndexedDB removes it), so it wins,
+    // and moves in; if IndexedDB will not take it, it is used where it is.
+    async function loadPhone() {
+        var got = await dbDo('readonly', function (st) { return st.get(DB_KEY); });
+        var v2 = P.parsePhone(lget(PHONE));
+        if (!v2) return got.ok ? P.parseStored(got.value) : null;
+        if (!(window.crypto && crypto.subtle)) return null;
+        if (got.ok) {
+            var moved = null;
+            try { moved = await keepInDb({ server: v2.server, topic: v2.topic, host: v2.host }, v2.d, v2.at); } catch (e) { }
+            if (moved) {
+                v2.d.fill(0);
+                return moved;
+            }
+        }
+        return readable(v2);
+    }
+
+    async function init() {
+        var my = ++gen;
+        mode = f = pf = spec = pending = sentText = pairing = null;
+        busy = false; reinit = false;
+        var r = readLink();
+        var ph = null;
+        try { ph = await loadPhone(); } catch (e) { }
+        if (my !== gen) return;
+        phone = ph;
+        if (r.ok && !(window.crypto && crypto.subtle && window.TextEncoder)) r = { ok: false, why: 'crypto' };
+        if (!r.ok) {
+            if (r.why === 'missing') card(phone ? 'home' : 'unpaired', { phone: phone, when: when(phone) });
+            else card(r.why, {});
+            return;
+        }
+        if (r.mode === 'pair') {
+            pf = r.f;
+            if (phone && phone.server === pf.server && phone.topic === pf.topic) {
+                // this very pairing is done: sending it again would hand the
+                // PC a key it no longer listens for, and leave this phone
+                // holding one the PC never saw
+                card('same', { pf: pf, phone: phone, when: when(phone) });
+                return;
+            }
+            mode = 'pair';
+            card(phone ? 'replace' : 'pair', { pf: pf, phone: phone });
+            return;
+        }
+        f = r.f;
+        if (!phone) {
+            card('unpaired', { f: f });
+            return;
+        }
+        mode = 'alert';
+        spec = P.buttonsFor(f.event, f.provider, f.jobless, f.job);
+        render();
+    }
+
+    function when(ph) {
+        if (!ph || !ph.at) return '';
+        var d = new Date(ph.at), p = function (n) { return ('0' + n).slice(-2); };
+        return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+    }
+
+    // --- the cards ------------------------------------------------------------
+
+    function card(kind, ctx) {
+        var t = P.cardText(kind, ctx);
+        $('app').hidden = true;
+        $('card').hidden = false;
+        $('card').setAttribute('data-kind', kind);
+        $('mark').setAttribute('data-mark', t.mark || 'bad');
+        var put = function (id, text) { $(id).textContent = text || ''; $(id).hidden = !text; };
+        put('kicker', t.kicker);
+        $('cardHead').textContent = t.head;
+        put('cardBig', t.big);
+        put('cardBody', t.body);
+        put('cardCode', t.code);
+        put('cardAfter', t.after);
+        put('cardWarn', t.warn);
+        put('cardFine', t.fine);
+        $('cardStatus').hidden = true;
+        var btn = $('pair');
+        btn.hidden = !t.button;
+        btn.disabled = false;
+        btn.textContent = t.button || '';
+        btn.setAttribute('data-label', t.button || '');
+        btn.setAttribute('data-confirm', t.confirm || '');
+        btn.removeAttribute('data-armed');
+        document.title = t.head + ' - chatq';
+    }
+
+    function cardStatus(kind, text) {
+        $('cardStatus').setAttribute('data-kind', kind);
+        $('cardStatusText').textContent = text;
+        $('cardStatus').hidden = false;
+    }
+
+    // somewhere to keep the key: IndexedDB, else localStorage
+    async function canKeep() {
+        if ((await dbDo('readonly', function (st) { return st.get(DB_KEY); })).ok) return true;
+        try {
+            localStorage.setItem(PHONE + '-probe', '1');
+            localStorage.removeItem(PHONE + '-probe');
+            return true;
+        } catch (e) { return false; }
+    }
+
+    // Replacing a pairing the phone has takes a second, deliberate tap (as
+    // Skip and Stop do): one tap on a link someone made up would send every
+    // later reply to them
+    function pairArmed(btn) {
+        var ask = btn.getAttribute('data-confirm');
+        if (!ask) return true;
+        if (btn.getAttribute('data-armed') === '1') {
+            if (Date.now() - armedAt < CONFIRM_MS) return false;
+            btn.removeAttribute('data-armed');
+            return true;
+        }
+        btn.setAttribute('data-armed', '1');
+        armedAt = Date.now();
+        btn.textContent = ask;
+        setTimeout(function () {
+            if (btn.getAttribute('data-armed') !== '1' || busy) return;
+            btn.removeAttribute('data-armed');
+            btn.textContent = btn.getAttribute('data-label');
+        }, 5000);
+        return false;
+    }
+
+    // The tap that pairs. The key is kept only once the POST has gone
+    // through: kept before, a failed send would leave the phone holding a key
+    // the PC never saw. Try again sends the very same sealed message (the
+    // same key), because the first one may have arrived after all - a new key
+    // then would be one the PC does not have. Once kept, the raw bytes are
+    // dropped: IndexedDB holds a key that signs and never exports.
+    async function pairNow() {
+        if (busy || mode !== 'pair') return;
+        var btn = $('pair');
+        if (!pairing && !pairArmed(btn)) return;
+        busy = true;
+        btn.disabled = true;
+        btn.textContent = 'Pairing\u2026';
+        cardStatus('wait', 'Sending\u2026');
+        if (!pairing) {
+            // nowhere to keep the key: said before anything is sent
+            if (!(await canKeep())) {
+                busy = false;
+                card('storage', {});
+                return settle();
+            }
+            try {
+                pairing = await C.pair(pf.n, pf.e, pf.pid, P.deviceLabel(navigator.userAgent));
+            } catch (e) {
+                busy = false;
+                btn.disabled = false;
+                btn.textContent = btn.getAttribute('data-label');
+                cardStatus('bad', 'This browser could not seal the key.');
+                return settle();
+            }
+        }
+        var r = await post(P.postUrl(pf), pairing.message);
+        if (!r.ok) {
+            busy = false;
+            btn.disabled = false;
+            btn.textContent = 'Try again';
+            cardStatus('bad', P.errorText(r, P.hostOf(pf.server)));
+            return settle();
+        }
+        var at = Date.now(), kept = null;
+        try { kept = await keepInDb(pf, pairing.d, at); } catch (e) { }
+        if (!kept) {
+            // no IndexedDB here: the v2 way, and the page says what it means
+            try {
+                localStorage.setItem(PHONE, P.phoneRecord(pf, pairing.d, at));
+                kept = await readable(P.parsePhone(lget(PHONE)));
+            } catch (e) { kept = null; }
+        }
+        pairing.d.fill(0);
+        pairing = null;
+        busy = false;
+        if (!kept) {
+            card('storage', {});
+            return settle();
+        }
+        phone = kept;
+        mode = null;
+        // the pairing link is spent; a newer link that came meanwhile stays
+        if (!reinit) stripBar();
+        card('paired', { pf: pf, phone: phone });
+        cardStatus('ok', 'Sent - paired once the PC confirms the code.');
+        settle();
+    }
+
+    // --- the reply form -------------------------------------------------------
+
+    function draftKey() { return DRAFT + f.aid; }
+    // what was typed for this alert, and the sealed prompt not yet known to
+    // have arrived (ciphertext only), so a reload or a discarded tab loses
+    // neither
+    function saveDraft() {
+        if (mode !== 'alert' || !spec.text) return;
+        var sealed = pending && pending.b.act === 'prompt' ? { text: pending.text, message: pending.message } : null;
+        sset(draftKey(), JSON.stringify({ text: $('text').value, sealed: sealed }));
+    }
+    function readDraft() {
+        try { var d = JSON.parse(sget(draftKey()) || 'null'); return d && typeof d.text === 'string' ? d : null; } catch (e) { return null; }
+    }
+
+    function render() {
+        var head = P.heading(f);
+        $('card').hidden = true;
+        $('app').hidden = false;
+        document.title = head + ' - chatq';
+        $('title').textContent = head;
+        var ev = $('ev');
+        ev.textContent = f.event || 'alert';
+        ev.setAttribute('data-ev', f.event);
+        var meta = [];
+        if (f.provider) meta.push(f.provider);
+        if (f.job === 'live') meta.push('a chat you run');
+        else if (f.job && P.normEvent(f.job) !== f.event) meta.push('job ' + f.job);
+        $('meta').textContent = meta.join(' \u00b7 ');
+        $('compose').hidden = !spec.text;
+        $('hint').textContent = spec.hint;
+        $('about').textContent = spec.about;
+        $('about').hidden = !spec.about;
+        $('fine').textContent = 'To ' + (phone.host ? 'chatq on ' + phone.host : 'your PC') + '. Encrypted on this phone; ' + P.hostOf(phone.server) + ' only passes it on.';
+        $('status').hidden = true;
+        $('again').hidden = true;
+        $('log').textContent = '';
+        var ta = $('text');
+        ta.placeholder = spec.placeholder;
+        ta.value = '';
+        if (spec.text) {
+            var d = readDraft();
+            if (d) {
+                ta.value = d.text;
+                if (d.sealed && typeof d.sealed.message === 'string' && d.sealed.text === d.text.trim()) {
+                    pending = { message: d.sealed.message, b: spec.send, btn: $('send'), text: d.sealed.text };
+                }
+            }
+        }
+        var more = $('more');
+        more.textContent = '';
+        spec.more.forEach(function (b) {
+            var btn = document.createElement('button');
+            btn.type = 'button';
+            btn.setAttribute('data-act', b.act);
+            btn.setAttribute('data-label', b.label);
+            btn.textContent = b.label;
+            btn.addEventListener('click', function () { press(b, btn); });
+            more.appendChild(btn);
+        });
+        more.hidden = !spec.more.length;
+        var send = $('send');
+        send.setAttribute('data-act', spec.send.act);
+        send.setAttribute('data-label', spec.send.label);
+        if (pending) show('bad', 'Not known to have arrived. Try again sends the very same message; the PC drops a second copy.', true);
+        refresh();
+        if (spec.text) {
+            try { ta.focus({ preventScroll: true }); } catch (e) { ta.focus(); }
+        }
+    }
+
+    // a failed send of this same act and text is waiting to go again
+    function retrying(act, text) {
+        return !!pending && pending.b.act === act && pending.text === text;
+    }
+
+    // the counter, and the big button's label and state, from the text now
+    function refresh() {
+        if (!spec) return;
+        var send = $('send');
+        if (!spec.text) {
+            if (!busy) send.textContent = retrying(spec.send.act, '') ? 'Try again' : spec.send.label;
+            send.disabled = busy;
+            return;
+        }
+        var ta = $('text');
+        var text = ta.value.trim();
+        var c = P.counter(text);
+        var count = $('count');
+        count.textContent = c.label;
+        count.setAttribute('data-state', c.state);
+        // what was just sent stays readable, greyed, until it is changed
+        var same = sentText !== null && text === sentText;
+        ta.classList.toggle('sent', same);
+        if (!busy) send.textContent = retrying('prompt', text) ? 'Try again' : same ? 'Send again' : spec.send.label;
+        send.disabled = busy || !text || c.state === 'over';
+    }
+
+    function buttons() {
+        return Array.prototype.slice.call($('more').querySelectorAll('button')).concat([$('send')]);
+    }
+
+    function setBusy(on, which) {
+        busy = on;
+        buttons().forEach(function (b) {
+            b.disabled = on;
+            if (on && b === which) b.textContent = 'Sending\u2026';
+            if (!on && b.id !== 'send') b.textContent = b.getAttribute('data-label');
+        });
+        $('app').setAttribute('aria-busy', on ? 'true' : 'false');
+        refresh();
+    }
+
+    // Skip and Stop cannot be taken back: the first tap asks, the second
+    // acts - but only a deliberate second tap, not one within CONFIRM_MS
+    function armed(b, btn) {
+        if (!b.confirm) return true;
+        if (btn.getAttribute('data-armed') === '1') {
+            if (Date.now() - (btn._armedAt || 0) < CONFIRM_MS) return false;
+            clearTimeout(btn._disarm);
+            btn.removeAttribute('data-armed');
+            return true;
+        }
+        btn.setAttribute('data-armed', '1');
+        btn._armedAt = Date.now();
+        btn.textContent = b.confirm;
+        btn._disarm = setTimeout(function () {
+            btn.removeAttribute('data-armed');
+            if (!busy) btn.textContent = b.label;
+        }, 3000);
+        return false;
+    }
+
+    function show(kind, text, canRetry) {
+        var s = $('status');
+        s.setAttribute('data-kind', kind);
+        $('statusText').textContent = text;
+        $('again').hidden = !canRetry;
+        s.hidden = false;
+    }
+
+    async function press(b, btn) {
+        if (busy || mode !== 'alert') return;
+        if (!armed(b, btn)) return;
+        var text = b.act === 'prompt' ? $('text').value.trim() : '';
+        if (b.act === 'prompt' && (!text || P.counter(text).state === 'over')) return;
+        // The same act and text as a send that failed: the same sealed
+        // message again, not a new one. If the first did arrive after all,
+        // its nonce is spent and the watcher drops the copy; a new seal would
+        // get past that and run the prompt twice.
+        if (retrying(b.act, text)) {
+            pending.btn = btn;
+            return deliver();
+        }
+        setBusy(true, btn);
+        var sealed;
+        try {
+            sealed = await C.seal(await C.alertKey(phone.key, f.aid), f.aid, b.act, text);
+        } catch (e) {
+            setBusy(false);
+            show('bad', P.errorText({ kind: 'crypto' }, P.hostOf(phone.server)), false);
+            return settle();
+        }
+        pending = { message: sealed.message, b: b, btn: btn, text: text };
+        saveDraft();
+        return deliver();
+    }
+
+    async function deliver() {
+        var p = pending;
+        if (!p) return;
+        setBusy(true, p.btn);
+        show('wait', 'Sending\u2026', false);
+        var r = await post(P.postUrl(phone), p.message);
+        setBusy(false);
+        if (!r.ok) {
+            show('bad', P.errorText(r, P.hostOf(phone.server)), true);
+            refresh();
+            return settle();
+        }
+        pending = null;
+        if (p.b.act === 'prompt') {
+            sentText = p.text;
+            sdel(draftKey());
+        } else {
+            saveDraft();
+        }
+        log(p);
+        show('ok', P.sentText(p.b), false);
+        refresh();
+        // the keyboard down, so the confirmation is what shows
+        if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+        settle();
+    }
+
+    // A new link that came while a POST was out waits for it: resetting then
+    // would lose whether the message arrived, and a Try again with it
+    function settle() {
+        if (reinit && !busy) init();
+    }
+
+    // Content-Type text/plain and no other header: a CORS simple request, so
+    // no preflight - one round trip on a phone's network
+    function post(url, body) {
+        var ctl = typeof AbortController === 'function' ? new AbortController() : null;
+        var timer = setTimeout(function () { if (ctl) ctl.abort(); }, 15000);
+        return fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'text/plain' },
+            body: body,
+            mode: 'cors',
+            credentials: 'omit',
+            cache: 'no-store',
+            referrerPolicy: 'no-referrer',
+            signal: ctl ? ctl.signal : undefined
+        }).then(function (res) {
+            return res.ok ? { ok: true } : { ok: false, kind: 'http', status: res.status };
+        }, function (e) {
+            return { ok: false, kind: e && e.name === 'AbortError' ? 'timeout' : 'network' };
+        }).then(function (r) {
+            clearTimeout(timer);
+            return r;
+        });
+    }
+
+    function log(p) {
+        var now = new Date();
+        var hhmm = ('0' + now.getHours()).slice(-2) + ':' + ('0' + now.getMinutes()).slice(-2);
+        var what = p.b.act === 'prompt' ? '"' + (p.text.length > 60 ? p.text.slice(0, 60) + '\u2026' : p.text) + '"' : p.b.label;
+        var li = document.createElement('li');
+        li.textContent = hhmm + '  sent ' + what;
+        var ol = $('log');
+        ol.insertBefore(li, ol.firstChild);
+        while (ol.children.length > 3) ol.removeChild(ol.lastChild);
+    }
+
+    $('send').addEventListener('click', function () { if (spec) press(spec.send, $('send')); });
+    $('again').addEventListener('click', function () { if (!busy) deliver(); });
+    $('pair').addEventListener('click', function () { pairNow(); });
+    $('text').addEventListener('input', function () {
+        // an edited text is a new message: Try again would send the old one
+        if (pending && pending.b.act === 'prompt' && pending.text !== $('text').value.trim()) {
+            pending = null;
+            $('again').hidden = true;
+        }
+        saveDraft();
+        refresh();
+    });
+    $('text').addEventListener('keydown', function (e) {
+        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && spec && !$('send').disabled) {
+            e.preventDefault();
+            press(spec.send, $('send'));
+        }
+    });
+    // a second alert's link opened in this same tab changes only the fragment
+    window.addEventListener('hashchange', function () {
+        if (location.hash.length <= 1) return;
+        if (busy) { reinit = true; return; }
+        init();
+    });
+    init();
+})();
+</script>
+</body>
+</html>

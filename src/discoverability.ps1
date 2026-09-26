@@ -300,6 +300,7 @@ function chat {
     Write-Host '  chatqlist [-Board]     what is queued, when it sends, what ran' -ForegroundColor Cyan
     Write-Host '  chatqrm / chatqrun     drop a job / requeue one, or -Now' -ForegroundColor Cyan
     Write-Host '  chatqlog / chatqnotify what a run did / phone alerts' -ForegroundColor Cyan
+    Write-Host '  chatqnotify -Setup     phone alerts and replies from the phone, in a window' -ForegroundColor Cyan
     Write-Host ''
     Write-Host '  see what is running' -ForegroundColor DarkGray
     Write-Host '  chatoverlay            every open chat and live usage, always on top' -ForegroundColor Cyan

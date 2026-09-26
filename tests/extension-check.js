@@ -1368,7 +1368,7 @@ check('an old chatManagerReload setting is read where the new one is unset, and 
         bj._svgImages('![a](x/demo.svg) ![b](y.png) [c](z.svg) <img alt="w" src="w.SVG">').join() === 'x/demo.svg,w.SVG');
     const realLoader = fs.readFileSync(path.join(__dirname, '..', su.LOADER), 'latin1');
     const realParts = bj._partsOf(realLoader);
-    check('build: the real loader lists 14 parts, each one in src/', realParts.length === 14 &&
+    check('build: the real loader lists 16 parts, each one in src/', realParts.length === 16 &&
         realParts.every(p => fs.existsSync(path.join(__dirname, '..', 'src', p + '.ps1'))), realParts.join());
     const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'extension', 'package.json'), 'utf8'));
     check('build: the extension\'s version is the script\'s', pkg.version === su._readVersion(realLoader), pkg.version + ' / ' + su._readVersion(realLoader));
@@ -1569,6 +1569,61 @@ check('an old chatManagerReload setting is read where the new one is unset, and 
     const asPkg = (pkg.contributes.commands || []).find(c => c.command === 'chatManager.overlayAutoStart') || {};
     check('autostart: in the palette as Chat Manager: Overlay: start by itself...', asPkg.title === 'Overlay: start by itself...' && asPkg.category === 'Chat Manager',
         JSON.stringify(asPkg));
+
+    // Chat Manager: Phone alerts... - chatqnotify -Setup through the loader,
+    // as a terminal opens the window; the script's one "phone setup" line
+    // decides what is said. Windows only: elsewhere it only says so.
+    // PowerShell stood in for, answering as Start-ChatqPhoneSetup prints.
+    const phRan = [];
+    let phSays = '';
+    su._runPs = async (exe, loader, cmd) => {
+        phRan.push(exe + ':' + cmd + ':' + loader);
+        if (phSays === 'throw') throw new Error('boom');
+        return { ok: true, stdout: 'WARNING: x\r\n' + phSays + '\r\n' };
+    };
+    const phRun = async (x) => {
+        phRan.length = 0; asSaid.length = 0;
+        phSays = x.says === undefined ? '  phone setup opens in its own window' : x.says;
+        ext._overlayIo.platform = () => x.platform || 'win32';
+        return ext._phoneAlerts();
+    };
+    logged.length = 0;
+    const ph1 = await phRun({});
+    check('phone alerts: chatqnotify -Setup, once, through the tool folder\'s loader; a window that came is the answer - nothing said, logged',
+        ph1 === 'phone setup opens in its own window' && phRan.length === 1 && phRan[0] === 'PS:chatqnotify -Setup *>&1 | Out-String -Width 200:' + ldr &&
+        asSaid.length === 0 && logged.includes('phone alerts: phone setup opens in its own window'),
+        ph1 + ' ' + phRan.join(' / ') + ' | ' + asSaid.join(' | '));
+    const ph2 = await phRun({ says: '  phone setup is already open' });
+    const ph2Said = asSaid.join();
+    const ph3 = await phRun({ says: '  phone setup did not open: WPF would not load' });
+    const ph3Said = asSaid.join();
+    const ph4 = await phRun({ says: '' });
+    const ph4Said = asSaid.join();
+    let ph5, phThrew = false;
+    try { ph5 = await phRun({ says: 'throw' }); } catch (e) { phThrew = true; }
+    const ph5Said = asSaid.join();
+    check('phone alerts: already open - said; did not open - said with the script\'s reason; no word, or PowerShell failing - failed, said, never thrown',
+        ph2 === 'already open' && /^The phone alerts window is already open/.test(ph2Said) &&
+        ph3 === 'failed - phone setup did not open: WPF would not load' && /^warn:The phone alerts window: phone setup did not open: WPF would not load\./.test(ph3Said) &&
+        ph4 === 'failed - no word from the script' && /^warn:.*did not open\./.test(ph4Said) &&
+        /^failed - boom$/.test(ph5) && !phThrew && /^warn:/.test(ph5Said),
+        [ph2, ph3, ph4, ph5].join(' / ') + ' | ' + [ph2Said, ph3Said, ph4Said, ph5Said].join(' | '));
+    const ph6 = await phRun({ platform: 'darwin' });
+    const ph6Ran = phRan.length, ph6Said = asSaid.join();
+    const ph7 = await phRun({ platform: 'linux' });
+    const ph7Ran = phRan.length;
+    cfgVals['chatManager.folder'] = path.join(sbx, 'no-loader');
+    const ph8 = await phRun({});
+    cfgVals['chatManager.folder'] = ov;
+    check('phone alerts: off Windows no PowerShell, only that the window is Windows-only and the terminal command; no loader - said, no PowerShell',
+        ph6 === 'Windows only' && ph7 === 'Windows only' && ph6Ran === 0 && ph7Ran === 0 && /Windows-only.*chatqnotify -Setup/.test(ph6Said) &&
+        !/^warn:/.test(ph6Said) && ph8 === 'no loader in ' + path.join(sbx, 'no-loader') && phRan.length === 0 &&
+        /^warn:.*not in .*Install terminal commands/.test(asSaid.join()),
+        ph6 + ' / ' + ph7 + ' / ' + ph8 + ' | ' + ph6Said + ' | ' + asSaid.join());
+    const phCmds = pkg.contributes.commands || [];
+    const phPkg = phCmds[phCmds.length - 1] || {};
+    check('phone alerts: in the palette as Chat Manager: Phone alerts..., the last command',
+        phPkg.command === 'chatManager.phoneAlerts' && phPkg.title === 'Phone alerts...' && phPkg.category === 'Chat Manager', JSON.stringify(phPkg));
     su._runPs = ovRunPs;
     ext._overlayIo.platform = () => 'win32';
     delete cfgVals['chatManager.folder'];
@@ -1630,7 +1685,7 @@ check('an old chatManagerReload setting is read where the new one is unset, and 
     check('without it, both request files are watched, in the tool folder', watched.length === 2 &&
         watched[0] === path.join(tool, 'data', 'reload-request') && watched[1] === path.join(tool, 'data', 'open-request'), watched.join());
     check('and the palette has every command - the autostart switch among them',
-        ['chatManager.installTerminal', 'chatManager.showLog', 'chatManager.openChat', 'chatManager.overlayAutoStart'].every(c => registered.includes(c)),
+        ['chatManager.installTerminal', 'chatManager.showLog', 'chatManager.openChat', 'chatManager.overlayAutoStart', 'chatManager.phoneAlerts'].every(c => registered.includes(c)),
         registered.join());
     await settle();
     check('activation, the loader in place: the overlay started once, from the tool folder\'s loader - however often it runs',

@@ -51,6 +51,14 @@ $script:ChatqAlertJob = $null      # "#n" of the job an alert is about, for the 
 # seams the tests set: no real toast, no real network, no real idle clock
 $script:ChatqToastSeam = $null
 $script:ChatqNtfySeam = $null
+# Join's push ($url -> $null or the error), the reply topic's poll ($url ->
+# the NDJSON text) and Join's device list ($url -> the JSON text)
+$script:ChatqJoinSeam = $null
+$script:ChatqReplyPollSeam = $null
+$script:ChatqJoinDevicesSeam = $null
+# a live chat's alert (Send-ChatqLiveAlert), handed here instead of to the
+# hidden process that sends it
+$script:ChatqLiveSendSeam = $null
 $script:ChatqIdleSeam = $null
 $script:ChatqHookTimeoutSec = $null
 $script:ChatqClipboardSeam = $null
