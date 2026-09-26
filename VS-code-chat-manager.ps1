@@ -241,7 +241,7 @@ FILES   everything in data/ beside this script, nothing anywhere else
 # handing back what you already had. extension/package.json carries the same
 # version: the extension installs this copy by it, and extension/build.js
 # refuses to pack the two apart.
-$script:ChatVersion = '0.7.1'
+$script:ChatVersion = '0.7.2'
 
 # The tool's folder and this file, read here once and never inside a function:
 # data/ sits in that folder, and the profile line, the watcher and the overlay
@@ -317,12 +317,12 @@ elseif (-not $env:CHATQ_WATCHER -and -not $env:CHATQ_OVERLAY -and -not $env:CLAU
             }
         }
         catch {}
-        # chatoverlay -AutoStart on: the same way back after a reboot, and only
-        # when asked for - one file read when it is not
+        # The overlay, the same way back after a reboot: on by default on
+        # Windows, since a chat clicked in it opens as a tab; chatoverlay
+        # -AutoStart off keeps it to when it is asked for. One file read and
+        # a lock check when it is running already.
         try {
-            if ((Test-ChatOverlayAutoStart) -and -not (Test-ChatOverlayAlive) -and (Start-ChatOverlayProcess)) {
-                Write-Host '  chatoverlay started' -ForegroundColor DarkGray
-            }
+            if ((Start-ChatOverlayAuto) -eq 'started') { Write-Host '  chatoverlay started' -ForegroundColor DarkGray }
         }
         catch {}
     }

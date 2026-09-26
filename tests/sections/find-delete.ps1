@@ -111,6 +111,10 @@ $sb2 = Join-Path $sb 'strict2'
 $null = New-Item -ItemType Directory -Path $sb2 -Force
 Copy-Item -LiteralPath (Join-Path $root 'VS-code-chat-manager.ps1') -Destination $sb2
 Copy-Item -LiteralPath (Join-Path $root 'src') -Destination $sb2 -Recurse
+# the overlay starts with a shell by default now: off here, or this probe
+# would put a real panel on the screen - the shell-start path still runs
+$null = New-Item -ItemType Directory -Path (Join-Path $sb2 'data') -Force
+[System.IO.File]::WriteAllText((Join-Path $sb2 'data\config.json'), '{"overlay":{"autoStart":false}}', $utf8)
 $probe2 = "Remove-Item env:CHATQ_WATCHER -EA SilentlyContinue; Set-StrictMode -Version Latest; `$ErrorActionPreference = 'Stop'; try { . '$(Join-Path $sb2 'VS-code-chat-manager.ps1')'; Set-Location -LiteralPath '$projA'; chatfind Doomed *> `$null; chatindex *> `$null; `$r = & `$script:ChatTitleCompleter 'chatrm' 'Target' 'Pars' `$null @{}; chatqlist *> `$null; chat *> `$null; chatoverlay -Print *> `$null; 'ok' } catch { 'threw: ' + `$_.Exception.Message + ' ' + `$_.InvocationInfo.PositionMessage }"
 $strict2 = (& $exe -NoProfile -NonInteractive -Command $probe2 | Select-Object -Last 1)
 Check 'loads and runs under StrictMode as a normal shell does' ($strict2 -eq 'ok') $strict2

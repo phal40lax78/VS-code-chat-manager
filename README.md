@@ -18,8 +18,8 @@ Codex and GitHub Copilot Chat — from PowerShell.
 - **Queue prompts while the usage limit is hit.** At the reset each chat is resumed in turn, sent its prompt, and run to the end.
 - **Waits out `API Error: 529 Overloaded`** by watching status.claude.com, and resumes as soon as Claude Code is back.
 - **Tells you how it went:** a desktop toast, your phone through Join or ntfy, or a command of your own.
-- **Shows every running chat at a glance:** `chatoverlay` keeps a small panel on top — each open chat's project, title, newest prompt and whether it waits on you, with usage live at the top.
-- **Does all of it in a window:** `chatconsole` — pick a chat, write to it, drop files on it, send now or queue it; continue the chats the limit cut off; start new ones; run the queue.
+- **Shows every running chat at a glance:** `chatoverlay` keeps a small panel on top — each open chat's project, title, newest prompt and whether it waits on you, with usage live at the top. On Windows it starts by itself, and a click on a chat opens it as a tab in VS Code.
+- **Does all of it in the panel's place:** `chatconsole` turns the panel into a console — pick a chat, write to it, drop files on it, send now or queue it; continue the chats the limit cut off; start new ones; run the queue.
 
 One script and the `src/` folder it loads, no modules, nothing to build. It was two tools — chatrm and chatq — and is now one, with one index and one install.
 
@@ -112,7 +112,7 @@ scripts there are another version than itself.
 | `chatqlog <n> [-Raw]` | what a run did |
 | `chatqnotify` | desktop, phone and command alerts |
 | `chatoverlay [-Stop] [-Collapse] [-Refresh] [-Console] [-Theme dark\|light\|system] [-Print]` | every open chat, the queue and live usage in a panel that stays on top; `-Console` opens the console |
-| `chatconsole` | all of the above in a window: write, send now, queue, continue, new chats (Windows) |
+| `chatconsole` | all of the above in the panel, grown into a console: write, send now, queue, continue, new chats; Esc for the panel again (Windows) |
 | `chatproviders` / `chatindex` | which tools were found / rebuild the index |
 | `chatinstall` / `chatuninstall [-All]` | add to, or drop from, your profile |
 | `chat` | cheat sheet |
@@ -214,10 +214,9 @@ with it. Every delete ends by saying whether now is a safe moment —
 `all project chat is idle - safe to reload now` — and `-WaitForIdle` blocks until
 it is. The window's Reload offer says the same (see
 [the extension](#chats-open-in-vs-code-and-the-extension)).
-**Developer: Reload Webviews**, which shows a queued run's chat fresh, is
-lighter - terminals, editors and other extensions keep running - but it
-restarts the window's Claude chats too, so it cuts a working one off just
-the same. It waits on the same judgement.
+Showing a queued run's chat fresh is no reload: the chat opens in an editor
+tab of its own, and nothing else in the window restarts. It still acts
+without asking only on the same judgement.
 
 What counts as a chat still working, in this project:
 - **Claude says so.** `claude agents --json` lists every chat open in a window as
@@ -416,7 +415,7 @@ reply — passes through the push service's servers.
 ```powershell
 chatoverlay                 # start it (or show it again)
 chatoverlay -Stop
-chatoverlay -AutoStart on   # back with every new shell, as the watcher comes back
+chatoverlay -AutoStart off  # not with every shell and VS Code window (on Windows it is)
 chatoverlay -Print          # the same, once, in this console
 ```
 
@@ -438,7 +437,24 @@ A small panel in the top-right corner that stays above other windows:
   to the top; green is working; grey is idle. A chat open in two windows is one
   row. A slash command counts as the newest thing sent. Claude Code writes
   `/compact` down only once it ends, so while it runs the row says a command
-  is running rather than showing the prompt before it.
+  is running rather than showing the prompt before it. After the dot, a
+  small mark says where the chat runs: a window outline for a VS Code
+  panel, `>_` for a terminal's `claude`.
+- **A blue dot for a turn you have not seen,** on Windows only. A chat
+  that went from working or waiting to idle while you were elsewhere gets
+  a small blue dot just before its state, and the collapsed line and the
+  tray dot's tooltip count them (`2 new`). A chat whose window was in
+  front as it finished gets none: any window of its VS Code counts, or for
+  a terminal's `claude` any tab of the terminal that draws it. A console
+  Windows handed off to Windows Terminal (its default-terminal setting)
+  cannot be matched, so that chat gets the dot even with its tab in front.
+  The chip clears the dot once its open sent the window its request -
+  `ended 0`, `25`, `40` or `41` in `overlay.log`; a chat turned away (one
+  at work, `10`, a terminal's, or one a queued prompt is running in), an
+  open that failed before the request, or one with no answer in 60
+  seconds leaves it. A new turn, or its session ending, clears it too. The
+  overlay keeps it in memory only, so a restart clears every dot, and
+  reading the chat in VS Code clears none.
 - **Chats the limit cut off,** in orange, just under those waiting on you:
   `cut off - resets 13:00`, or `529 - waits for Claude`. One no window has
   open gets a row of its own: from the transcripts of the last week while
@@ -448,15 +464,44 @@ A small panel in the top-right corner that stays above other windows:
 - **The queue.** A queued prompt rides on its chat's row (`#3 sends 13:01`), or
   has a purple row of its own when that chat is not open; blue while it runs.
   Prompts queued with no watcher running are called out.
+- **Recent,** under all of those, faint: the newest Claude chats not open,
+  one line each - project, title, how long ago - five by default. Each
+  opens as a tab from its chip, as an open row does. A side transcript, an
+  empty one, and a chat whose folder is gone are never listed - a folder
+  is looked for again every 3 minutes, and one on a network share or a
+  mapped drive is never looked for, so it is listed - and lines the screen
+  cannot hold are left off. The list is built again at most once
+  a minute, and at once when a chat closes. `chatoverlay -Print` lists them
+  too, under the rows, and puts `>_` before a terminal's chat.
 
-**It stays out of the way.** It never takes focus, and clicks go through it.
+**It starts by itself** on Windows: with every new shell, as the watcher
+comes back after a reboot, and when a VS Code window starts - the extension
+starts it as the window opens, or on a first install the moment it has
+copied the scripts, without waiting on its setup's profile question. One
+already running is left alone.
+`chatoverlay -AutoStart off` keeps it to when you start it, and so does
+**Chat Manager: Overlay: start by itself...** in VS Code's command palette
+(On or Off; Off also closes a running overlay), with no terminal needed.
+Both set `overlay.autoStart` in `data/config.json`. On macOS it starts that
+way only after `chatoverlay -AutoStart on`.
+
+**It stays out of the way.** As a panel it never takes focus, and clicks go
+through it; only while it is the console (below) does it take the keyboard.
 Rest the pointer on it for a moment and a row of buttons appears on its top
 edge, outside the panel, flush with its top-right corner - or under the
-panel when it sits too near the top of the screen for them. Resting on that
+panel when it sits too near the top of the screen for them. They keep that
+side only while they are up, so a panel dragged down from the top has them
+on its top edge again the next time they come. Resting on that
 spot itself does it too, so you can point straight at the buttons. A pointer
 just passing over on its way to the window underneath brings up nothing. Left to
 right, with × at the corner as on any window:
 - **the grip** (six dots): hold it and drag to move the panel;
+- **resize** (a two-way diagonal arrow): hold it and drag - left to widen,
+  right to narrow, down for a row more for each row's height, up for one
+  fewer. Down never leaves fewer rows than were set, even with fewer chats
+  open. The panel's right edge stays where it is, under the buttons.
+  Collapsed, only the width changes. The size is kept in `config.json` as
+  you let go, and the panel's place in `overlay-state.json`;
 - **collapse** (a chevron): folds the panel to one line - how many chats wait,
   work or sit idle, and Claude's usage - and back;
 - **refresh** (a circular arrow): asks Claude and Copilot for usage now. It
@@ -464,27 +509,59 @@ right, with × at the corner as on any window:
   `checked 22:22:01` - or why it did not ask. Codex has nothing to ask: its
   figure is what Codex wrote on its last run (`last run Mar 13`), so it moves
   only when Codex runs;
-- **console** (a speech bubble): opens [the console](#the-console);
-- **settings** (two sliders): a box with opacity on a slider, the theme as
-  Dark, Light or System (System follows Windows' own light or dark mode), and
-  usage as Lines or Bars;
+- **console** (a speech bubble): turns the panel into
+  [the console](#the-console), in its place; Esc brings the panel back;
+- **settings** (two sliders): a box of six rows - opacity on a slider;
+  **Width** (260-800) and **Rows** (1-30) side by side on sliders; the
+  theme as Dark, Light or System (System follows Windows' own light or dark
+  mode); usage as Lines or Bars; **Style**, full or compact rows; and
+  **Recent**, off, 5 or 10. A slider applies as it moves - the width with
+  the right edge held, and the panel kept on its screen, growing to the
+  right by the screen's left edge - and `config.json` gets it a moment
+  after it rests. Opened, the sliders show the size the panel has now,
+  whatever changed it;
 - **hide to tray** (an arrow onto a line): click the tray dot to show it again;
-- **×**: closes the overlay. `chatoverlay` starts it again.
+- **×**: closes the overlay. `chatoverlay` starts it again, and so does
+  the next shell or VS Code window unless `-AutoStart off`.
 
-The panel itself never takes a click; the buttons are a small window of their
-own, and they go when the pointer leaves.
+The panel itself never takes a click - until it turns into the console; the
+buttons are a small window of their own, and they go when the pointer leaves.
 
-**Open a chat from its row.** Move onto a Claude row and rest the pointer
-there for a second, and a small **open** appears at the row's right end - a
-window of its own like the buttons, taking no focus, in neither Alt+Tab nor
-the taskbar. A pointer sweeping across brings up nothing, it shows once per
-visit to a row, and a pointer it came up under has to move off it before a
-click counts, so a pointer parked there never opens anything by accident.
-Clicked, it:
-- ends the chat's old idle process, as a queued run's Show it does (see
-  [the extension](#chats-open-in-vs-code-and-the-extension)) - and any
-  background shell that process runs;
-- asks the window that has the chat to show it up to date;
+**Open a chat from its row.** Move onto a Claude row, or a Recent line, and
+rest the pointer there for a moment - 400 ms, or what
+`chatoverlay -ChipDelay` set - and a small **open** appears at the row's
+right end - a window of its own like the buttons, taking no focus, in
+neither Alt+Tab nor the taskbar. A pointer sweeping across brings up
+nothing, it shows once per visit to a row, and a pointer it came up under
+has to move off it before a click counts, so a pointer parked there never
+opens anything by accident. Clicked, it:
+- asks the window that has the chat to open it in an editor tab of its
+  own, or to bring forward the tab that already shows it
+  ([the extension](#chats-open-in-vs-code-and-the-extension) does it). It
+  ends no process. A new tab loads the chat from disk; a tab there already
+  comes forward as it is, on the process it has. So a queued run that
+  ended while that process lived is not in it yet: click the run's
+  **Show it**, or close the tab and open the chat again;
+- leaves a chat in the side bar where it is when it is working: nothing
+  reaches the side bar's chat, and a tab would start a second process on
+  it mid-answer. The window says so; click open again once it finishes. A
+  working chat is opened only when exactly one Claude tab here carries its
+  label and no other chat of its folder would, since a tab carries no
+  session id: one of no title, one whose label another tab shares, and
+  one whose title another chat of the folder has - or whose first 24
+  characters it has, open or not - are left the same way until one of the
+  two is renamed. On a Mac, where the window holding a chat cannot be
+  told, so is any working chat with no tab of its own here. A chat idle in
+  the side bar does get a tab, a second view with a second process, and
+  the window says so and asks you to close the side bar's copy;
+- unlocks the editor group holding the chat's tab, when it is the active
+  group and holds Claude tabs alone. Claude Code locks the group it makes
+  for its tabs (`claudeCode.lockEditorGroups`, on by default), and the next
+  file you open would go to another group. A group holding other editors is
+  left as it is, and so is every group when `claudeCode.lockEditorGroups`
+  is set to `true` in any settings scope - that lock is your choice. Claude
+  Code's own **Open in New Tab** still locks the group it starts;
+  `"claudeCode.lockEditorGroups": false` in VS Code's settings stops that;
 - brings that window forward with `code -n <folder>`: VS Code raises its own
   window on that folder, or opens one, which shows the chat as it starts.
   `-n` keeps it from reusing an unrelated window. `code` is the one beside
@@ -493,14 +570,14 @@ Clicked, it:
   pointer, types or activates a window.
 
 The tray says when it could not: a queued prompt running in that chat (open
-it once it finishes), a chat open in a terminal (never opened in VS Code as
-well), a window that also has other folders open (shown there, but not
-brought forward - `code -n` would open a second one; which windows are on
-exactly one folder is read from their titles, a profile's name after the
-folder's allowed for), a chat not started
-yet, or no `code` command. What you pick in the settings box
-is kept in `config.json`, like a setting made with `chatoverlay`; a collapsed
-panel stays collapsed across restarts.
+it once it finishes), a chat open in a terminal, working or not (never
+opened in VS Code as well, or there would be two writers), a window that
+also has other folders open (shown there, but not brought forward -
+`code -n` would open a second one; which windows are on exactly one
+folder is read from their titles, a profile's name after the folder's
+allowed for), a chat not started yet, or no `code` command. What you pick
+in the settings box is kept in `config.json`, like a setting made with
+`chatoverlay`; a collapsed panel stays collapsed across restarts.
 
 **Ctrl+Alt+Shift+O** or the tray dot's menu unlocks the whole panel to drag:
 it gets a blue edge, and it locks itself again two minutes after the pointer
@@ -545,21 +622,34 @@ It reads a file again only once that file has changed, and a transcript only fro
 where it last stopped. The first look at a 20 MB chat reads the last 256 KB.
 
 Settings live in `data/config.json` under `overlay`. `chatoverlay -Theme`,
-`-Opacity`, `-UsageView`, `-Hotkey`, `-ConsoleHotkey`, `-AutoStart`,
-`-LiveUsage` and `-CopilotUsage` set theirs and apply them at once; after
-editing the file by hand, `chatoverlay -Stop` and start it again.
+`-Opacity`, `-Width`, `-Rows`, `-Compact`, `-ChipDelay`, `-Recent`,
+`-UsageView`, `-Hotkey`, `-ConsoleHotkey`, `-AutoStart`, `-LiveUsage` and
+`-CopilotUsage` set theirs and apply them at once; after editing the file
+by hand, `chatoverlay -Stop` and start it again. `-Width`, `-Rows`,
+`-ChipDelay` and `-Recent` refuse a value out of range and save nothing
+from that line, as `-Opacity` does; one out of range in the file is held
+to the range.
+
+```powershell
+chatoverlay -Width 460 -Rows 12   # wider, and up to 12 chats before "+N more"
+chatoverlay -Compact on           # one line a chat, no prompt under it
+chatoverlay -ChipDelay 250        # the open chip after a 250 ms rest
+chatoverlay -Recent 10            # ten chats not open under the rest; 0 for none
+```
 
 | key | default | |
 |---|---|---|
-| `width` | 380 | pixels, 260–800 |
-| `maxRows` | 8 | the rest become `+3 more · 2 idle` |
+| `width` | 380 | pixels at 100% scaling, 260–800; the resize handle, the settings box, or `chatoverlay -Width 460`. The right edge stays put |
+| `maxRows` | 8 | 1–30; the rest become `+3 more · 2 idle`, and so do the rows that would run past the screen's bottom from wherever the panel sits. The resize handle, the settings box, or `chatoverlay -Rows 12` |
 | `opacity` | 0.94 | 0.3–1; the settings box's slider, or `chatoverlay -Opacity 85` |
 | `theme` | `dark` | `light`, or `system` to follow the OS; `chatoverlay -Theme system` |
-| `prompts` | `true` | `false` hides the prompt lines, for screen sharing |
+| `prompts` | `true` | `false` hides the prompt lines - compact rows, one line a chat, and good for screen sharing; the settings box's Style, or `chatoverlay -Compact on` |
+| `chipDelayMs` | 400 | 100–3000; how long the pointer rests on a row before its open chip comes; `chatoverlay -ChipDelay 250` |
+| `recent` | 5 | 0–20; how many chats not open the Recent list shows, 0 for none; the settings box (off, 5, 10), or `chatoverlay -Recent 10` |
 | `hotkey` | `Ctrl+Alt+Shift+O` | `chatoverlay -Hotkey Ctrl+Win+F9`; `none` for no key |
-| `consoleHotkey` | `Ctrl+Alt+Shift+Q` | opens the console; `chatoverlay -ConsoleHotkey none` for no key |
+| `consoleHotkey` | `Ctrl+Alt+Shift+Q` | opens the console, or brings it forward when another window covers it; again while it is in front, the panel; `chatoverlay -ConsoleHotkey none` for no key |
 | `cutOff` | `true` | `false`: no cut-off rows, and no scan for them |
-| `autoStart` | `false` | `chatoverlay -AutoStart on` |
+| `autoStart` | `true` on Windows, `false` on macOS | with every new shell and VS Code window; `chatoverlay -AutoStart off`, or **Chat Manager: Overlay: start by itself...** in VS Code's command palette |
 | `usageView` | `lines` | `bars` for a bar and reset countdown per window; the settings box, or `chatoverlay -UsageView bars` |
 | `liveUsage` | `true`, `false` on macOS | `chatoverlay -LiveUsage off` |
 | `copilotUsage` | `true` | `chatoverlay -CopilotUsage off`: no Copilot line, and `gh` never run for it |
@@ -570,25 +660,50 @@ editing the file by hand, `chatoverlay -Stop` and start it again.
 - **A game in exclusive full screen** draws over it, as it does over anything.
 - **macOS** (untested): a floating panel and a `CQ` menu bar item, with no
   hotkey, no buttons beside the panel and no collapsed view; the menu has
-  Unlock, Hide, Move and Quit, and `-Theme`, `-Opacity` and `-Refresh` apply
-  there too. Live usage reads the login
-  from the keychain there, and the first read by another program asks for your
-  password, so it stays off until `chatoverlay -LiveUsage on`.
+  Unlock, Hide, Move and Quit, and `-Theme`, `-Opacity`, `-Rows`,
+  `-Compact` and `-Refresh` apply there too; `-Width` from its next start.
+  A terminal's chat has `>_` before its title; there is no Recent list,
+  no open chip and no unread dot. Live usage
+  reads the login from the keychain there, and the first read by another
+  program asks for your password, so it stays off until
+  `chatoverlay -LiveUsage on`.
 - **Linux:** `chatoverlay -Print`.
 
 ## The console
 
 `chatconsole` - or the speech bubble on the overlay's buttons, **Open console**
-in the tray menu, or **Ctrl+Alt+Shift+Q** - opens chatq in a window. It is the
-overlay's own window, so it starts the overlay if that is not running. Unlike
-the panel it is an ordinary window: it takes the keyboard, has a taskbar
-button, and closing it only hides it, keeping what you were writing.
+in the tray menu, or **Ctrl+Alt+Shift+Q** - turns the overlay's panel into
+chatq's console, in the panel's own place: it grows from the panel's top-right
+corner, its right edge and top where the panel's were, to the size it was last
+left - 980 x 680 the first time - and stays on the panel's screen. It is the
+overlay's own window, so `chatconsole` starts the overlay if that is not
+running. While it is the console it is an ordinary window: it takes the
+keyboard, has a taskbar button and a place in Alt+Tab, and is not kept on top,
+so other windows can cover it and files can be dragged in from Explorer. Its
+header moves it, and the grip at its bottom-right corner resizes it. The
+overlay's buttons and the open chip stay away meanwhile.
 
-**On the left, the chats**, with a search over titles and projects:
+**Back to the panel:** **Esc**, **← Panel** at the header's right, the console
+hotkey again while the console is in front, or Alt+F4. The panel comes back
+exactly where it was, as wide, with its rows and its fold - to the tray, if it
+was hidden there - and what you were writing is kept for next time. On a
+console another window covers, the console hotkey brings it forward instead.
+The tray's item and `chatconsole` only ever bring it forward, never back to
+the panel: a command from a shell can arrive a couple of seconds late. Hide,
+collapse, lock, unlock, Move to top right and Quit go back to the panel first,
+then do what they say; the panel's own hotkey (Ctrl+Alt+Shift+O) only goes
+back. While the folder picker is open over the console, or its header is being
+dragged, those wait until it is closed or let go.
+
+**On the left, the chats**, with a search over titles and projects, each drawn
+as the panel draws its rows - the state's dot, where it runs, project and
+title, what it is doing, the unread dot - on one line, the one picked with an
+accent bar at its left:
 - **Cut off** - the chats the limit or a 529 stopped, each with **Continue**,
   and **Continue all** for every one of them;
 - **Open in VS Code** - what the overlay's rows show, with what each is doing;
-- **Recent** - the 30 newest Claude and Codex chats from the index;
+- **Recent** - the 30 newest Claude and Codex chats from the index, faint as
+  in the panel's Recent;
 - **+ New chat** - a Claude chat that does not exist yet, in a folder you pick
   (Browse, a recent one, or drop the folder on the box), under a name you give
   it or the prompt's first line.
@@ -632,9 +747,9 @@ its last states, and what can be done to it now:
   **Remove**, **Log** for everything the run did;
 - and **Write to this chat**, to pick its chat for the next prompt.
 
-The window's place and size, recent folders, and the draft - the chat, the
-text, the files, the choices - are kept in `data/console-state.json`, so a
-restart loses nothing. Windows only for now; on macOS `chatq`, `chatqlist`
+The console's size, recent folders, and the draft - the chat, the text, the
+files, the choices - are kept in `data/console-state.json`, so a restart loses
+nothing; where it opens comes from the panel. Windows only for now; on macOS `chatq`, `chatqlist`
 and `chatqrm` do the same from a shell.
 
 ## Chats open in VS Code, and the extension
@@ -644,7 +759,7 @@ for every chat opened in it, and clicking one switches back to that process
 rather than re-reading the transcript. The side bar also keeps each chat's
 messages in its own page, and picking a chat again from its history shows
 that copy - even once the process is gone. So a chat still alive in a window
-won't show what chatq ran until the window redraws it — the run *is* in the
+won't show what chatq ran until the window shows it anew — the run *is* in the
 transcript.
 
 - **The chat is busy** (you are typing in it, or Claude's own auto-continue is
@@ -656,11 +771,12 @@ transcript.
   `"liveIdle": "stop"` in `data/config.json` it is ended before the run
   instead.
 
-Nothing outside VS Code can redraw a window: Reload Webviews, the window
-reload and the Claude Code extension's own commands for opening a chat by
-its id run from inside an extension only. **VS Code Chat Manager**, the
-Marketplace extension that also installs the scripts ([Install](#install)),
-is that extension; `extension/` is its source. Without it the terminal
+Nothing outside VS Code can show a chat in a window: the window reload and
+the Claude Code extension's own command for opening a chat by its id run
+from inside an extension only. **VS Code Chat Manager**, the Marketplace
+extension that also installs the scripts ([Install](#install)), is that
+extension; `extension/` is its source. It also starts
+[the overlay](#the-overlay) as a window opens. Without it the terminal
 commands work as ever, and only this part is missing.
 
 It replaces the one that used to be copied into `~/.vscode/extensions/` by
@@ -671,19 +787,20 @@ reload twice - and offers to uninstall it; a window reload finishes the move.
 **After a queued run into a chat the window still holds**, the window is
 asked to **show that chat fresh**. The request names the chat, so it goes to
 the window whose Claude process held it, wherever that window's folder is;
-failing that, to the window on the job's folder. Two ways:
-- **Reload Webviews** (**Developer: Reload Webviews**), then the chat opened
-  where you read it - the side bar here. It redraws only the window's web
-  views; terminals, editors and other extensions keep running. But it also
-  restarts the window's Claude chats: the other idle ones start again when
-  opened, and a working one would be cut off, as by a reload. So it is used
-  only in a window on exactly that one folder with no chat in it working
-  ([what counts](#reloading-safely)).
-- **A tab of its own** otherwise: the chat opens in a new editor tab, loaded
-  from disk, and no other chat is touched. If the chat already has a tab,
-  that tab only comes forward with the old view, so it is closed and opened
-  again - only when it is certainly that chat's tab; if not, you are told to
-  close it yourself.
+failing that, to the window on the job's folder. The chat opens in an
+editor tab of its own, loaded from disk; terminals, editors, other chats and
+other extensions keep running. If the chat already has a tab, that tab only
+comes forward with the old view, so it is closed and opened again - only
+when it is certainly that chat's tab: the one that came forward, labelled
+with the chat's title, or with the title as Claude shortens it on a tab
+(the first 24 characters and `…` once it is over 25). A chat with no title
+is never certain, since every such tab reads "Claude Code", and neither is
+a label another Claude tab shares, or another chat of the folder would
+carry, open or not - two chats whose titles begin alike - since closing the
+wrong tab would cut off the other chat. If it is not
+certain, you are told to close the tab yourself. Where the window had the
+chat outside its tabs - in the side bar - it says that copy is stale now
+and can be closed. The tab's group is unlocked as the chip's is.
 
 **It shows the chat by itself when you are away** — nobody has used the PC
 for `quietMinutes` (5, the same clock that decides whether the phone gets an
@@ -700,13 +817,15 @@ run. It asks instead:
 
 Asking, it offers **Show it**. The click checks the chats again, right then,
 and ends the chat's old idle process; a line in the status bar says so while
-it runs. With nothing working in an exact window it uses Reload Webviews;
-with another chat working, a tab of its own (the status bar says why). Where
-the old process could not be ended, only a reload shows the run, and it
-offers **Reload**. If the chat itself was still working as the run ended, it
-warns instead, with **Reload anyway** for once it finishes. If another queued
-prompt is going into the chat by the time you click, it leaves it alone and
-says so; that run's own Show it comes when it ends.
+it runs. Then the chat opens in a tab of its own. Where the old process could
+not be ended, only a reload shows the run, and it offers **Reload**. If the
+chat itself was still working as the run ended, or the check finds it or
+another chat in the folder working, it warns instead, with **Reload
+anyway** for once that finishes. The warning says which: the chat itself
+still working, or another chat in the workspace that a reload now would
+cut off. If another queued prompt is going into the chat by the time you
+click, it leaves it alone and says so; that run's own Show it comes when it
+ends.
 
 **Never ended:** only a VS Code window's `claude` is ever ended - its entry in
 `~/.claude/sessions/` says `claude-vscode` and its parent process is
@@ -729,8 +848,53 @@ Show it after the run as one that held it from before.
 `chatManager.showFresh: false`, or no Claude Code extension, brings back
 0.5.0's window reload. `chatManager.autoReloadAfterRun: false` makes it
 always ask. A window opened after the run already shows it, and neither asks
-nor acts. The overlay's [open chip](#the-overlay) asks the same way, through
-`data/open-request`.
+nor acts. The overlay's [open chip](#the-overlay) asks through a file of its
+own, `data/open-request`, and never falls back to a reload, whatever
+`showFresh` says: it gets a tab, or the tab already showing the chat, and
+nothing for a chat working outside the tabs; with no Claude Code extension
+the window says it cannot open the chat there. A command the extension
+runs for any of these - an open, a tab closed, a reload - is given 15
+seconds; one that never answers is logged under **Chat Manager: Show log**
+and taken as failed, and the next show still runs.
+
+**Chat Manager: Open chat...** in the command palette does what the chip
+does, without the overlay. It lists this window's Claude chats - the
+transcripts in its folders' project folders under `~/.claude/projects/`
+(or `CLAUDE_CONFIG_DIR`), newest first, 200 at most - each by its title as
+Claude would give it: a rename, else Claude's own title, else the first
+prompt typed. Beside each, how long ago it was written and what runs it,
+from `~/.claude/sessions/`: **open** in VS Code, **working**, **in a
+terminal**, or **a queued prompt running**; in a window of several
+folders, the folder too. Side transcripts and empty ones are left out. The
+list comes up at once; titles not read within a quarter of a second show
+the chat's id and are filled in as they come, and titles are kept until a
+file changes. A `$(` in a title shows as typed, never as an icon. Picked,
+what runs the chat is read again, then:
+- **in a terminal**: not opened - type there, or close it first;
+- **a queued prompt running** - chatq's `claude -p`, or any print-mode
+  run: not opened, since a second copy would start mid-run; open it once
+  that run finishes;
+- **working**: only its one tab here is brought forward. With none - it
+  works in another window or the side bar - it is not opened, since a
+  second copy would start mid-answer; open it once it finishes;
+- **open** and idle, with its one tab here: that tab comes forward. With
+  none, it is open elsewhere, and a second copy here would answer on its
+  own, so it asks first - **Open here too** or **Cancel**;
+- **closed**: a new tab, loaded from disk.
+
+Its one tab here is one Claude tab of its label, as for the chip, and only
+while no other chat of its folder would carry that label - the same title,
+or the same first 24 characters, open or not. Otherwise that tab may be the
+other chat's, so the chat counts as having no tab here: working, it is
+refused; idle, it asks. Renaming one of the two tells them apart. The
+chats looked at are the newest 200 of each of the window's folders and of
+the chat's own, and a look not done in 1.5 seconds counts as shared. What
+runs the chat is read once more after **Open here too**, which may sit
+unanswered for minutes, and again right before the open, which may wait
+behind another show: a chat that began to work, or that a terminal or a
+queued prompt took, meanwhile is refused as it would have been at once.
+The tab's group is unlocked as the chip's is, and the log says what was
+picked and how it ended.
 
 The Claude Code extension also opens a chat from a
 `vscode://anthropic.claude-code/open?session=<id>` link, but VS Code asks

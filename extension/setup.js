@@ -137,14 +137,27 @@ function readState(folder) {
     } catch (e) { return {}; }
 }
 
-// a temp name of this window's own: two windows writing at once must not
-// rename each other's file away
+// A temp name of this window's own: two windows writing at once must not
+// rename each other's file away. Windows refuses a rename over a file that
+// something has open for a moment - a virus scanner looking at the last
+// write, or another window reading it - so a refusal is tried again a few
+// times, briefly, before it counts.
 function writeState(folder, s) {
     fs.mkdirSync(path.join(folder, 'data'), { recursive: true });
     const f = statePath(folder);
     const tmp = f + '.' + process.pid + '.' + Math.random().toString(36).slice(2) + '.new';
     fs.writeFileSync(tmp, JSON.stringify(s, null, 1));
-    try { fs.renameSync(tmp, f); } catch (e) { try { fs.unlinkSync(tmp); } catch (e2) { } throw e; }
+    for (let i = 0; ; i++) {
+        try { fs.renameSync(tmp, f); return; }
+        catch (e) {
+            if (i < 5 && e && ['EPERM', 'EACCES', 'EBUSY'].includes(e.code)) {
+                Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20 * (i + 1));
+                continue;
+            }
+            try { fs.unlinkSync(tmp); } catch (e2) { }
+            throw e;
+        }
+    }
 }
 
 // Say something once per key, ever: the key goes into the state first. With
@@ -379,9 +392,16 @@ function copyUnderLock(o) {
 }
 
 // On activation, in every window, and from the command palette (force).
+// onReady, when given, is called once the loader is in place - copied here,
+// or there already - and before the profile step, whose question may never
+// be answered: what needs only the loader need not wait on that. Where
+// nothing is to be copied it is called before the first await, so a caller
+// needs no look of its own at the loader; where a copy is due, only once it
+// is whole - and not at all while another window is copying, or where the
+// copy failed, since the scripts may then be half old and half new.
 async function setUp(o) {
     const vscode = vs();
-    const { extensionPath, folder, log, force } = o;
+    const { extensionPath, folder, log, force, onReady } = o;
     if (!path.isAbsolute(folder)) { log('setup: not a full path, nothing done: ' + folder); return 'none'; }
     const payload = path.join(extensionPath, 'payload');
     const bundled = readVersionFile(path.join(payload, LOADER));
@@ -399,10 +419,18 @@ async function setUp(o) {
         if (force || !module.exports._saidForeign) { module.exports._saidForeign = true; vscode.window.showWarningMessage(texts.foreign(folder)); }
         return action;
     }
+    const ready = () => {
+        if (!onReady || !fs.existsSync(loader)) return;
+        try { onReady(); } catch (e) { log('setup: onReady failed: ' + (e && e.message)); }
+    };
     if (action === 'install' || action === 'update') {
         const r = copyUnderLock({ payload, folder, bundled, action, git, log });
+        // done: another window's copy is whole; failed or elsewhere, what is
+        // there may be half old and half new
+        if (r === 'done') ready();
         if (r !== 'copied') return r === 'done' ? 'none' : r;
     }
+    ready();
     const notice = action === 'skew' || action === 'unknown';
     if (!notice && !fs.existsSync(loader)) return action;
     const version = readVersionFile(loader);

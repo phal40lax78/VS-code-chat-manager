@@ -64,6 +64,15 @@ if (CO) {
         /22:22$/.test(asBars[0]) && !/22:22/.test(asBars[1]));
     check('rows up to maxRows, each with its prompt, then "+N more"',
         flat.indexOf('    prompt 1') > 0 && flat.some(l => l.indexOf('chat 2') >= 0) && !flat.some(l => l.indexOf('chat 3') >= 0) && flat.indexOf('+1 more') > 0);
+    const termSnap = Object.assign({}, snap, { rows: [Object.assign(row(1, 'idle'), { where: 'terminal' }), Object.assign(row(2, 'idle'), { where: 'vscode' })] });
+    const termFlat = CO.lines(termSnap, now, true).map(l => l.map(r => r[0]).join(''));
+    check('a chat in a terminal marked >_, one in VS Code not',
+        termFlat.some(l => l.indexOf('>_ chat 1') >= 0) && termFlat.some(l => l.indexOf('chat 2') >= 0) && !termFlat.some(l => l.indexOf('>_ chat 2') >= 0));
+    const newSnap = Object.assign({}, snap, { rows: [Object.assign(row(1, 'idle'), { unread: true }), row(2, 'idle')] });
+    const newFlat = CO.lines(newSnap, now, true).map(l => l.map(r => r[0]).join(''));
+    // unread is Windows only: no chip here clears it, so no mark is drawn
+    check('no unread mark on macOS: a row that says unread draws as any other',
+        newFlat.some(l => l.indexOf('chat 1') >= 0) && !newFlat.some(l => l.indexOf('* chat') >= 0));
     check('prompts hidden when turned off', !CO.lines(Object.assign({}, snap, { config: { maxRows: 8, prompts: false } }), now, true).some(l => l[0][0].indexOf('    prompt') === 0));
     check('a hint only while unlocked', !flat.some(l => l.indexOf('unlocked') === 0) && CO.lines(snap, now, false).some(l => l[0][0].indexOf('unlocked') === 0));
     check('nothing open says so', CO.lines({ at: now, rows: [], header: { usage: [], notes: [] } }, now, true).some(l => l[0][0] === 'no chats open'));

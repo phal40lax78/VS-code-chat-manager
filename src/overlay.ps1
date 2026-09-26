@@ -8,10 +8,48 @@ function Test-ChatOverlayAlive {
 }
 
 function Test-ChatOverlayAutoStart {
-    # chatoverlay -AutoStart on, on a system with a panel to draw
+    # on a system with a panel to draw, unless chatoverlay -AutoStart off -
+    # on by default on Windows (Get-ChatOverlayConfig), so a missing
+    # config.json, or one with no such key, reads as on there too. One that
+    # is there but does not read is off: it may be the file that says off,
+    # and a panel nobody wanted is worse than one not started.
     if (-not $script:ChatqIsWindows -and -not $script:ChatIsMac) { return $false }
-    if (-not (Test-Path -LiteralPath $script:ChatqConfigPath)) { return $false }
+    if (Test-Path -LiteralPath $script:ChatqConfigPath) {
+        $cfg = Read-ChatqJson $script:ChatqConfigPath
+        if ($null -eq $cfg) { return $false }
+        return [bool](Get-ChatOverlayConfig $cfg).autoStart
+    }
     return [bool](Get-ChatOverlayConfig).autoStart
+}
+
+function Start-ChatOverlayAuto {
+    <#
+    The overlay started if it should be and is not running: what a new shell
+    and every VS Code window (the extension, through setup.js) do as they
+    open. Prints exactly one line for the caller to read - started, running,
+    off (not to start here, or -AutoStart off) or failed - and nothing else,
+    so the launch's own words are kept off stdout. Those words say why a
+    launch failed, so they go to overlay.log instead: nobody sees a shell's
+    start or the extension's call.
+    #>
+    $say = 'failed'
+    $why = $null
+    try {
+        if (-not (Test-ChatOverlayAutoStart)) { $say = 'off' }
+        elseif (Test-ChatOverlayAlive) { $say = 'running' }
+        else {
+            # Write-Host is the information stream: taken apart from what
+            # the launch returns
+            $out = @(Start-ChatOverlayProcess 6>&1)
+            $said = @($out | Where-Object { $_ -is [System.Management.Automation.InformationRecord] } | ForEach-Object { ([string]$_.MessageData).Trim() } | Where-Object { $_ })
+            $ok = @($out | Where-Object { $_ -isnot [System.Management.Automation.InformationRecord] })
+            if ($ok.Count -and $ok[-1] -eq $true) { $say = 'started' }
+            else { $why = if ($said.Count) { $said -join ' / ' } else { 'the launch gave no reason' } }
+        }
+    }
+    catch { $say = 'failed'; $why = $_.Exception.Message }
+    if ($say -eq 'failed') { Write-ChatOverlayLog "auto-start failed: $why" }
+    Write-Output $say
 }
 
 function ConvertFrom-ChatOverlayHotkey {
@@ -111,12 +149,18 @@ function Stop-ChatOverlay {
 function chatoverlay {
     <#
     .SYNOPSIS
-    A small always-on-top panel: usage live at the top, every open Claude chat and the queue beneath.
+    A small always-on-top panel: usage live at the top, every open Claude chat and the queue beneath. On Windows it starts with every shell and VS Code window unless -AutoStart off.
     .DESCRIPTION
     Each open chat is a row: project, title, its newest prompt, and whether it
     is working (green), waiting on you (amber, at the top), or idle (grey).
     Chats the limit cut off are orange, with when it resets. Queued prompts
-    are rows too (purple), or ride on their chat's row when it is open. Usage sits at the top, a line for each of Claude, Codex and
+    are rows too (purple), or ride on their chat's row when it is open. On
+    Windows, a chat that finished a turn while you were elsewhere, since
+    you last opened it from the overlay, has a small blue dot - not one
+    whose window was in front as it finished; macOS has no such dot, as it
+    has no open chip to clear it. Under them, on Windows, a faint Recent
+    list: the newest chats not open, each openable as a tab like an open
+    one. Usage sits at the top, a line for each of Claude, Codex and
     Copilot, each ending with when its figure is from - or as bars with a
     countdown to each reset. Claude's is asked live from its usage endpoint
     every five minutes while a chat works, every fifteen while all are idle,
@@ -124,9 +168,11 @@ function chatoverlay {
     fifteen; Codex's is what Codex wrote on its last run.
 
     Clicks go through it and it never takes focus. On Windows the pointer
-    brings up a row of buttons over its top-right corner: a grip to drag it by, collapse to
-    one line, refresh usage, the console (chatconsole), settings (opacity, theme,
-    usage as lines or bars), hide to the tray -
+    brings up a row of buttons over its top-right corner: a grip to drag it by, a
+    handle to resize it (sideways for width, up and down for rows), collapse to
+    one line, refresh usage, the console (chatconsole), settings (width, rows,
+    opacity, theme, usage as lines or bars, full or compact rows, how many
+    recent chats), hide to the tray -
     the tray dot shows it again - and close. The hotkey (Ctrl+Alt+Shift+O)
     or the tray menu unlocks the whole panel to drag; it locks again by
     itself two minutes after the pointer leaves. Windows and macOS
@@ -144,7 +190,7 @@ function chatoverlay {
     .PARAMETER Print
     One pass, drawn in this console.
     .PARAMETER AutoStart
-    on: start it with every new shell, the way the watcher comes back after a reboot.
+    on (the default on Windows): start it with every new shell and every VS Code window, the way the watcher comes back after a reboot. off: only when asked for by name.
     .PARAMETER Hotkey
     The key that unlocks it or shows it: Ctrl+Alt+Shift+O by default, none for no key.
     .PARAMETER LiveUsage
@@ -153,8 +199,18 @@ function chatoverlay {
     dark (the default), light, or system - following the OS's own light or dark setting.
     .PARAMETER Opacity
     How opaque the panel is, 0.3 to 1 - or as a percent, 30 to 100.
+    .PARAMETER Width
+    How wide the panel is, 260 to 800 (380 by default) - in pixels at 100% scaling.
+    .PARAMETER Rows
+    How many chat rows it shows at most, 1 to 30 (8 by default); the rest are counted on a line of their own.
+    .PARAMETER Compact
+    on: one line a chat, without its newest prompt under it. off (the default): the prompt line too.
+    .PARAMETER ChipDelay
+    How long the pointer rests on a chat's row before its open chip comes, in milliseconds: 100 to 3000, 400 by default.
+    .PARAMETER Recent
+    How many of the newest chats not open are listed under the open ones: 0 to 20, 5 by default; 0 is no Recent list.
     .PARAMETER Console
-    Open the console: pick a chat, write to it, drop files on it, send now or queue; the queue beside it. Starts the overlay if it is not running. Windows only.
+    Open the console: pick a chat, write to it, drop files on it, send now or queue; the queue beside it. It opens in the panel's own place, grown from its top-right corner; Esc, its back button or the console hotkey return it to the panel. Starts the overlay if it is not running. Windows only.
     .PARAMETER ConsoleHotkey
     The key that opens the console: Ctrl+Alt+Shift+Q by default, none for no key.
     .PARAMETER UsageView
@@ -164,9 +220,15 @@ function chatoverlay {
     .EXAMPLE
     chatoverlay
     .EXAMPLE
-    chatoverlay -AutoStart on
+    chatoverlay -AutoStart off
     .EXAMPLE
     chatoverlay -Theme system -Opacity 85
+    .EXAMPLE
+    chatoverlay -Width 460 -Rows 12
+    .EXAMPLE
+    chatoverlay -Compact on -ChipDelay 250
+    .EXAMPLE
+    chatoverlay -Recent 10
     #>
     [CmdletBinding()]
     param(
@@ -178,6 +240,11 @@ function chatoverlay {
         [ValidateSet('on', 'off')][string]$LiveUsage,
         [ValidateSet('dark', 'light', 'system')][string]$Theme,
         [double]$Opacity,
+        [int]$Width,
+        [int]$Rows,
+        [ValidateSet('on', 'off')][string]$Compact,
+        [int]$ChipDelay,
+        [int]$Recent,
         [ValidateSet('lines', 'bars')][string]$UsageView,
         [ValidateSet('on', 'off')][string]$CopilotUsage
     )
@@ -196,10 +263,30 @@ function chatoverlay {
     if ($Theme) { $set.theme = $Theme.ToLowerInvariant() }
     if ($UsageView) { $set.usageView = $UsageView.ToLowerInvariant() }
     if ($CopilotUsage) { $set.copilotUsage = ($CopilotUsage -eq 'on') }
+    # compact is the prompt line turned off: the one setting both ways
+    if ($Compact) { $set.prompts = ($Compact -eq 'off') }
     if ($PSBoundParameters.ContainsKey('Opacity')) {
         $o = if ($Opacity -gt 1) { $Opacity / 100 } else { $Opacity }
         if ($o -lt 0.3 -or $o -gt 1) { Write-Host '  -Opacity takes 0.3 to 1, or 30 to 100 as a percent' -ForegroundColor Yellow; return }
         $set.opacity = [Math]::Round($o, 2)
+    }
+    # refused out of range rather than held to it, as -Opacity is: a typo
+    # shows now, not as a panel of some other size
+    if ($PSBoundParameters.ContainsKey('Width')) {
+        if ($Width -lt 260 -or $Width -gt 800) { Write-Host '  -Width takes 260 to 800' -ForegroundColor Yellow; return }
+        $set.width = $Width
+    }
+    if ($PSBoundParameters.ContainsKey('Rows')) {
+        if ($Rows -lt 1 -or $Rows -gt 30) { Write-Host '  -Rows takes 1 to 30' -ForegroundColor Yellow; return }
+        $set.maxRows = $Rows
+    }
+    if ($PSBoundParameters.ContainsKey('ChipDelay')) {
+        if ($ChipDelay -lt 100 -or $ChipDelay -gt 3000) { Write-Host '  -ChipDelay takes 100 to 3000 milliseconds' -ForegroundColor Yellow; return }
+        $set.chipDelayMs = $ChipDelay
+    }
+    if ($PSBoundParameters.ContainsKey('Recent')) {
+        if ($Recent -lt 0 -or $Recent -gt 20) { Write-Host '  -Recent takes 0 to 20 - 0 for none' -ForegroundColor Yellow; return }
+        $set.recent = $Recent
     }
     if ($PSBoundParameters.ContainsKey('Hotkey')) {
         try { $k = ConvertFrom-ChatOverlayHotkey $Hotkey }
@@ -213,12 +300,17 @@ function chatoverlay {
     }
     if ($set.Count) {
         Set-ChatOverlayConfig $set
-        if ($set.ContainsKey('autoStart')) { Write-Host "  start with every shell: $AutoStart" -ForegroundColor Green }
+        if ($set.ContainsKey('autoStart')) { Write-Host "  start with every shell and VS Code window: $AutoStart" -ForegroundColor Green }
         if ($set.ContainsKey('liveUsage')) { Write-Host "  live usage: $LiveUsage" -ForegroundColor Green }
         if ($set.ContainsKey('hotkey')) { Write-Host "  hotkey: $($set.hotkey)" -ForegroundColor Green }
         if ($set.ContainsKey('consoleHotkey')) { Write-Host "  console hotkey: $($set.consoleHotkey)" -ForegroundColor Green }
         if ($set.ContainsKey('theme')) { Write-Host "  theme: $($set.theme)" -ForegroundColor Green }
         if ($set.ContainsKey('opacity')) { Write-Host "  opacity: $([int]($set.opacity * 100))%" -ForegroundColor Green }
+        if ($set.ContainsKey('width')) { Write-Host "  width: $($set.width)" -ForegroundColor Green }
+        if ($set.ContainsKey('maxRows')) { Write-Host "  rows: $($set.maxRows) at most" -ForegroundColor Green }
+        if ($set.ContainsKey('prompts')) { Write-Host "  compact rows: $Compact$(if ($Compact -eq 'on') { ' - one line a chat' } else { ' - each with its newest prompt' })" -ForegroundColor Green }
+        if ($set.ContainsKey('chipDelayMs')) { Write-Host "  open chip: after a $($set.chipDelayMs) ms rest on a row" -ForegroundColor Green }
+        if ($set.ContainsKey('recent')) { Write-Host "  recent chats: $(if ($set.recent) { "the newest $($set.recent) not open, under the open ones" } else { 'off' })" -ForegroundColor Green }
         if ($set.ContainsKey('usageView')) { Write-Host "  usage as $($set.usageView)" -ForegroundColor Green }
         if ($set.ContainsKey('copilotUsage')) { Write-Host "  Copilot usage: $CopilotUsage$(if ($CopilotUsage -eq 'on') { ' - through the GitHub CLI, gh, when it is logged in' })" -ForegroundColor Green }
         if ($alive) { Send-ChatOverlayCommand 'reload' }
@@ -258,8 +350,8 @@ function chatoverlay {
         if (-not $script:ChatqIsWindows) { Write-Host '  the console is Windows only for now - chatq, chatqlist and chatqrm do the same from a shell' -ForegroundColor Yellow; return }
         # Windows gives the focus to what the user started; a running overlay
         # only told to open it may just flash its taskbar button
-        if ($alive) { Send-ChatOverlayCommand 'console'; Write-Host '  the console opens in the running overlay - its taskbar button, if it stays behind' -ForegroundColor DarkGray }
-        elseif (Start-ChatOverlayProcess -Open 'console') { Write-Host '  starting the overlay with its console - a few seconds' -ForegroundColor DarkGray }
+        if ($alive) { Send-ChatOverlayCommand 'console'; Write-Host '  the console opens in the panel''s place - its taskbar button, if it stays behind; Esc returns the panel' -ForegroundColor DarkGray }
+        elseif (Start-ChatOverlayProcess -Open 'console') { Write-Host '  starting the overlay with its console - a few seconds; Esc returns the panel' -ForegroundColor DarkGray }
         return
     }
     if ($set.Count -or $verbs -or $Refresh) { return }
@@ -286,9 +378,13 @@ function chatoverlay {
         Write-Host '  overlay started - top right of the main screen' -ForegroundColor Green
         if ($script:ChatIsMac) { Write-Host '  macOS support is untested - TESTING.md lists what to check' -ForegroundColor DarkGray }
     }
-    if ($script:ChatqIsWindows) { Write-Host '  clicks go through it - point at it for its buttons: move, collapse, refresh, console, settings, hide, close' -ForegroundColor DarkGray }
+    if ($script:ChatqIsWindows) { Write-Host '  clicks go through it - point at it for its buttons: move, resize, collapse, refresh, console, settings, hide, close' -ForegroundColor DarkGray }
     else { Write-Host '  clicks go through it - the CQ menu bar item unlocks it to drag' -ForegroundColor DarkGray }
-    Write-Host "  chatoverlay -Stop closes it $($script:ChatqDot) -AutoStart on brings it back with every shell" -ForegroundColor DarkGray
+    # what comes back by itself, as config.json has it now
+    if ((Get-ChatOverlayConfig).autoStart) {
+        Write-Host "  chatoverlay -Stop closes it $($script:ChatqDot) it starts again with every shell and VS Code window unless -AutoStart off" -ForegroundColor DarkGray
+    }
+    else { Write-Host "  chatoverlay -Stop closes it $($script:ChatqDot) -AutoStart on brings it back with every shell and VS Code window" -ForegroundColor DarkGray }
 }
 
 function chatconsole {
@@ -301,9 +397,12 @@ function chatconsole {
     a folder. Send now runs the prompt within seconds - once the chat is idle
     if it is working in VS Code - and In turn, At or In queue it. The queue
     sits below: each job's outcome and log, Try now, First, Remove, Cancel,
-    Requeue. It is the overlay's window, so this starts the overlay if it is
-    not running. Windows only. Ctrl+Alt+Shift+Q, the overlay's speech-bubble
-    button and the tray menu open it too.
+    Requeue. It is the overlay's own window: the panel grows into it from
+    its top-right corner, and Esc, the back button in its header or
+    Ctrl+Alt+Shift+Q again return it to the panel, where and as it was. So
+    this starts the overlay if it is not running. Windows only.
+    Ctrl+Alt+Shift+Q, the overlay's speech-bubble button and the tray menu
+    open it too.
     #>
     Set-StrictMode -Off
     chatoverlay -Console

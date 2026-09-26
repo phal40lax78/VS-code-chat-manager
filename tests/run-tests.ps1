@@ -34,6 +34,20 @@ function Check([string]$Name, [bool]$Ok, $Detail) {
 }
 function Section([string]$Name) { Write-Host ''; Write-Host "  $Name" -ForegroundColor Cyan }
 
+# A WPF check runs in an STA Windows PowerShell of its own, and gives back the
+# last line it prints. Its script goes in a file, never on the command line:
+# -EncodedCommand doubles it as UTF-16 base64 around the sandbox's own paths,
+# and from a long enough checkout path that passed the 32,767 characters a
+# command line holds, aborting the whole run. The BOM makes 5.1 read it as UTF-8.
+function Invoke-Sta([string]$Name, [string]$Script) {
+    $f = Join-Path $sb "$Name.ps1"
+    [IO.File]::WriteAllText($f, $Script, [System.Text.UTF8Encoding]::new($true))
+    try {
+        return (@(& (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') -NoProfile -NonInteractive -STA -ExecutionPolicy Bypass -File $f 2>&1) | Select-Object -Last 1)
+    }
+    finally { Remove-Item -LiteralPath $f -Force -EA SilentlyContinue }
+}
+
 # The sandbox, then every section, from tests/sections/ in this order: one
 # scope, as the one file had, so a later section uses what an earlier one
 # built - the sandbox's chats, the script it loaded, helpers and seams.

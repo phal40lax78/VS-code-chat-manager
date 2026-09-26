@@ -201,8 +201,8 @@ $script:ChatWindowTitlesSeam = { @('notes.md - projS - Visual Studio Code') }
 $c0 = @(Show-ChatFresh -Via chip -SessionId $idS -Cwd $projS -ConfigDir $sfHome)[-1]
 $script:ChatWindowTitlesSeam = $script:SeamsAtStart.Titles
 Remove-Item -LiteralPath $script:ChatOpenPath -Force -EA SilentlyContinue
-Check 'Show it and the chip after such a run: the leftover holds nothing - ended, not held' (
-    $b1.Outcome -eq 'ok' -and $b1.OldProcess -eq 'ended' -and $c0.ExitCode -eq 0 -and $c0.OldProcess -eq 'ended' -and ($script:SfStops -join ',') -eq '1313,1318') "$($b1.OldProcess) $($c0.OldProcess) $($script:SfStops -join ',')"
+Check 'Show it and the chip after such a run: the leftover holds nothing - Show it ends the process, the chip leaves it live, neither held' (
+    $b1.Outcome -eq 'ok' -and $b1.OldProcess -eq 'ended' -and $c0.ExitCode -eq 0 -and $c0.OldProcess -eq 'live' -and ($script:SfStops -join ',') -eq '1313') "$($b1.OldProcess) $($c0.OldProcess) $($script:SfStops -join ',')"
 Add-SfLaunch $pS 'wsf0004' (Get-Date).AddSeconds(-10) 'claude-vscode'
 Set-SfSession 1314
 Set-SfAgents @(New-SfLive 1314)
@@ -265,13 +265,22 @@ Remove-Item -LiteralPath $script:ChatOpenPath -Force -EA SilentlyContinue
 Set-SfSession 1401
 Set-SfAgents @(New-SfLive 1401)
 $script:SfCode.Clear()
+$script:SfStops.Clear()
+$wlPath = Join-Path $script:ChatqLogDir 'watcher.log'
+$wlShow = { @(if (Test-Path -LiteralPath $wlPath) { [System.IO.File]::ReadAllLines($wlPath, $utf8) | Where-Object { $_ -like '*  show (*' } }) }
+$wl0 = @(& $wlShow).Count
 $c1 = @(Show-ChatFresh -Via chip -SessionId $idS -Cwd $projS -TitleB64 ([Convert]::ToBase64String($utf8.GetBytes($tSel))) -ConfigDir $sfHome)[-1]
+$wl1 = @(& $wlShow)
 $oBytes = [System.IO.File]::ReadAllBytes($script:ChatOpenPath)
 $oq = [System.IO.File]::ReadAllText($script:ChatOpenPath, $utf8) | ConvertFrom-Json
 $sameReload = [Convert]::ToBase64String($reloadBytes) -eq [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($script:ChatReloadPath))
 Check 'the chip: data/open-request, no BOM, with the chat, its folder, title, verdict and window' ($c1.ExitCode -eq 0 -and $oBytes[0] -eq [byte][char]'{' -and
-    $oq.kind -eq 'open' -and $oq.sessionId -eq $idS -and $oq.cwd -eq $projS -and $oq.title -eq $tSel -and $oq.oldProcess -eq 'ended' -and $oq.busy -eq $false -and
+    $oq.kind -eq 'open' -and $oq.sessionId -eq $idS -and $oq.cwd -eq $projS -and $oq.title -eq $tSel -and $oq.oldProcess -eq 'live' -and $null -eq $oq.busy -and
     (@($oq.hostPids) -join ',') -eq '4242' -and $oq.id -and $oq.at) ($oq | ConvertTo-Json -Compress)
+Check 'the chip ends nothing: its idle process left running (live), and busy not judged' (
+    $c1.OldProcess -eq 'live' -and $null -eq $c1.Busy -and -not @($c1.Stopped).Count -and -not $script:SfStops.Count) "$($c1.OldProcess) $($c1.Busy) $($script:SfStops -join ',')"
+Check 'watcher.log: one ASCII line for the show - how, which chat, the process, busy, the windows, the outcome' (
+    $wl1.Count -eq $wl0 + 1 -and $wl1[-1] -like '*  show (chip) 5f5f5f5f: live, busy unjudged, hosts 4242 -> ok' -and $wl1[-1] -notmatch '[^\x20-\x7E]') "$($wl1.Count - $wl0): $(@($wl1)[-1])"
 Check 'code is asked once, for the folder; a run''s request beside it is left byte for byte' (($script:SfCode -join '|') -eq $projS -and $sameReload) ($script:SfCode -join '|')
 Remove-Item -LiteralPath $script:ChatOpenPath -Force
 $script:SfCode.Clear()
@@ -281,9 +290,20 @@ $script:ChatParentSeam = $terminalParent
 $c2 = @(Show-ChatFresh -Via chip -SessionId $idS -Cwd $projS -ConfigDir $sfHome)[-1]
 $script:ChatParentSeam = $script:SeamsAtStart.Parent
 Check 'the chip on a terminal''s chat: 20, nothing written, code not asked' ($c2.ExitCode -eq 20 -and -not (Test-Path -LiteralPath $script:ChatOpenPath) -and -not $script:SfCode.Count) $c2.ExitCode
+# mid-turn in a terminal: whose it is comes before held, or a tab would open
+# beside a terminal that is writing to the chat
 Set-SfAgents @(New-SfLive 1402 'busy')
+$script:ChatParentSeam = $terminalParent
+$c2b = @(Show-ChatFresh -Via chip -SessionId $idS -Cwd $projS -ConfigDir $sfHome)[-1]
+$script:ChatParentSeam = $script:SeamsAtStart.Parent
+Check 'the chip on a terminal''s chat mid-turn: other (20), not held - nothing written, code not asked' (
+    $c2b.ExitCode -eq 20 -and $c2b.OldProcess -eq 'other' -and -not (Test-Path -LiteralPath $script:ChatOpenPath) -and -not $script:SfCode.Count) "$($c2b.ExitCode) $($c2b.OldProcess)"
 $c3 = @(Show-ChatFresh -Via chip -SessionId $idS -Cwd $projS -ConfigDir $sfHome)[-1]
-Check 'the chip on a working chat: 10, a request to focus it, nothing ended' ($c3.ExitCode -eq 10 -and $c3.OldProcess -eq 'held' -and -not $script:SfStops.Contains(1402)) $c3.ExitCode
+$oq3 = if (Test-Path -LiteralPath $script:ChatOpenPath) { [System.IO.File]::ReadAllText($script:ChatOpenPath, $utf8) | ConvertFrom-Json } else { $null }
+Remove-Item -LiteralPath $script:ChatOpenPath -Force -EA SilentlyContinue
+Check 'the chip on a window''s working chat: 10, a request to focus it naming its window, nothing ended' (
+    $c3.ExitCode -eq 10 -and $c3.OldProcess -eq 'held' -and (@($c3.HostPids) -join ',') -eq '4242' -and $oq3 -and $oq3.oldProcess -eq 'held' -and
+    (@($oq3.hostPids) -join ',') -eq '4242' -and -not $script:SfStops.Contains(1402)) "$($c3.ExitCode) $($c3.OldProcess) $($oq3 | ConvertTo-Json -Compress)"
 Clear-SfLive
 Push-Location -LiteralPath $projS
 $jR = New-TestJob 'Show fresh chat' 'running now'
@@ -309,9 +329,12 @@ $c7 = @(Show-ChatFresh -Via chip -SessionId '5e5e5e5e-5e5e-4e5e-8e5e-5e5e5e5e5e5
 $script:ChatCodeSeam = { param($f) [pscustomobject]@{ Ok = $false; Code = 'no-code'; Why = 'none'; Slow = $false } }
 $c8 = @(Show-ChatFresh -Via chip -SessionId $idS -Cwd $projS -ConfigDir $sfHome)[-1]
 $script:ChatCodeSeam = $script:SeamsAtStart.Code
+$wl2 = @(& $wlShow).Count
 $c9 = @(Show-ChatFresh -Via chip -SessionId "x'; exit 0; '" -Cwd $projS -ConfigDir $sfHome)[-1]
+$wl3 = @(& $wlShow).Count
 $script:ChatWindowTitlesSeam = $script:SeamsAtStart.Titles
-Check 'a chat not started yet: 30; no code command: 40; no session id: 50' ($c7.ExitCode -eq 30 -and $c8.ExitCode -eq 40 -and $c9.ExitCode -eq 50) "$($c7.ExitCode) $($c8.ExitCode) $($c9.ExitCode)"
+Check 'a chat not started yet: 30; no code command: 40; no session id: 50, and no line in watcher.log for it' (
+    $c7.ExitCode -eq 30 -and $c8.ExitCode -eq 40 -and $c9.ExitCode -eq 50 -and $wl3 -eq $wl2) "$($c7.ExitCode) $($c8.ExitCode) $($c9.ExitCode) $wl2 $wl3"
 $v = ConvertTo-ChatFreshVerdict ([pscustomobject]@{ Busy = $false; OldProcess = 'ended'; Outcome = 'ok'; HostPids = @(1234) })
 $vo = $v | ConvertFrom-Json
 Check 'Show it''s verdict: one ASCII line, the four fields' ($v -notmatch '[^\x20-\x7E]' -and $vo.busy -eq $false -and $vo.oldProcess -eq 'ended' -and $vo.outcome -eq 'ok' -and
@@ -436,13 +459,22 @@ Check 'the chip''s child: quotes doubled, curly ones too; the title only as base
     $cmd1.StartsWith("`$env:CHATQ_OVERLAY='1'") -and $cmd1.EndsWith('exit [int]$r.ExitCode') -and $null -eq $sp3 -and $null -eq $script:SfSpawn) $cmd1
 
 # the chip's timing, placing and rows - the pure parts
-$tg = { param($shown, $under, $rest, $onChip, $since, $down, $blocked, $spent) Get-ChatOverlayChipTarget $shown $under $rest $onChip $since $down $blocked $spent }
+$tg = { param($shown, $under, $rest, $onChip, $since, $down, $blocked, $spent, $delay = 1000) Get-ChatOverlayChipTarget $shown $under $rest $onChip $since $down $blocked $spent $delay }
 Check 'the chip: after a 1 s rest on a row, not before, and not on a sweep' (
-    (& $tg '' 's:a' 900 $false 99999 $false $false '') -eq '' -and (& $tg '' 's:a' 1000 $false 99999 $false $false '') -eq 's:a' -and
-    (& $tg '' 's:a' 0 $false 99999 $false $false '') -eq '')
+    (& $tg '' 's:a' 900 $false 99999 $false $false '' 1000) -eq '' -and (& $tg '' 's:a' 1000 $false 99999 $false $false '' 1000) -eq 's:a' -and
+    (& $tg '' 's:a' 0 $false 99999 $false $false '' 1000) -eq '')
 Check 'shown: kept on it, gone at once on another row, which gets its own after its rest' (
-    (& $tg 's:a' 's:b' 0 $true 0 $false $false 's:a') -eq 's:a' -and (& $tg 's:a' 's:b' 0 $false 0 $false $false 's:a') -eq '' -and
-    (& $tg '' 's:b' 1000 $false 99999 $false $false 's:a') -eq 's:b')
+    (& $tg 's:a' 's:b' 0 $true 0 $false $false 's:a' 1000) -eq 's:a' -and (& $tg 's:a' 's:b' 0 $false 0 $false $false 's:a' 1000) -eq '' -and
+    (& $tg '' 's:b' 1000 $false 99999 $false $false 's:a' 1000) -eq 's:b')
+Check 'the chip''s rest is 400 ms unless set - the config''s default too' (
+    (Get-ChatOverlayChipTarget '' 's:a' 399 $false 99999 $false $false '') -eq '' -and (Get-ChatOverlayChipTarget '' 's:a' 400 $false 99999 $false $false '') -eq 's:a' -and
+    (Get-ChatOverlayConfig ([pscustomobject]@{})).chipDelayMs -eq 400)
+$cdLo = (Get-ChatOverlayConfig ([pscustomobject]@{ overlay = [pscustomobject]@{ chipDelayMs = 20 } })).chipDelayMs
+$cdHi = (Get-ChatOverlayConfig ([pscustomobject]@{ overlay = [pscustomobject]@{ chipDelayMs = 9000 } })).chipDelayMs
+$cdSet = (Get-ChatOverlayConfig ([pscustomobject]@{ overlay = [pscustomobject]@{ chipDelayMs = 250 } })).chipDelayMs
+Check 'a rest set in config.json: 250 ms comes at 250, not before; held to 100 to 3000' (
+    (& $tg '' 's:a' 249 $false 99999 $false $false '' $cdSet) -eq '' -and (& $tg '' 's:a' 250 $false 99999 $false $false '' $cdSet) -eq 's:a' -and
+    $cdLo -eq 100 -and $cdHi -eq 3000) "$cdSet $cdLo $cdHi"
 Check 'off everything: kept 300 ms, then gone' ((& $tg 's:a' '' 0 $false 200 $false $false 's:a') -eq 's:a' -and (& $tg 's:a' '' 0 $false 400 $false $false 's:a') -eq '')
 Check 'never with a button held, collapsed or mid-drag, or twice on one visit to a row' (
     (& $tg '' 's:a' 5000 $false 99999 $true $false '') -eq '' -and (& $tg 's:a' 's:a' 5000 $true 0 $false $true 's:a') -eq '' -and
@@ -546,7 +578,7 @@ Set-ChatOverlayHidden `$H `$true
 `$hid = -not `$H.ChipWin.IsVisible -and -not `$H.ChipKey
 '{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}' -f `$tagged, `$cx, `$flush, `$shown, `$dropped, `$again, `$hid, "rects `$(@(`$rects).Count) line `$(`$ln -join ',') chip `$(`$cr -join ',')"
 "@
-$chipOut = @(& (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') -NoProfile -NonInteractive -STA -EncodedCommand ([Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($chipWpf))) 2>&1) | Select-Object -Last 1
+$chipOut = Invoke-Sta 'chip-test' $chipWpf
 $ch = "$chipOut" -split '\|'
 $chx = if ($ch.Count -ge 2 -and $ch[1] -match '^\d+$') { [int64]$ch[1] } else { 0 }
 Check 'each drawn row carries its row, for the chip to find' ($ch[0] -eq '2') "$chipOut"

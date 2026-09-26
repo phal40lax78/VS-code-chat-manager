@@ -99,7 +99,7 @@ var CO = {
       var r = rows[i];
       out.push([[r.status === 'queued' ? '\u25CB ' : '\u25CF ', r.status, false],
         [r.project ? r.project + '  ' : '', 'project', true],
-        [r.title + '   ', 'text', false],
+        [(r.where === 'terminal' ? '>_ ' : '') + r.title + '   ', 'text', false],
         [r.stateText, r.rank === 0 ? 'warn' : 'dim', false]]);
       if (r.prompt && (!snap.config || snap.config.prompts !== false)) { out.push([['    ' + r.prompt, 'dim', false]]); }
     }
@@ -162,7 +162,7 @@ function run(argv) {
     write(statePath, JSON.stringify({ x: f.origin.x, y: f.origin.y + f.size.height, locked: locked, hidden: hidden }));
   };
 
-  var width = 380;
+  var width = Math.min(800, Math.max(260, Number(((read(snapPath) || {}).config || {}).width) || 380));
   var screen = $.NSScreen.mainScreen.visibleFrame;
   var panel = $.NSPanel.alloc.initWithContentRectStyleMaskBackingDefer($.NSMakeRect(0, 0, width, 60), BORDERLESS | NONACTIVATING, BUFFERED, false);
   panel.setLevel(FLOATING);
@@ -330,6 +330,9 @@ function Start-ChatOverlayMacHost {
         $old = if (Test-Path -LiteralPath $script:ChatOverlayMacJsPath) { [System.IO.File]::ReadAllText($script:ChatOverlayMacJsPath) } else { '' }
         if ($old -ne $js) { Save-ChatqText $script:ChatOverlayMacJsPath $js }
         $ctx = New-ChatOverlayContext
+        # the panel here draws rows alone: a Recent list would be built, and
+        # its transcripts listed and read, for nothing
+        $ctx.WantRecent = $false
         Restore-ChatOverlayUsage $ctx
         # a snapshot on disk before the panel first looks for one
         [void](Invoke-ChatOverlayCycle $ctx)

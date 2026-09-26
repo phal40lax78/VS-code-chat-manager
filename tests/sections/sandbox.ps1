@@ -246,6 +246,8 @@ $script:ChatWindowTitlesSeam = { @() }
 $script:ChatCodeExesSeam = { @() }
 $script:ChatCodeProfilesSeam = { @() }
 $script:ChatShowSpawnSeam = { param($c) $null }
+# nor which window is in front: none, so a chat that finishes is marked unread
+$script:ChatForegroundSeam = { 0 }
 # and no run waits out a window showing its chat: tests run one job after
 # another into the same chat. 'show fresh' checks the wait itself.
 $script:ChatShowHoldSeconds = 0

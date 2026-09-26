@@ -847,8 +847,9 @@ function Write-ChatReloadRequest {
 function Write-ChatOpenRequest {
     # The overlay's open chip: show this chat, up to date, in the window that
     # has it - data/open-request, its own file, so a run's request and a
-    # click's never overwrite each other. The same fields as a run's request,
-    # and busy judged as the click went out.
+    # click's never overwrite each other. The same fields as a run's request;
+    # the chip leaves busy $null (not judged) and oldProcess as judged only,
+    # since it ends nothing.
     param([string]$SessionId, [string]$Cwd, [string]$Title, [string]$ConfigHome, $Busy = $null,
         [string]$OldProcess = 'none', [int[]]$HostPids = @())
     Save-ChatSignal $script:ChatOpenPath ([ordered]@{

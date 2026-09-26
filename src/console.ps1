@@ -5,16 +5,22 @@
 # Pick a chat - one open in VS Code, one the limit cut off, a recent one, or a
 # new one in a folder - write to it, drop or paste files on it, and send it
 # now or queue it; the queue beside it, with each job's outcome and log. A
-# normal window that takes focus, in the overlay's own process and on its
-# thread, drawn from the snapshot the collector makes every 2 s. Only the
-# user ever opens it: the button on the overlay's bar, the tray, the console
-# hotkey, or chatconsole. Windows only, like the panel's buttons.
+# mode of the panel's own window, grown from its top-right corner
+# (Enter-ChatOverlayConsoleMode) - one that takes focus while it shows - in
+# the overlay's own process and on its thread, drawn from the snapshot the
+# collector makes every 2 s. Only the user ever opens it: the button on the
+# overlay's bar, the tray, the console hotkey, or chatconsole; Esc, its back
+# button or the hotkey again go back to the panel. Windows only, like the
+# panel's buttons.
 
 $script:ChatConsoleStatePath = Join-Path $script:ChatqData 'console-state.json'
 $script:ChatConsoleDraftDir = Join-Path (Join-Path $script:ChatqData 'console') 'draft'
 # tests: what a paste finds on the clipboard; no index sync in a child
 $script:ChatConsoleClipboardSeam = $null
 $script:ChatConsoleNoSync = $false
+# tests: stands in for bringing the console forward (Window.Activate), so a
+# test that opens it the user's way never takes the keyboard from the user
+$script:ChatConsoleFrontSeam = $null
 $script:ChatConsoleModes = @('default', 'acceptEdits', 'auto', 'plan', 'bypassPermissions')
 $script:ChatConsoleModels = @('opus', 'sonnet', 'haiku')
 
@@ -104,31 +110,40 @@ function Get-ChatConsoleJobStatus {
 }
 
 function Get-ChatConsolePlacement {
-    # Where the console opens, in screen pixels: where it was left, while
-    # 120 x 60 of it is on some screen, else the middle of the main one. Pure.
-    param($Saved, [object[]]$Screens, [double]$Width = 980, [double]$Height = 680)
-    if ($Saved -and $null -ne $Saved.x -and [double]$Saved.w -ge 400 -and [double]$Saved.h -ge 300) {
-        foreach ($s in @($Screens)) {
-            $vw = [Math]::Min([double]$Saved.x + [double]$Saved.w, $s.X + $s.Width) - [Math]::Max([double]$Saved.x, $s.X)
-            $vh = [Math]::Min([double]$Saved.y + [double]$Saved.h, $s.Y + $s.Height) - [Math]::Max([double]$Saved.y, $s.Y)
-            if ($vw -ge 120 -and $vh -ge 60) { return [pscustomobject]@{ X = [double]$Saved.x; Y = [double]$Saved.y; W = [double]$Saved.w; H = [double]$Saved.h } }
-        }
-    }
-    $p = @($Screens | Where-Object { $_.Primary })[0]
-    if (-not $p) { $p = @($Screens)[0] }
-    if (-not $p) { return [pscustomobject]@{ X = 40; Y = 40; W = $Width; H = $Height } }
-    $w = [Math]::Min($Width, $p.Width - 40)
-    $h = [Math]::Min($Height, $p.Height - 40)
-    return [pscustomobject]@{ X = $p.X + ($p.Width - $w) / 2; Y = $p.Y + ($p.Height - $h) / 2; W = $w; H = $h }
+    <#
+    Where the console goes, all in screen pixels: grown from the panel's
+    top-right corner (-Panel x y width height), its right edge and top held,
+    at the size it was last left (-Saved w and h) or else -Width by -Height,
+    never under -MinWidth by -MinHeight, and kept on -Area, the working
+    area of the panel's screen - no bigger than it, and pushed left, or up,
+    where it would run off. The minimum is the window's own, in this
+    screen's pixels: a size saved on a screen at a lower scale can be under
+    it here, and the window, made bigger by Windows from its left edge,
+    would no longer end at the panel's right. Pure.
+    #>
+    param([int[]]$Panel, $Saved, $Area, [double]$Width = 980, [double]$Height = 680, [double]$MinWidth = 0, [double]$MinHeight = 0)
+    $w = $Width
+    $h = $Height
+    if ($Saved -and [double]$Saved.w -ge 400 -and [double]$Saved.h -ge 300) { $w = [double]$Saved.w; $h = [double]$Saved.h }
+    $w = [Math]::Max($w, $MinWidth)
+    $h = [Math]::Max($h, $MinHeight)
+    $w = [Math]::Min($w, [double]$Area.Width)
+    $h = [Math]::Min($h, [double]$Area.Height)
+    $x = [Math]::Max([double]$Area.X, [Math]::Min($Panel[0] + $Panel[2] - $w, $Area.X + $Area.Width - $w))
+    $y = [Math]::Max([double]$Area.Y, [Math]::Min([double]$Panel[1], $Area.Y + $Area.Height - $h))
+    return [pscustomobject]@{ X = [int][Math]::Round($x); Y = [int][Math]::Round($y); W = [int][Math]::Round($w); H = [int][Math]::Round($h) }
 }
 
 function Read-ChatConsoleState {
-    # console-state.json: where it was, and the draft - what was being
-    # written, to which chat, with which files - so a restart keeps it
+    # console-state.json: its size, and the draft - what was being written,
+    # to which chat, with which files - so a restart keeps it. Where it was
+    # and whether it was maximized are an older console's, a window of its
+    # own: where it goes comes from the panel now.
     $s = Read-ChatqJson $script:ChatConsoleStatePath
     if (-not $s) { $s = [pscustomobject]@{} }
-    foreach ($k in 'x', 'y', 'w', 'h', 'draft') { if (-not $s.PSObject.Properties[$k]) { Set-ChatqProp $s $k $null } }
-    foreach ($k in @(@('max', $false), @('left', 300), @('queue', 230))) { if (-not $s.PSObject.Properties[$k[0]]) { Set-ChatqProp $s $k[0] $k[1] } }
+    foreach ($k in 'x', 'y', 'max') { if ($s.PSObject.Properties[$k]) { $s.PSObject.Properties.Remove($k) } }
+    foreach ($k in 'w', 'h', 'draft') { if (-not $s.PSObject.Properties[$k]) { Set-ChatqProp $s $k $null } }
+    foreach ($k in @(@('left', 300), @('queue', 230))) { if (-not $s.PSObject.Properties[$k[0]]) { Set-ChatqProp $s $k[0] $k[1] } }
     if (-not $s.PSObject.Properties['folders']) { Set-ChatqProp $s 'folders' @() }
     return $s
 }
@@ -200,70 +215,79 @@ function New-ChatConsoleChips {
     return $row
 }
 
-function New-ChatConsoleWindow {
+function New-ChatConsole {
     <#
-    The window, made once, the first time it is opened; hidden, never closed,
-    until the overlay stops - closing it keeps the draft. Its content is
-    built by Initialize-ChatConsoleContent, again when the theme changes.
+    The console, made once, the first time it is opened, and kept until the
+    overlay stops - going back to the panel keeps the draft. It has no
+    window of its own: it shows in the panel's (Enter-ChatOverlayConsoleMode),
+    so Win and Hwnd are the panel's. Its content, Root, is built by
+    Initialize-ChatConsoleContent - again when the theme changes - and is
+    the window's only while the console shows.
     #>
     param($H)
     $C = @{
         # Sigs, not Keys: $C.Keys is the hashtable's own list of its keys
-        Win = $null; Hwnd = [IntPtr]::Zero; State = (Read-ChatConsoleState); Sigs = @{}; Target = $null
+        Win = $H.Win; Hwnd = $H.Hwnd; Root = $null; BackBtn = $null; State = (Read-ChatConsoleState); Sigs = @{}; Target = $null
         Staged = [System.Collections.Generic.List[object]]::new(); When = 'now'; WhenValue = ''; Mode = ''; Model = ''
         Text = ''; NewCwd = ''; NewName = ''; Search = ''; Sel = $null; ShowLog = $false; Jobs = @(); JobsSig = $null
         Index = @(); IndexStamp = $null; IndexParsed = $false; IndexRead = $null; Sync = $null; SyncAt = [datetime]::MinValue; Info = @{}
         Request = $null; WatchSays = ''; TypedAt = $null; Skips = 0; Dirty = $null; Modal = $false; Confirm = @{}; Blocks = $null; BlocksAt = [datetime]::MinValue
     }
     $H.Con = $C
-    $w = [System.Windows.Window]::new()
-    $w.Title = 'chatq console'
-    $w.Width = 980
-    $w.Height = 680
-    $w.MinWidth = 640
-    $w.MinHeight = 420
-    $w.WindowStartupLocation = [System.Windows.WindowStartupLocation]::Manual
-    $w.Left = -32000
-    $w.Top = -32000
-    $w.FontFamily = [System.Windows.Media.FontFamily]::new('Segoe UI')
-    $w.FontSize = 12.5
-    $w.ShowInTaskbar = $true
-    $w.add_Closing({
-            param($s, $e)
-            $H = $script:ChatOverlayHost
-            if ($H -and -not $H.ShuttingDown) { $e.Cancel = $true; Hide-ChatConsole $H }
-        })
-    # a key pressed here holds off the next collector pass a moment, so
-    # typing never stutters behind one
-    $w.add_PreviewKeyDown({ $H = $script:ChatOverlayHost; if ($H.Con) { $H.Con.TypedAt = Get-Date } })
-    $C.Win = $w
-    $C.Hwnd = [System.Windows.Interop.WindowInteropHelper]::new($w).EnsureHandle()
     Restore-ChatConsoleDraft $H
     Initialize-ChatConsoleContent $H
 }
 
 function Initialize-ChatConsoleContent {
-    # everything in the window, from scratch - a theme change comes through
-    # here too - keeping what is typed
+    # Everything the console shows, from scratch - a theme change comes
+    # through here too - keeping what is typed. Built into Root, a frame of
+    # its own: the panel's window is see-through. Put in the window only
+    # while the console shows in it.
     param($H)
     $C = $H.Con
     if ($C.Prompt) { $C.Text = $C.Prompt.Text }
     if ($C.FolderBox) { $C.NewCwd = $C.FolderBox.Text }
     if ($C.NameBox) { $C.NewName = $C.NameBox.Text }
     if ($C.WhenBox) { $C.WhenValue = $C.WhenBox.Text }
-    $w = $C.Win
-    $w.Background = Get-ChatOverlayBrush 'window'
-    $w.Foreground = Get-ChatOverlayBrush 'text'
     $gl = { param($v) if ($v -gt 0) { [System.Windows.GridLength]::new($v) } else { [System.Windows.GridLength]::new(1, [System.Windows.GridUnitType]::Star) } }
+    $frame = [System.Windows.Controls.Border]::new()
+    $frame.CornerRadius = [System.Windows.CornerRadius]::new(8)
+    $frame.Background = Get-ChatOverlayBrush 'window'
+    $frame.BorderBrush = Get-ChatOverlayBrush 'edge'
+    $frame.BorderThickness = [System.Windows.Thickness]::new(1)
+    [System.Windows.Documents.TextElement]::SetForeground($frame, (Get-ChatOverlayBrush 'text'))
+    [System.Windows.Documents.TextElement]::SetFontSize($frame, 12.5)
     $root = [System.Windows.Controls.Grid]::new()
+    $frame.Child = $root
     foreach ($r in 'auto', 'star', 'auto') {
         $rd = [System.Windows.Controls.RowDefinition]::new()
         $rd.Height = if ($r -eq 'auto') { [System.Windows.GridLength]::Auto } else { & $gl 0 }
         $root.RowDefinitions.Add($rd)
     }
+    # the header: usage and the queue's counts, and the way back to the
+    # panel at the corner the panel comes back to. The window has no title
+    # bar: the header moves it.
+    $head = [System.Windows.Controls.DockPanel]::new()
+    $head.Margin = [System.Windows.Thickness]::new(12, 6, 8, 6)
+    $head.Background = [System.Windows.Media.Brushes]::Transparent
+    $C.BackBtn = New-ChatConsoleButton "$([char]0x2190) Panel" { param($s, $e) $e.Handled = $true; Exit-ChatOverlayConsoleMode $script:ChatOverlayHost } -Tip 'Back to the panel (Esc)'
+    $C.BackBtn.Margin = [System.Windows.Thickness]::new(8, 0, 0, 0)
+    [System.Windows.Controls.DockPanel]::SetDock($C.BackBtn, [System.Windows.Controls.Dock]::Right)
+    [void]$head.Children.Add($C.BackBtn)
     $C.Header = New-ChatOverlayText '' 'dim' 12 -Trim
-    $C.Header.Margin = [System.Windows.Thickness]::new(12, 8, 12, 8)
-    [void]$root.Children.Add($C.Header)
+    $C.Header.VerticalAlignment = [System.Windows.VerticalAlignment]::Center
+    [void]$head.Children.Add($C.Header)
+    $head.add_MouseLeftButtonDown({
+            param($s, $e)
+            $X = $script:ChatOverlayHost
+            if ($X.Mode -ne 'console' -or -not ($e.OriginalSource -eq $s -or $e.OriginalSource -eq $X.Con.Header)) { return }
+            # DragMove runs a loop of its own, which the timer would fire in
+            $X.Dragging = $true
+            try { $X.Win.DragMove() } catch {}
+            $X.Dragging = $false
+            Invoke-ChatOverlayHeldVerbs $X
+        })
+    [void]$root.Children.Add($head)
 
     $body = [System.Windows.Controls.Grid]::new()
     [System.Windows.Controls.Grid]::SetRow($body, 1)
@@ -461,7 +485,8 @@ function Initialize-ChatConsoleContent {
 
     # the status line: what the last action did, and the watcher
     $sb = [System.Windows.Controls.DockPanel]::new()
-    $sb.Margin = [System.Windows.Thickness]::new(12, 2, 12, 6)
+    # clear of the resize grip in the corner
+    $sb.Margin = [System.Windows.Thickness]::new(12, 2, 20, 6)
     [System.Windows.Controls.Grid]::SetRow($sb, 2)
     $C.WatchText = New-ChatOverlayText '' 'faint' 11
     [System.Windows.Controls.DockPanel]::SetDock($C.WatchText, [System.Windows.Controls.Dock]::Right)
@@ -469,13 +494,18 @@ function Initialize-ChatConsoleContent {
     $C.Status = New-ChatOverlayText '' 'dim' 11.5 -Trim
     [void]$sb.Children.Add($C.Status)
     [void]$root.Children.Add($sb)
-    $w.Content = $root
+    $C.Root = $frame
 
     $C.Sigs = @{}
     $C.WhenBox = $null
     Update-ChatConsoleTarget $H
     Update-ChatConsoleFiles $H
-    if ($C.Win.IsVisible) { Update-ChatConsole $H }
+    if ($H.Mode -eq 'console') {
+        # the new look in the window at once; the keyboard back in the box
+        $H.Win.Content = $frame
+        Update-ChatConsole $H
+        if ($H.Win.IsActive) { [void]$C.Prompt.Focus() }
+    }
 }
 
 function Set-ChatConsoleStatus {
@@ -486,66 +516,20 @@ function Set-ChatConsoleStatus {
     $H.Con.Status.Foreground = Get-ChatOverlayBrush $Tone
 }
 
-function Show-ChatConsole {
-    # opened, where it was left; -Activate brings it forward with the
-    # prompt box ready, when the user asked for it
-    param($H, [switch]$Activate)
-    if (-not $H.Con) { New-ChatConsoleWindow $H }
-    $C = $H.Con
-    if (-not $C.Win.IsVisible) {
-        # In screen pixels, as the panel is placed: WPF's units differ from
-        # one monitor to the next, and a window left on a 100% screen beside
-        # a 150% one reopened in the wrong place. Shown off every screen
-        # first, then put where it goes - Windows rescales it on the way.
-        $screens = @([System.Windows.Forms.Screen]::AllScreens | ForEach-Object {
-                $a = $_.WorkingArea
-                [pscustomobject]@{ X = $a.X; Y = $a.Y; Width = $a.Width; Height = $a.Height; Primary = $_.Primary }
-            })
-        $scale = try { $g = [System.Drawing.Graphics]::FromHwnd([IntPtr]::Zero); $v = $g.DpiX / 96.0; $g.Dispose(); $v } catch { 1.0 }
-        $at = Get-ChatConsolePlacement $C.State $screens (980 * $scale) (680 * $scale)
-        $C.Win.WindowState = [System.Windows.WindowState]::Normal
-        $C.Win.Left = -32000
-        $C.Win.Top = -32000
-        $C.Win.ShowActivated = [bool]$Activate
-        $C.Win.Show()
-        [ChatOverlayNative]::Place($C.Hwnd, [int]$at.X, [int]$at.Y, [int]$at.W, [int]$at.H)
-        if ($C.State.max) { $C.Win.WindowState = [System.Windows.WindowState]::Maximized }
-        # a fresh look at what the limit cut off, and at the chats
-        $H.Ctx.CutAt = [datetime]::MinValue
-        $C.Sigs = @{}
-        Update-ChatConsole $H
-    }
-    if ($Activate) {
-        if ($C.Win.WindowState -eq [System.Windows.WindowState]::Minimized) { $C.Win.WindowState = [System.Windows.WindowState]::Normal }
-        [void]$C.Win.Activate()
-        [void]$C.Prompt.Focus()
-    }
-}
-
-function Hide-ChatConsole {
-    param($H)
-    if (-not $H.Con) { return }
-    Save-ChatConsoleDraft $H
-    $H.Con.Win.Hide()
-}
-
 function Save-ChatConsoleDraft {
-    # where the window is and what is being written, for the next time it
-    # opens - after a restart too
+    # its size and what is being written, for the next time it opens -
+    # after a restart too
     param($H)
     $C = $H.Con
     if (-not $C) { return }
     try {
         $s = $C.State
-        $max = $C.Win.WindowState -eq [System.Windows.WindowState]::Maximized
-        # its rect in screen pixels, while it is neither maximized nor
-        # minimized - those keep the last normal one
-        if ($C.Win.IsVisible) {
-            $s.max = $max
-            if ($C.Win.WindowState -eq [System.Windows.WindowState]::Normal) {
-                $r = [ChatOverlayNative]::GetRect($C.Hwnd)
-                if ($r -and $r[2] -gt 0 -and $r[0] -gt -30000) { $s.x = $r[0]; $s.y = $r[1]; $s.w = $r[2]; $s.h = $r[3] }
-            }
+        # Its size in screen pixels, while it shows and is not minimized - a
+        # minimized one keeps the last. Not where it is: it grows from the
+        # panel's corner each time.
+        if ($H.Mode -eq 'console' -and $C.Win.WindowState -eq [System.Windows.WindowState]::Normal) {
+            $r = [ChatOverlayNative]::GetRect($C.Hwnd)
+            if ($r -and $r[2] -gt 0 -and $r[3] -gt 0) { $s.w = $r[2]; $s.h = $r[3] }
         }
         if ($C.LeftCol -and $C.LeftCol.ActualWidth -gt 0) { $s.left = [Math]::Round($C.LeftCol.ActualWidth) }
         if ($C.QueueRow -and $C.QueueRow.ActualHeight -gt 0) { $s.queue = [Math]::Round($C.QueueRow.ActualHeight) }
@@ -599,8 +583,10 @@ function Update-ChatConsole {
     # what it shows changed
     param($H)
     $C = $H.Con
-    # minimized, nobody sees it: nothing drawn until it is restored
-    if (-not $C -or -not $C.Win.IsVisible -or $C.Modal -or $C.Win.WindowState -eq [System.Windows.WindowState]::Minimized) { return }
+    # Only while the window shows the console - it is the panel's, and
+    # shows the panel the rest of the time. Minimized, nobody sees it:
+    # nothing drawn until it is restored.
+    if (-not $C -or $H.Mode -ne 'console' -or $C.Modal -or $C.Win.WindowState -eq [System.Windows.WindowState]::Minimized) { return }
     try {
         Update-ChatConsoleIndex $H
         Update-ChatConsoleStaging $H
@@ -697,7 +683,7 @@ function Complete-ChatConsoleIndexRead {
     $C.Index = $rows
     if ($r.Stamp -and $r.Stamp -eq (Get-ChatIndexStamp)) { $script:ChatIndexCache = $rows; $script:ChatIndexStamp = $r.Stamp }
     $C.Sigs.Chats = $null
-    if ($C.Win -and $C.Win.IsVisible) { Update-ChatConsoleChats $H }
+    if ($H.Mode -eq 'console') { Update-ChatConsoleChats $H }
 }
 
 function Start-ChatConsoleIndexSync {
@@ -743,7 +729,9 @@ function Update-ChatConsoleHeader {
 
 function Get-ChatConsoleChatItems {
     # what the list shows: cut off first, then open in VS Code, then recent -
-    # each chat once, as the snapshot and the index have it
+    # each chat once, as the snapshot and the index have it. Row is what the
+    # panel's row builder draws it from (Add-ChatOverlayRow): the snapshot's
+    # own row, or one made for a recent chat of the index's.
     param($H)
     $C = $H.Con
     $cut = [System.Collections.Generic.List[object]]::new()
@@ -755,7 +743,7 @@ function Get-ChatConsoleChatItems {
         $item = [pscustomobject]@{
             Key = "$($r.kind):$($r.sessionId)"; Kind = $(if ($r.status -eq 'cutoff') { 'cutoff' } else { 'open' }); Provider = 'claude'; Id = [string]$r.sessionId
             Title = [string]$r.title; Project = [string]$r.project; Cwd = [string]$r.cwd; Path = $path; State = [string]$r.stateText
-            Status = [string]$r.status; Live = $(if ($r.kind -eq 'session') { [string]$r.chat } else { $null })
+            Status = [string]$r.status; Live = $(if ($r.kind -eq 'session') { [string]$r.chat } else { $null }); Row = $r
         }
         $seen[$item.Id] = $true
         if ($item.Kind -eq 'cutoff') { $cut.Add($item) } else { $open.Add($item) }
@@ -780,9 +768,16 @@ function Get-ChatConsoleChatItems {
         $all = $true
         foreach ($w in $words) { if (-not $x.Hay.Contains($w)) { $all = $false; break } }
         if (-not $all) { continue }
+        $state = "$($r.Provider)$(if ($x.When) { " $($script:ChatqDot) $(Get-ChatAge $x.When)" })"
+        # the shape the panel's Recent rows have (Update-ChatOverlayRecent):
+        # kind and status recent, so the builder draws it faint and compact
+        $row = [pscustomobject]@{
+            key = "recent:$($r.Id)"; kind = 'recent'; provider = [string]$r.Provider; status = 'recent'; rank = $null
+            project = ''; title = [string]$r.Title; sessionId = [string]$r.Id; stateText = $state; prompt = $null
+        }
         $recent.Add([pscustomobject]@{
                 Key = "recent:$($r.Id)"; Kind = 'recent'; Provider = [string]$r.Provider; Id = [string]$r.Id; Title = [string]$r.Title
-                Project = ''; Cwd = $null; Path = [string]$r.Path; State = "$($r.Provider)$(if ($x.When) { " $($script:ChatqDot) $(Get-ChatAge $x.When)" })"; Status = 'idle'; Live = $null
+                Project = ''; Cwd = $null; Path = [string]$r.Path; State = $state; Status = 'recent'; Live = $null; Row = $row
             })
     }
     return [pscustomobject]@{ CutOff = $cut.ToArray(); Open = $open.ToArray(); Recent = $recent.ToArray() }
@@ -798,7 +793,8 @@ function Update-ChatConsoleChats {
     # searched and cut to length as it was gathered
     $recent = @($all.Recent)
     $sel = if ($C.Target) { "$($C.Target.Kind)|$($C.Target.Id)|$($C.Target.Cwd)" } else { '' }
-    $key = (@($cut + $open + $recent | ForEach-Object { "$($_.Key)=$($_.State)" }) -join ';') + "|$sel"
+    # what a row shows beyond its words: its dot, where it runs, unread
+    $key = (@($cut + $open + $recent | ForEach-Object { "$($_.Key)=$($_.State)/$($_.Status)/$(Get-ChatField $_.Row 'where')/$(Get-ChatField $_.Row 'unread')" }) -join ';') + "|$sel"
     if ($key -eq $C.Sigs.Chats) { return }
     $C.Sigs.Chats = $key
     $C.Chats.Children.Clear()
@@ -824,45 +820,36 @@ function Update-ChatConsoleChats {
 }
 
 function New-ChatConsoleChatItem {
-    # one chat in the list: a dot in its state's colour, project and title,
-    # what it is doing; a click makes it the one written to
+    <#
+    One chat in the list, drawn as the panel draws it (Add-ChatOverlayRow,
+    compact: no prompt line) - the dot, where it runs, project and title,
+    its state, the unread dot - so a chat looks the same in both. Around
+    it, what only the console has: a click makes it the one written to, the
+    one picked has the accent's bar at its left on the selection's colour,
+    and a cut-off chat has Continue at the right.
+    #>
     param($H, $Item)
     $C = $H.Con
     $b = [System.Windows.Controls.Border]::new()
     $b.CornerRadius = [System.Windows.CornerRadius]::new(4)
-    $b.Padding = [System.Windows.Thickness]::new(6, 3, 6, 4)
+    $b.Padding = [System.Windows.Thickness]::new(5, 2, 6, 2)
+    # the bar is always there, see-through when not picked: the row does not
+    # move as it is picked
+    $b.BorderThickness = [System.Windows.Thickness]::new(2, 0, 0, 0)
     $b.Cursor = [System.Windows.Input.Cursors]::Hand
     $b.Tag = $Item
     $on = $C.Target -and $C.Target.Kind -ne 'new' -and $C.Target.Id -eq $Item.Id
     $b.Background = if ($on) { Get-ChatOverlayBrush 'select' } else { [System.Windows.Media.Brushes]::Transparent }
+    $b.BorderBrush = if ($on) { Get-ChatOverlayBrush 'accent' } else { [System.Windows.Media.Brushes]::Transparent }
     $g = [System.Windows.Controls.DockPanel]::new()
-    $dot = [System.Windows.Shapes.Ellipse]::new()
-    $dot.Width = 8
-    $dot.Height = 8
-    $dot.Margin = [System.Windows.Thickness]::new(0, 5, 7, 0)
-    $dot.VerticalAlignment = [System.Windows.VerticalAlignment]::Top
-    $dot.Fill = Get-ChatOverlayBrush $(if ($Item.Kind -eq 'recent') { 'faint' } else { [string]$Item.Status })
-    [System.Windows.Controls.DockPanel]::SetDock($dot, [System.Windows.Controls.Dock]::Left)
-    [void]$g.Children.Add($dot)
     if ($Item.Kind -eq 'cutoff') {
         $cb = New-ChatConsoleButton 'Continue' { param($s, $e) $e.Handled = $true; Invoke-ChatConsoleContinue $script:ChatOverlayHost @($s.Tag) } -Small -Tag $Item -Tip 'Queue "Continue from where you left off." for this chat'
+        $cb.Margin = [System.Windows.Thickness]::new(6, 0, 0, 0)
         [System.Windows.Controls.DockPanel]::SetDock($cb, [System.Windows.Controls.Dock]::Right)
         [void]$g.Children.Add($cb)
     }
     $txt = [System.Windows.Controls.StackPanel]::new()
-    $t1 = [System.Windows.Controls.TextBlock]::new()
-    $t1.TextTrimming = [System.Windows.TextTrimming]::CharacterEllipsis
-    if ($Item.Project) {
-        $r = [System.Windows.Documents.Run]::new("$($Item.Project)  ")
-        $r.Foreground = Get-ChatOverlayBrush 'project'
-        $r.FontWeight = [System.Windows.FontWeights]::SemiBold
-        $t1.Inlines.Add($r)
-    }
-    $r = [System.Windows.Documents.Run]::new([string]$Item.Title)
-    $r.Foreground = Get-ChatOverlayBrush 'text'
-    $t1.Inlines.Add($r)
-    [void]$txt.Children.Add($t1)
-    [void]$txt.Children.Add((New-ChatOverlayText ([string]$Item.State) $(if ($Item.Kind -eq 'cutoff') { 'cutoff' } else { 'faint' }) 11 -Trim))
+    Add-ChatOverlayRow $txt $Item.Row ([pscustomobject]@{ prompts = $false })
     [void]$g.Children.Add($txt)
     $b.Child = $g
     $b.add_MouseEnter({ param($s, $e) if ($s.Background -eq [System.Windows.Media.Brushes]::Transparent) { $s.Background = Get-ChatOverlayBrush 'hover' } })
@@ -1245,6 +1232,8 @@ function Invoke-ChatConsoleBrowse {
         if ($d.ShowDialog($own) -eq [System.Windows.Forms.DialogResult]::OK) { $C.FolderBox.Text = $d.SelectedPath }
     }
     finally { $C.Modal = $false; try { $own.ReleaseHandle() } catch {}; $d.Dispose() }
+    # a lock, a hide or a Quit asked for while it was open
+    Invoke-ChatOverlayHeldVerbs $H
 }
 
 function Invoke-ChatConsoleSend {
@@ -1555,8 +1544,10 @@ function Invoke-ChatConsoleJobAction {
 }
 
 function Register-ChatConsoleHotkey {
-    # config consoleHotkey (Ctrl+Alt+Shift+Q): opens the console. Taken by
-    # another program, it is logged and the tray item still works.
+    # config consoleHotkey (Ctrl+Alt+Shift+Q): opens the console; pressed
+    # while the console has the keyboard, back to the panel - its own verb,
+    # console-key, as only the key toggles. Taken by another program, it is
+    # logged and the tray item still works.
     param($H)
     $text = [string]$H.Ctx.Config.consoleHotkey
     if ($H.ConHotkey -and $H.ConHotkeyText -eq $text) { return }
@@ -1565,7 +1556,7 @@ function Register-ChatConsoleHotkey {
     $k = try { ConvertFrom-ChatOverlayHotkey $text } catch { Write-ChatOverlayLog "console hotkey: $($_.Exception.Message)"; $null }
     if (-not $k) { return }
     $hk = [ChatOverlayHotkey]::new()
-    $hk.add_Pressed({ Invoke-ChatOverlayVerb 'console' })
+    $hk.add_Pressed({ Invoke-ChatOverlayVerb 'console-key' })
     if ($hk.Register([uint32]$k.Mods, [uint32]$k.Vk)) { $H.ConHotkey = $hk }
     else { $hk.Dispose(); Write-ChatOverlayLog "console hotkey $text is taken by another program" }
 }

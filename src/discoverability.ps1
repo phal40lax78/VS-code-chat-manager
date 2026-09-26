@@ -305,7 +305,10 @@ function chat {
     Write-Host '  chatoverlay            every open chat and live usage, always on top' -ForegroundColor Cyan
     Write-Host '  chatoverlay -Print     the same, once, in this console' -ForegroundColor Cyan
     Write-Host '  chatoverlay -Theme     dark, light or system; -Opacity 85' -ForegroundColor Cyan
+    Write-Host '  chatoverlay -Width     260 to 800; -Rows 1 to 30 chats shown' -ForegroundColor Cyan
     Write-Host '  chatoverlay -UsageView lines, or bars with reset countdowns' -ForegroundColor Cyan
+    Write-Host '  chatoverlay -Compact   on: one line a chat; -ChipDelay 400 ms' -ForegroundColor Cyan
+    Write-Host '  chatoverlay -Recent    0 to 20 chats not open listed under them' -ForegroundColor Cyan
     Write-Host '  chatconsole            write, queue and continue chats in a window' -ForegroundColor Cyan
     Write-Host ''
     Write-Host '  chatinstall            load these in every new shell (once)' -ForegroundColor DarkGray
